@@ -101,7 +101,7 @@ async fn update_order_payment_status(
 }
 
 /// Recomputes `refunded_amount_minor` and `payment_status` from the
-/// authoritative `commerce.refunds` rows for this Order. Summing from source
+/// authoritative `commerce.order_refunds` rows for this Order. Summing from source
 /// on every call makes replayed refund webhooks naturally idempotent instead
 /// of relying on an incrementally patched running total.
 async fn recompute_order_refund_summary(
@@ -111,7 +111,7 @@ async fn recompute_order_refund_summary(
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     let (refunded, total): (i64, i64) = sqlx::query_as(
-        "SELECT COALESCE((SELECT SUM(refund.amount_minor) FROM commerce.refunds AS refund \
+        "SELECT COALESCE((SELECT SUM(refund.amount_minor) FROM commerce.order_refunds AS refund \
                            WHERE refund.store_id = sales_order.store_id \
                              AND refund.order_id = sales_order.id \
                              AND refund.status = 'succeeded'), 0)::bigint, \
@@ -236,7 +236,8 @@ async fn apply_payment_event(
 ) -> Result<OrderId, ApplicationError> {
     let captured = matches!(event_type, "payment.authorized" | "payment.captured");
     let failed = matches!(event_type, "payment.failed" | "payment.cancelled");
-    if !captured && !failed {
+    let expired = event_type == "payment.expired";
+    if !captured && !failed && !expired {
         return Err(corrupt_webhook_payload());
     }
     let (order_status, payment_status, shopper_id, currency): (String, String, Uuid, String) =
@@ -316,17 +317,17 @@ async fn apply_payment_event(
             order_id.as_uuid(),
         )
         .await?;
-        let (contact_email, contact_phone, storefront_origin): (
+        let (contact_email, contact_phone, origin): (
             Option<String>,
             Option<String>,
             String,
         ) = sqlx::query_as(
             "SELECT order_row.contact_email::text, order_row.contact_phone, \
-                    channel.storefront_origin \
+                    channel.origin \
              FROM commerce.orders AS order_row \
-             JOIN commerce.store_sales_channels AS channel \
+             JOIN commerce.channels AS channel \
                ON channel.store_id = order_row.store_id \
-              AND channel.id = order_row.sales_channel_id \
+              AND channel.id = order_row.channel_id \
              WHERE order_row.store_id = $1 AND order_row.id = $2",
         )
         .bind(store_id.as_uuid())
@@ -347,7 +348,7 @@ async fn apply_payment_event(
             &mut properties,
             contact_email.as_deref(),
             contact_phone.as_deref(),
-            Some(&storefront_origin),
+            Some(&origin),
         );
         append_event(
             transaction,
@@ -363,15 +364,25 @@ async fn apply_payment_event(
             },
         )
         .await?;
-    } else if failed {
-        let failure_code = failure_code.unwrap_or_else(|| "provider_failure".into());
+    } else if failed || expired {
+        let (payment_status, failure_code) = if expired {
+            ("expired", "checkout_expired".to_owned())
+        } else {
+            (
+                "failed",
+                failure_code.unwrap_or_else(|| "provider_failure".into()),
+            )
+        };
         let applied = sqlx::query(
-            "UPDATE commerce.orders SET payment_status = 'failed', payment_failure_code = $3, \
-                    updated_at = $4 \
-             WHERE store_id = $1 AND id = $2 AND payment_status = 'pending'",
+            "UPDATE commerce.orders SET payment_status = $3::commerce.order_payment_status, \
+                    payment_failure_code = $4, \
+                    updated_at = $5 \
+             WHERE store_id = $1 AND id = $2 \
+               AND payment_status = 'pending'::commerce.order_payment_status",
         )
         .bind(store_id.as_uuid())
         .bind(order_id.as_uuid())
+        .bind(payment_status)
         .bind(&failure_code)
         .bind(now)
         .execute(&mut **transaction)
@@ -465,6 +476,13 @@ impl StripeCheckoutSnapshot {
             || amount_shipping < 0
         {
             return Err(corrupt_webhook_payload());
+        }
+        let calculated_total = amount_subtotal
+            .checked_sub(amount_discount)
+            .and_then(|total| total.checked_add(amount_tax))
+            .and_then(|total| total.checked_add(amount_shipping));
+        if calculated_total != Some(amount_total) {
+            return Err(stripe_amount_mismatch());
         }
         let customer_details = object.get("customer_details");
         // Newer Stripe API versions report the collected shipping address
@@ -586,8 +604,9 @@ async fn apply_stripe_checkout_snapshot(
     snapshot: &StripeCheckoutSnapshot,
     now: OffsetDateTime,
 ) -> Result<i64, ApplicationError> {
-    let current_currency: String = sqlx::query_scalar(
-        "SELECT currency::text FROM commerce.orders WHERE store_id = $1 AND id = $2",
+    let (current_currency, expected_subtotal): (String, i64) = sqlx::query_as(
+        "SELECT currency::text, subtotal_amount_minor \
+         FROM commerce.orders WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
@@ -596,6 +615,9 @@ async fn apply_stripe_checkout_snapshot(
     .map_err(database_error)?;
     if current_currency != snapshot.currency {
         return Err(stripe_currency_mismatch());
+    }
+    if expected_subtotal != snapshot.amount_subtotal {
+        return Err(stripe_amount_mismatch());
     }
     sqlx::query(
         "UPDATE commerce.orders SET subtotal_amount_minor = $3, discount_amount_minor = $4, \
@@ -703,8 +725,9 @@ async fn cancel_pending_order(
     let mut order = Order::rehydrate(order_id, status);
     order.cancel()?;
     sqlx::query(
-        "UPDATE commerce.orders SET status = 'cancelled', updated_at = $3 \
-         WHERE store_id = $1 AND id = $2 AND status = 'pending'",
+        "UPDATE commerce.orders SET status = 'cancelled'::commerce.order_status, updated_at = $3 \
+         WHERE store_id = $1 AND id = $2 \
+           AND status = 'pending'::commerce.order_status",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
@@ -714,7 +737,8 @@ async fn cancel_pending_order(
     .map_err(database_error)?;
     release_order_inventory(transaction, store_id.as_uuid(), order_id.as_uuid()).await?;
     sqlx::query(
-        "UPDATE commerce.carts AS cart SET payment_client_action = NULL, updated_at = $3 \
+        "UPDATE commerce.carts AS cart SET status = 'abandoned'::commerce.cart_status, \
+                payment_client_action = NULL, updated_at = $3 \
          FROM commerce.orders AS sales_order \
          WHERE sales_order.store_id = $1 AND sales_order.id = $2 \
            AND cart.store_id = sales_order.store_id AND cart.id = sales_order.cart_id \
@@ -745,7 +769,7 @@ async fn confirm_paid_order(
     order.confirm()?;
     consume_order_inventory(transaction, store_id.as_uuid(), order_id.as_uuid()).await?;
     sqlx::query(
-        "UPDATE commerce.orders SET status = 'confirmed', updated_at = $3 \
+        "UPDATE commerce.orders SET status = 'confirmed'::commerce.order_status, updated_at = $3 \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -786,7 +810,8 @@ async fn confirm_paid_order(
     .map_err(database_error)?;
     if let Some(cart_id) = cart_id {
         sqlx::query(
-            "UPDATE commerce.carts SET payment_client_action = NULL, updated_at = $3 \
+        "UPDATE commerce.carts SET status = 'completed'::commerce.cart_status, \
+                payment_client_action = NULL, updated_at = $3 \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
@@ -863,7 +888,7 @@ async fn apply_refund_event(
 
     let resolved: Option<(Uuid, Uuid)> = match refund_id {
         Some(id) => sqlx::query_as(
-            "SELECT id, order_id FROM commerce.refunds \
+            "SELECT id, order_id FROM commerce.order_refunds \
              WHERE store_id = $1 AND id = $2 \
                AND payment_provider_account_id = $3 FOR UPDATE",
         )
@@ -904,7 +929,7 @@ async fn apply_refund_event(
             .map_err(database_error)?
             .ok_or_else(provider_unavailable)?;
             sqlx::query(
-                "INSERT INTO commerce.refunds \
+                "INSERT INTO commerce.order_refunds \
                  (id, store_id, order_id, currency, status, amount_minor, \
                   payment_provider_account_id, payment_provider_reference_id) \
                  VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7) \
@@ -922,7 +947,7 @@ async fn apply_refund_event(
             .await
             .map_err(database_error)?;
             let refund_row: (Uuid, Uuid) = sqlx::query_as(
-                "SELECT id, order_id FROM commerce.refunds \
+                "SELECT id, order_id FROM commerce.order_refunds \
                  WHERE store_id = $1 AND payment_provider_account_id = $2 \
                    AND payment_provider_reference_id = $3 FOR UPDATE",
             )
@@ -941,7 +966,7 @@ async fn apply_refund_event(
 
     if target_status == "succeeded" {
         let applied = sqlx::query(
-            "UPDATE commerce.refunds SET status = 'succeeded', \
+            "UPDATE commerce.order_refunds SET status = 'succeeded', \
                     payment_provider_account_id = $3, payment_provider_reference_id = $4, \
                     failure_code = NULL, updated_at = $5 \
              WHERE store_id = $1 AND id = $2 AND status = 'pending'",
@@ -963,7 +988,7 @@ async fn apply_refund_event(
             .await?;
     } else if target_status == "pending" {
         sqlx::query(
-            "UPDATE commerce.refunds SET status = 'pending', \
+            "UPDATE commerce.order_refunds SET status = 'pending', \
                     payment_provider_account_id = $3, payment_provider_reference_id = $4, \
                     failure_code = NULL, updated_at = $5 \
              WHERE store_id = $1 AND id = $2 AND status = 'pending'",
@@ -978,7 +1003,7 @@ async fn apply_refund_event(
         .map_err(database_error)?;
     } else {
         sqlx::query(
-            "UPDATE commerce.refunds SET status = 'failed', \
+            "UPDATE commerce.order_refunds SET status = 'failed', \
                     payment_provider_account_id = $3, payment_provider_reference_id = $4, \
                     failure_code = $5, updated_at = $6 \
              WHERE store_id = $1 AND id = $2 AND status IN ('pending', 'succeeded', 'failed')",
@@ -1094,7 +1119,7 @@ async fn upsert_refund_observation(
     }
 
     let provider_row: Option<(Uuid, Uuid, i64, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, order_id, amount_minor, status::text, failure_code FROM commerce.refunds \
+        "SELECT id, order_id, amount_minor, status::text, failure_code FROM commerce.order_refunds \
          WHERE store_id = $1 AND payment_provider_account_id = $2 \
            AND payment_provider_reference_id = $3 FOR UPDATE",
     )
@@ -1107,7 +1132,7 @@ async fn upsert_refund_observation(
     let chaos_row = if let Some(chaos_refund_id) = observation.chaos_refund_id {
         sqlx::query_as::<_, (Uuid, Uuid, i64, String, Option<String>)>(
             "SELECT id, order_id, amount_minor, status::text, failure_code \
-             FROM commerce.refunds \
+             FROM commerce.order_refunds \
              WHERE store_id = $1 AND id = $2 AND order_id = $3 FOR UPDATE",
         )
         .bind(context.store_id.as_uuid())
@@ -1150,7 +1175,7 @@ async fn upsert_refund_observation(
                 _ => None,
             };
             sqlx::query(
-                "UPDATE commerce.refunds SET status = $4::commerce.refund_status, \
+                "UPDATE commerce.order_refunds SET status = $4::commerce.refund_status, \
                         payment_provider_reference_id = $3, failure_code = $5, updated_at = $6 \
                  WHERE store_id = $1 AND id = $2",
             )
@@ -1167,7 +1192,7 @@ async fn upsert_refund_observation(
         None => {
             let status = observed_status;
             sqlx::query(
-                "INSERT INTO commerce.refunds \
+                "INSERT INTO commerce.order_refunds \
                  (id, store_id, order_id, currency, status, amount_minor, \
                   payment_provider_account_id, payment_provider_reference_id, failure_code, updated_at) \
                  VALUES ($1, $2, $3, $4, $5::commerce.refund_status, $6, $7, $8, $9, $10)",
@@ -1251,7 +1276,7 @@ impl PostgresStripeRepository {
         let rows: Vec<RefundDetailRow> = sqlx::query_as(
             "SELECT id, status::text, amount_minor, payment_provider_reference_id, \
                     failure_code, created_at, updated_at \
-             FROM commerce.refunds WHERE store_id = $1 AND order_id = $2 \
+             FROM commerce.order_refunds WHERE store_id = $1 AND order_id = $2 \
              ORDER BY created_at, id",
         )
         .bind(context.store_id.as_uuid())

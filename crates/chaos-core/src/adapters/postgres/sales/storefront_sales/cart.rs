@@ -14,7 +14,7 @@ async fn select_price_list(
          FROM commerce.price_lists AS price_list \
          INNER JOIN commerce.stores AS store \
            ON store.id = price_list.store_id \
-         INNER JOIN commerce.store_sales_channels AS channel \
+         INNER JOIN commerce.channels AS channel \
            ON channel.store_id = store.id AND channel.id = $1 \
          WHERE price_list.store_id = $2 \
            AND store.status = 'active' AND channel.status = 'active' \
@@ -48,7 +48,7 @@ async fn resolve_variant(
            ON product.store_id = variant.store_id AND product.id = variant.product_id \
          INNER JOIN commerce.product_publications AS publication \
            ON publication.store_id = product.store_id AND publication.product_id = product.id \
-          AND publication.sales_channel_id = $1 \
+          AND publication.channel_id = $1 \
          INNER JOIN commerce.price_lists AS price_list \
            ON price_list.store_id = variant.store_id AND price_list.id = $2 \
          INNER JOIN commerce.price_list_items AS price \
@@ -77,27 +77,16 @@ async fn insert_or_replace_line(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO commerce.cart_lines \
-         (store_id, cart_id, product_id, product_variant_id, \
-          product_title, variant_title, sku, track_inventory, quantity, \
-          unit_price_amount_minor) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+         (store_id, cart_id, product_variant_id, quantity) \
+         VALUES ($1, $2, $3, $4) \
          ON CONFLICT (store_id, cart_id, product_variant_id) \
-         DO UPDATE SET product_title = EXCLUDED.product_title, \
-             variant_title = EXCLUDED.variant_title, sku = EXCLUDED.sku, \
-             track_inventory = EXCLUDED.track_inventory, quantity = EXCLUDED.quantity, \
-             unit_price_amount_minor = EXCLUDED.unit_price_amount_minor, \
+         DO UPDATE SET quantity = EXCLUDED.quantity, \
              updated_at = CURRENT_TIMESTAMP",
     )
     .bind(actor.store_id.as_uuid())
     .bind(cart_id.as_uuid())
-    .bind(line.product_id().as_uuid())
     .bind(line.product_variant_id().as_uuid())
-    .bind(line.product_title())
-    .bind(line.variant_title())
-    .bind(line.sku())
-    .bind(line.track_inventory())
     .bind(i32::try_from(line.quantity()).map_err(unexpected_conversion)?)
-    .bind(line.unit_price().amount_minor())
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
@@ -139,16 +128,16 @@ async fn lock_cart(
     cart_id: CartId,
 ) -> Result<(Uuid, Uuid, String, String, i64), ApplicationError> {
     let row = sqlx::query_as::<_, (Uuid, Uuid, String, String, i64)>(
-        "SELECT cart.sales_channel_id, cart.price_list_id, price_list.currency::text, \
+        "SELECT cart.channel_id, cart.price_list_id, price_list.currency::text, \
                 cart.status::text, cart.version \
          FROM commerce.carts AS cart \
          INNER JOIN commerce.price_lists AS price_list \
            ON price_list.store_id = cart.store_id AND price_list.id = cart.price_list_id \
          WHERE cart.store_id = $1 \
-           AND cart.sales_channel_id = $2 AND cart.id = $3 FOR UPDATE OF cart",
+           AND cart.channel_id = $2 AND cart.id = $3 FOR UPDATE OF cart",
     )
     .bind(actor.store_id.as_uuid())
-    .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
+    .bind(actor.channel_id.map(SalesChannelId::as_uuid))
     .bind(cart_id.as_uuid())
     .fetch_optional(&mut **transaction)
     .await
@@ -169,10 +158,10 @@ async fn load_cart(
          INNER JOIN commerce.price_lists AS price_list \
            ON price_list.store_id = cart.store_id AND price_list.id = cart.price_list_id \
          WHERE cart.store_id = $1 \
-           AND cart.sales_channel_id = $2 AND cart.id = $3",
+           AND cart.channel_id = $2 AND cart.id = $3",
     )
     .bind(actor.store_id.as_uuid())
-    .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
+    .bind(actor.channel_id.map(SalesChannelId::as_uuid))
     .bind(cart_id.as_uuid())
     .fetch_optional(&mut **transaction)
     .await
@@ -180,13 +169,22 @@ async fn load_cart(
     let Some(row) = row else {
         return Ok(None);
     };
+    let channel_id = require_channel(actor)?;
     let currency = parse_currency(&row.3)?;
     let status = CartStatus::parse(&row.4).ok_or_else(corrupt_sales_state)?;
-    let lines = load_cart_line_rows(transaction, actor, cart_id).await?;
+    let lines = refresh_cart_lines(
+        transaction,
+        actor,
+        cart_id,
+        channel_id,
+        PriceListId::from_uuid(row.2),
+        currency,
+    )
+    .await?;
     let media = load_cart_media(transaction, actor, &lines).await?;
     let items = lines
         .into_iter()
-        .map(|line| cart_line_item(line, currency, &media))
+        .map(|line| cart_line_item(line, &media))
         .collect::<Result<Vec<_>, _>>()?;
     let subtotal = items
         .iter()
@@ -214,9 +212,12 @@ async fn load_cart(
 async fn load_cart_media(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
-    lines: &[CartLineRow],
+    lines: &[CartLine],
 ) -> Result<HashMap<(Uuid, Uuid), Vec<StorefrontMediaAsset>>, ApplicationError> {
-    let product_ids = lines.iter().map(|line| line.0).collect::<Vec<_>>();
+    let product_ids = lines
+        .iter()
+        .map(|line| line.product_id().as_uuid())
+        .collect::<Vec<_>>();
     if product_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -298,7 +299,10 @@ async fn load_cart_media(
             });
     }
 
-    let variant_ids = lines.iter().map(|line| line.1).collect::<Vec<_>>();
+    let variant_ids = lines
+        .iter()
+        .map(|line| line.product_variant_id().as_uuid())
+        .collect::<Vec<_>>();
     let selected_rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
         "SELECT selection.variant_id, selection.option_id, selection.option_value_id \
          FROM commerce.variant_selected_options AS selection \
@@ -342,7 +346,10 @@ async fn load_cart_media(
 
     let mut by_line = HashMap::new();
     for line in lines {
-        let (product_id, product_variant_id) = (line.0, line.1);
+        let (product_id, product_variant_id) = (
+            line.product_id().as_uuid(),
+            line.product_variant_id().as_uuid(),
+        );
         let scoped = by_product
             .get(&product_id)
             .map(|assets| {
@@ -361,43 +368,26 @@ async fn load_cart_media(
     Ok(by_line)
 }
 
-async fn load_cart_line_rows(
-    transaction: &mut Transaction<'static, Postgres>,
-    actor: &MachineActor,
-    cart_id: CartId,
-) -> Result<Vec<CartLineRow>, ApplicationError> {
-    sqlx::query_as(
-        "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
-                track_inventory, quantity, unit_price_amount_minor \
-         FROM commerce.cart_lines \
-         WHERE store_id = $1 AND cart_id = $2 \
-         ORDER BY product_variant_id ASC",
-    )
-    .bind(actor.store_id.as_uuid())
-    .bind(cart_id.as_uuid())
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(database_error)
-}
-
 fn cart_line_item(
-    row: CartLineRow,
-    currency: CurrencyCode,
+    line: CartLine,
     media: &HashMap<(Uuid, Uuid), Vec<StorefrontMediaAsset>>,
 ) -> Result<CartLineItem, ApplicationError> {
-    let quantity = u32::try_from(row.6).map_err(unexpected_conversion)?;
-    let subtotal = Money::new(row.7, currency).checked_mul(u64::from(quantity))?;
+    let quantity = line.quantity();
+    let subtotal = line.subtotal()?;
     Ok(CartLineItem {
-        product_id: ProductId::from_uuid(row.0),
-        product_variant_id: ProductVariantId::from_uuid(row.1),
-        product_title: row.2,
-        variant_title: row.3,
-        sku: row.4,
-        track_inventory: row.5,
+        product_id: line.product_id(),
+        product_variant_id: line.product_variant_id(),
+        product_title: line.product_title().into(),
+        variant_title: line.variant_title().into(),
+        sku: line.sku().map(str::to_owned),
+        track_inventory: line.track_inventory(),
         quantity,
-        unit_price_amount_minor: row.7,
+        unit_price_amount_minor: line.unit_price().amount_minor(),
         subtotal_amount_minor: subtotal.amount_minor(),
-        media: media.get(&(row.0, row.1)).cloned().unwrap_or_default(),
+        media: media
+            .get(&(line.product_id().as_uuid(), line.product_variant_id().as_uuid()))
+            .cloned()
+            .unwrap_or_default(),
     })
 }
 
@@ -410,9 +400,8 @@ async fn refresh_cart_lines(
     currency: CurrencyCode,
 ) -> Result<Vec<CartLine>, ApplicationError> {
     let rows = sqlx::query_as::<_, CartLineRow>(
-        "SELECT product.id, variant.id, cart_line.product_title, cart_line.variant_title, \
-                cart_line.sku::text, \
-                variant.track_inventory, cart_line.quantity, \
+        "SELECT product.id, variant.id, product.title, variant.title, \
+                variant.sku::text, variant.track_inventory, cart_line.quantity, \
                 price.amount_minor \
          FROM commerce.cart_lines AS cart_line \
          INNER JOIN commerce.product_variants AS variant \
@@ -423,7 +412,7 @@ async fn refresh_cart_lines(
           AND product.status = 'active' \
          INNER JOIN commerce.product_publications AS publication \
            ON publication.store_id = product.store_id AND publication.product_id = product.id \
-          AND publication.sales_channel_id = $1 \
+          AND publication.channel_id = $1 \
          INNER JOIN commerce.price_lists AS price_list \
            ON price_list.store_id = cart_line.store_id AND price_list.id = $2 \
          INNER JOIN commerce.price_list_items AS price \

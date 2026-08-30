@@ -147,7 +147,7 @@ struct BatchFulfillmentRow {
 pub(crate) async fn load(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
-    sales_channel_id: Option<SalesChannelId>,
+    channel_id: Option<SalesChannelId>,
     order_id: OrderId,
 ) -> Result<Option<OrderDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, OrderHeaderRow>(
@@ -177,11 +177,11 @@ pub(crate) async fn load(
           AND shipping_account.store_id = order_row.store_id \
           AND shipping_account.capability = 'shipping' \
          WHERE order_row.store_id = $1 \
-           AND ($2::uuid IS NULL OR order_row.sales_channel_id = $2) \
+           AND ($2::uuid IS NULL OR order_row.channel_id = $2) \
            AND order_row.id = $3",
     )
     .bind(store_id.as_uuid())
-    .bind(sales_channel_id.map(SalesChannelId::as_uuid))
+    .bind(channel_id.map(SalesChannelId::as_uuid))
     .bind(order_id.as_uuid())
     .fetch_optional(&mut **transaction)
     .await
@@ -206,7 +206,7 @@ pub(crate) async fn load(
         "SELECT id, status::text, amount_minor, \
                 payment_provider_reference_id AS provider_reference_id, \
                 failure_code, created_at, updated_at \
-         FROM commerce.refunds WHERE store_id = $1 AND order_id = $2 \
+         FROM commerce.order_refunds WHERE store_id = $1 AND order_id = $2 \
          ORDER BY created_at, id",
     )
     .bind(store_id.as_uuid())
@@ -217,7 +217,7 @@ pub(crate) async fn load(
     let fulfillments = sqlx::query_as::<_, FulfillmentRow>(
         "SELECT id, shipping_provider_account_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
-         FROM commerce.fulfillments WHERE store_id = $1 AND order_id = $2 \
+         FROM commerce.order_fulfillments WHERE store_id = $1 AND order_id = $2 \
          ORDER BY created_at, id",
     )
     .bind(store_id.as_uuid())
@@ -277,7 +277,7 @@ pub(crate) async fn load(
 pub(crate) async fn load_many(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
-    sales_channel_id: Option<SalesChannelId>,
+    channel_id: Option<SalesChannelId>,
     order_ids: &[Uuid],
 ) -> Result<HashMap<Uuid, OrderDetail>, ApplicationError> {
     if order_ids.is_empty() {
@@ -311,11 +311,11 @@ pub(crate) async fn load_many(
           AND shipping_account.store_id = order_row.store_id \
           AND shipping_account.capability = 'shipping' \
          WHERE order_row.store_id = $1 \
-           AND ($2::uuid IS NULL OR order_row.sales_channel_id = $2) \
+           AND ($2::uuid IS NULL OR order_row.channel_id = $2) \
            AND order_row.id = ANY($3::uuid[])",
     )
     .bind(store_id.as_uuid())
-    .bind(sales_channel_id.map(SalesChannelId::as_uuid))
+    .bind(channel_id.map(SalesChannelId::as_uuid))
     .bind(order_ids)
     .fetch_all(&mut **transaction)
     .await
@@ -340,7 +340,7 @@ pub(crate) async fn load_many(
         "SELECT order_id, id, status::text, amount_minor, \
                 payment_provider_reference_id AS provider_reference_id, \
                 failure_code, created_at, updated_at \
-         FROM commerce.refunds WHERE store_id = $1 AND order_id = ANY($2::uuid[]) \
+         FROM commerce.order_refunds WHERE store_id = $1 AND order_id = ANY($2::uuid[]) \
          ORDER BY order_id, created_at, id",
     )
     .bind(store_id.as_uuid())
@@ -351,7 +351,7 @@ pub(crate) async fn load_many(
     let fulfillments = sqlx::query_as::<_, BatchFulfillmentRow>(
         "SELECT order_id, id, shipping_provider_account_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
-         FROM commerce.fulfillments WHERE store_id = $1 AND order_id = ANY($2::uuid[]) \
+         FROM commerce.order_fulfillments WHERE store_id = $1 AND order_id = ANY($2::uuid[]) \
          ORDER BY order_id, created_at, id",
     )
     .bind(store_id.as_uuid())
@@ -571,6 +571,7 @@ fn payment_attempt_item(
     let status = match row.payment_status.as_str() {
         "paid" | "partially_refunded" | "refunded" => PaymentAttemptStatus::Captured,
         "failed" => PaymentAttemptStatus::Failed,
+        "expired" => PaymentAttemptStatus::Expired,
         _ => PaymentAttemptStatus::Pending,
     };
     Ok(Some(OrderPaymentAttemptItem {

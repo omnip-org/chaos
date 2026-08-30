@@ -1027,7 +1027,7 @@ impl PostgresMediaAssetRepository {
         let changed = sqlx::query(
             "UPDATE commerce.media_assets \
              SET status='ready', public_url=$3, ready_at=$4, updated_at=$4 \
-             WHERE store_id=$1 AND id=$2 AND status='pending_upload'",
+             WHERE store_id=$1 AND id=$2 AND status='pending'",
         )
         .bind(mutation.store_id.as_uuid())
         .bind(mutation.media_asset_id.as_uuid())
@@ -1800,7 +1800,7 @@ async fn insert_asset(
         "INSERT INTO commerce.media_assets \
          (id, store_id, object_key, file_name, media_type, media_kind, byte_size, \
           sha256_digest, status, created_at, updated_at) \
-         VALUES ($1,$2,$3,$4,$5,$6::commerce.media_kind,$7,$8::bytea,'pending_upload',$9,$9)",
+         VALUES ($1,$2,$3,$4,$5,$6::commerce.media_kind,$7,$8::bytea,'pending',$9,$9)",
     )
     .bind(record.id.as_uuid())
     .bind(record.store_id.as_uuid())

@@ -53,6 +53,7 @@ test("money and domain helpers are available from the public SDK", async () => {
   assert.equal(sdk.toMajorUnits(1234, "JPY"), 1234);
   assert.equal(sdk.toMinorUnits(12.345, "BHD"), 12345);
   assert.equal(sdk.getOrderConfirmationState("confirmed", "paid"), "confirmed");
+  assert.equal(sdk.getOrderConfirmationState("cancelled", "expired"), "expired");
 });
 
 test("browser commerce bridge owns API paths, response envelopes, and mutation analytics", async () => {

@@ -6,7 +6,6 @@ CREATE TYPE commerce.sales_channel_status AS ENUM ('active', 'archived');
 
 CREATE TABLE commerce.stores (
     id          UUID                     NOT NULL PRIMARY KEY,
-    code        extensions.citext        NOT NULL UNIQUE,
     name        TEXT                     NOT NULL,
     region      CHAR(2)                  NOT NULL DEFAULT 'US',
     currency    CHAR(3)                  NOT NULL DEFAULT 'USD',
@@ -15,7 +14,6 @@ CREATE TABLE commerce.stores (
     created_at  TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT stores_code_format_check           CHECK (code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'),
     CONSTRAINT stores_name_length_check           CHECK (length(trim(name)) BETWEEN 1 AND 120),
     CONSTRAINT stores_region_format_check         CHECK (region ~ '^[A-Z]{2}$'),
     CONSTRAINT stores_currency_format_check       CHECK (currency ~ '^[A-Z]{3}$'),
@@ -49,41 +47,37 @@ CREATE TABLE commerce.store_memberships (
     CONSTRAINT store_memberships_user_id_fkey       FOREIGN KEY (user_id) REFERENCES identity.users (id) ON DELETE CASCADE
 );
 
-CREATE TABLE commerce.store_sales_channels (
+CREATE TABLE commerce.channels (
     id                UUID                           NOT NULL PRIMARY KEY,
     store_id          UUID                           NOT NULL,
-    code              extensions.citext              NOT NULL,
     name              TEXT                           NOT NULL,
-    storefront_origin TEXT                           NOT NULL,
+    origin            TEXT                           NOT NULL,
     status            commerce.sales_channel_status  NOT NULL DEFAULT 'active',
-    is_default        BOOLEAN                        NOT NULL DEFAULT false,
     created_at        TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at        TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT store_sales_channels_store_id_code_key     UNIQUE (store_id, code),
-    CONSTRAINT store_sales_channels_store_id_id_key       UNIQUE (store_id, id),
-    CONSTRAINT store_sales_channels_storefront_origin_key UNIQUE (storefront_origin),
-    CONSTRAINT store_sales_channels_store_id_fkey         FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT store_sales_channels_code_format_check     CHECK (code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'),
-    CONSTRAINT store_sales_channels_name_length_check     CHECK (length(trim(name)) BETWEEN 1 AND 120),
-    CONSTRAINT store_sales_channels_storefront_origin_length_check CHECK (length(trim(storefront_origin)) BETWEEN 10 AND 2048),
-    CONSTRAINT store_sales_channels_storefront_origin_scheme_check CHECK (storefront_origin ~ '^https?://')
+    CONSTRAINT channels_store_id_id_key        UNIQUE (store_id, id),
+    CONSTRAINT channels_origin_key             UNIQUE (origin),
+    CONSTRAINT channels_store_id_fkey          FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT channels_name_length_check      CHECK (length(trim(name)) BETWEEN 1 AND 120),
+    CONSTRAINT channels_origin_length_check    CHECK (length(trim(origin)) BETWEEN 10 AND 2048),
+    CONSTRAINT channels_origin_scheme_check    CHECK (origin ~ '^https?://')
 );
 
-CREATE TABLE commerce.store_publishable_keys (
-    id               UUID       NOT NULL PRIMARY KEY,
-    store_id         UUID       NOT NULL,
-    sales_channel_id UUID,
-    public_key       TEXT       NOT NULL UNIQUE,
-    name             TEXT       NOT NULL,
+CREATE TABLE commerce.channel_publishable_keys (
+    id               UUID          NOT NULL PRIMARY KEY,
+    store_id         UUID          NOT NULL,
+    channel_id       UUID          NOT NULL,
+    public_key       TEXT          NOT NULL UNIQUE,
+    name             TEXT          NOT NULL,
     revoked_at       TIMESTAMPTZ,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMPTZ   NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT store_publishable_keys_store_id_fkey               FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT store_publishable_keys_store_id_sales_channel_fkey FOREIGN KEY (store_id, sales_channel_id) REFERENCES commerce.store_sales_channels (store_id, id),
-    CONSTRAINT store_publishable_keys_public_key_format           CHECK (public_key ~ '^pk_[1-9A-HJ-NP-Za-km-z]{24}$'),
-    CONSTRAINT store_publishable_keys_name_length                 CHECK (length(trim(name)) BETWEEN 1 AND 80)
+    CONSTRAINT channel_publishable_keys_store_id_fkey         FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT channel_publishable_keys_store_id_channel_fkey FOREIGN KEY (store_id, channel_id) REFERENCES commerce.channels (store_id, id),
+    CONSTRAINT channel_publishable_keys_public_key_format     CHECK (public_key ~ '^pk_[1-9A-HJ-NP-Za-km-z]{24}$'),
+    CONSTRAINT channel_publishable_keys_name_length           CHECK (length(trim(name)) BETWEEN 1 AND 80)
 );
 
 CREATE TABLE commerce.store_shipping_countries (
@@ -101,17 +95,16 @@ CREATE TABLE commerce.store_shipping_countries (
 CREATE INDEX stores_status_idx ON commerce.stores (status);
 CREATE INDEX shoppers_store_seen_idx ON commerce.shoppers (store_id, last_seen_at DESC, id DESC);
 CREATE INDEX store_memberships_user_idx ON commerce.store_memberships (user_id, store_id);
-CREATE INDEX store_sales_channels_store_status_idx ON commerce.store_sales_channels (store_id, status);
-CREATE INDEX store_publishable_keys_store_created_idx ON commerce.store_publishable_keys (store_id, created_at DESC, id DESC);
-CREATE INDEX store_publishable_keys_sales_channel_idx ON commerce.store_publishable_keys (store_id, sales_channel_id, id) WHERE sales_channel_id IS NOT NULL;
+CREATE INDEX channels_store_status_idx ON commerce.channels (store_id, status);
+CREATE INDEX channel_publishable_keys_store_created_idx ON commerce.channel_publishable_keys (store_id, created_at DESC, id DESC);
+CREATE INDEX channel_publishable_keys_channel_idx ON commerce.channel_publishable_keys (store_id, channel_id, id);
 CREATE INDEX store_shipping_countries_enabled_idx ON commerce.store_shipping_countries (store_id) WHERE enabled;
-CREATE UNIQUE INDEX store_sales_channels_one_default_per_store_idx ON commerce.store_sales_channels (store_id) WHERE is_default;
 
 CREATE FUNCTION commerce.authenticate_publishable_key (presented_public_key TEXT)
 RETURNS TABLE (
     publishable_key_id UUID,
     store_id           UUID,
-    sales_channel_id   UUID
+    channel_id         UUID
 )
 LANGUAGE SQL
 STABLE
@@ -121,24 +114,15 @@ AS $$
     SELECT
         publishable_key.id        AS publishable_key_id,
         publishable_key.store_id,
-        sales_channel.id          AS sales_channel_id
+        channel.id               AS channel_id
     FROM
-        commerce.store_publishable_keys AS publishable_key
+        commerce.channel_publishable_keys AS publishable_key
         INNER JOIN commerce.stores AS store
             ON store.id = publishable_key.store_id
-        LEFT JOIN commerce.store_sales_channels AS sales_channel
-            ON sales_channel.store_id = publishable_key.store_id
-            AND sales_channel.status = 'active'
-            AND sales_channel.id = COALESCE(
-                publishable_key.sales_channel_id,
-                (
-                    SELECT default_channel.id
-                    FROM commerce.store_sales_channels AS default_channel
-                    WHERE default_channel.store_id = publishable_key.store_id
-                      AND default_channel.is_default
-                    LIMIT 1
-                )
-            )
+        INNER JOIN commerce.channels AS channel
+            ON channel.store_id = publishable_key.store_id
+            AND channel.id = publishable_key.channel_id
+            AND channel.status = 'active'
     WHERE
         publishable_key.public_key = presented_public_key
         AND publishable_key.revoked_at IS NULL
@@ -149,8 +133,8 @@ ALTER TABLE commerce.stores ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.shoppers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.shoppers FORCE ROW LEVEL SECURITY;
 ALTER TABLE commerce.store_memberships ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.store_sales_channels ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.store_publishable_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.channels ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.channel_publishable_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.store_shipping_countries ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.stores
@@ -180,11 +164,11 @@ CREATE POLICY store_membership_directory ON commerce.store_memberships
     FOR SELECT
     USING (user_id = nullif(current_setting('app.user_id', true), '')::uuid);
 
-CREATE POLICY store_isolation ON commerce.store_sales_channels
+CREATE POLICY store_isolation ON commerce.channels
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-CREATE POLICY store_isolation ON commerce.store_publishable_keys
+CREATE POLICY store_isolation ON commerce.channel_publishable_keys
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
@@ -199,8 +183,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE
     ON commerce.stores,
        commerce.shoppers,
        commerce.store_memberships,
-       commerce.store_sales_channels,
-       commerce.store_publishable_keys,
+       commerce.channels,
+       commerce.channel_publishable_keys,
        commerce.store_shipping_countries
     TO chaos_runtime;
 

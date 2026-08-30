@@ -56,14 +56,14 @@ pub enum MediaAssetStatus {
 impl MediaAssetStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::PendingUpload => "pending_upload",
+            Self::PendingUpload => "pending",
             Self::Ready => "ready",
             Self::Archived => "archived",
         }
     }
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "pending_upload" => Some(Self::PendingUpload),
+            "pending" => Some(Self::PendingUpload),
             "ready" => Some(Self::Ready),
             "archived" => Some(Self::Archived),
             _ => None,

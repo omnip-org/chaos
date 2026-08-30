@@ -11,7 +11,7 @@ use crate::store::StoreActor;
 use super::MachineActor;
 
 /// The caller of an admin-facing use case: either a human Store member
-/// (JWT access token) or a Store-scoped Publishable Key (MCP / machine client).
+/// (MCP OAuth access token) or a Store-scoped Publishable Key (machine client).
 ///
 /// Kept as a closed enum rather than a trait so it stays object-safe at
 /// `dyn` boundaries without
@@ -78,7 +78,7 @@ pub struct ShopperActor {
 
 impl MachineActor {
     pub fn require_sales_channel(&self) -> Result<(), ApplicationError> {
-        self.sales_channel_id
+        self.channel_id
             .map(|_| ())
             .ok_or(ApplicationError::Forbidden)
     }

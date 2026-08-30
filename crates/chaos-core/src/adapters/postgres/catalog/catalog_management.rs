@@ -223,17 +223,17 @@ impl PostgresCatalogManagementTransaction {
 
     pub(crate) async fn active_channel_exists(
         &mut self,
-        sales_channel_id: SalesChannelId,
+        channel_id: SalesChannelId,
     ) -> Result<bool, ApplicationError> {
         sqlx::query_scalar(
             "SELECT EXISTS (\
-                SELECT 1 FROM commerce.store_sales_channels \
+                SELECT 1 FROM commerce.channels \
                 WHERE store_id = $1 AND id = $2 \
                   AND status = 'active'\
              )",
         )
         .bind(self.store_id.as_uuid())
-        .bind(sales_channel_id.as_uuid())
+        .bind(channel_id.as_uuid())
         .fetch_one(&mut *self.transaction)
         .await
         .map_err(database_error)
@@ -241,16 +241,16 @@ impl PostgresCatalogManagementTransaction {
 
     pub(crate) async fn publish(
         &mut self,
-        sales_channel_id: SalesChannelId,
+        channel_id: SalesChannelId,
     ) -> Result<(), ApplicationError> {
         let inserted = sqlx::query(
             "INSERT INTO commerce.product_publications \
-             (store_id, product_id, sales_channel_id) \
+             (store_id, product_id, channel_id) \
              VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
         )
         .bind(self.store_id.as_uuid())
         .bind(self.product_id.as_uuid())
-        .bind(sales_channel_id.as_uuid())
+        .bind(channel_id.as_uuid())
         .execute(&mut *self.transaction)
         .await
         .map_err(database_error)?;
@@ -271,16 +271,16 @@ impl PostgresCatalogManagementTransaction {
 
     pub(crate) async fn unpublish(
         &mut self,
-        sales_channel_id: SalesChannelId,
+        channel_id: SalesChannelId,
     ) -> Result<(), ApplicationError> {
         let deleted = sqlx::query(
             "DELETE FROM commerce.product_publications \
              WHERE store_id = $1 \
-               AND product_id = $2 AND sales_channel_id = $3",
+               AND product_id = $2 AND channel_id = $3",
         )
         .bind(self.store_id.as_uuid())
         .bind(self.product_id.as_uuid())
-        .bind(sales_channel_id.as_uuid())
+        .bind(channel_id.as_uuid())
         .execute(&mut *self.transaction)
         .await
         .map_err(database_error)?;
@@ -449,13 +449,12 @@ mod tests {
             .execute(&owner_pool)
             .await
             .unwrap();
-        for (id, code) in [(store_id, "manage"), (other_store_id, "manage-other")] {
+        for id in [store_id, other_store_id] {
             sqlx::query(
-                "INSERT INTO commerce.stores (id, code, name) \
-                 VALUES ($1, $2, 'Managed Store')",
+                "INSERT INTO commerce.stores (id, name) \
+                 VALUES ($1, 'Managed Store')",
             )
             .bind(id.as_uuid())
-            .bind(format!("{code}-{suffix}"))
             .execute(&owner_pool)
             .await
             .unwrap();
@@ -469,18 +468,18 @@ mod tests {
         .execute(&owner_pool)
         .await
         .unwrap();
-        for (id, owning_store, code) in [
-            (channel_id, store_id, "web"),
-            (other_channel_id, other_store_id, "other-web"),
+        for (id, owning_store, name) in [
+            (channel_id, store_id, "Web"),
+            (other_channel_id, other_store_id, "Other Web"),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.store_sales_channels \
-                 (id, store_id, code, name, storefront_origin) \
-                 VALUES ($1, $2, $3, 'Web', $4)",
+                "INSERT INTO commerce.channels \
+                 (id, store_id, name, origin) \
+                 VALUES ($1, $2, $3, $4)",
             )
             .bind(id.as_uuid())
             .bind(owning_store.as_uuid())
-            .bind(code)
+            .bind(name)
             .bind(format!(
                 "https://{}.catalog.example.test/",
                 id.as_uuid().simple()
@@ -541,7 +540,7 @@ mod tests {
                     actor: AdminActor::Store(owner),
                     store_id,
                     product_id,
-                    sales_channel_id: channel_id,
+                    channel_id,
                     expected_revision: None,
                 })
                 .await,
@@ -640,12 +639,12 @@ mod tests {
                     actor: AdminActor::Store(owner),
                     store_id,
                     product_id,
-                    sales_channel_id: other_channel_id,
+                    channel_id: other_channel_id,
                     expected_revision: None,
                 })
                 .await,
             Err(ApplicationError::NotFound {
-                resource: "sales_channel",
+                resource: "channel",
                 ..
             })
         ));
@@ -654,7 +653,7 @@ mod tests {
                 actor: AdminActor::Store(owner),
                 store_id,
                 product_id,
-                sales_channel_id: channel_id,
+                channel_id,
                 expected_revision: None,
             })
             .await
@@ -697,7 +696,7 @@ mod tests {
                 actor: AdminActor::Store(owner),
                 store_id,
                 product_id,
-                sales_channel_id: channel_id,
+                channel_id,
                 expected_revision: None,
             })
             .await
@@ -759,11 +758,10 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.stores (id, code, name) \
-             VALUES ($1, $2, 'Managed Store')",
+            "INSERT INTO commerce.stores (id, name) \
+             VALUES ($1, 'Managed Store')",
         )
         .bind(store_id.as_uuid())
-        .bind(format!("manage-machine-{suffix}"))
         .execute(&owner_pool)
         .await
         .unwrap();
@@ -795,7 +793,7 @@ mod tests {
         let publishable_machine = AdminActor::Machine(crate::contracts::MachineActor {
             publishable_key_id: chaos_domain::store::PublishableKeyId::new(),
             store_id,
-            sales_channel_id: None,
+            channel_id: None,
         });
 
         assert!(matches!(

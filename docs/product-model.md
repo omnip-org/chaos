@@ -79,12 +79,18 @@ deduplicate the Pixel and CAPI copies using the shared event ID.
 
 A Payment records authorization and capture against one Order. A Refund references captured value and may never cause total successful or pending refunds to exceed the captured amount.
 
-## Access Key
+## MCP OAuth
 
-A private credential owned by one User and used by trusted clients such as MCP, CLI, or server-side integrations. The plaintext is shown once; only verification material is stored. An Access Key never grants Store access by itself. Every Store-scoped request selects a Store and checks the User's current membership and role. Its plaintext format is `ak_<43 Base58 characters>`.
-
-The authenticated operation chain is `Access Key -> User -> Store Membership -> Store`. Request telemetry retains the Access Key, User, Store, and request identities so AI-driven mutations are attributable.
+MCP clients authenticate with an OAuth 2.1 authorization-code flow using PKCE.
+The short-lived access token identifies the User for the MCP resource; every
+Store-scoped operation still selects a Store and checks the User's current
+membership and role.
 
 ## Publishable Key
 
-A Store-scoped public credential for storefront or Sales Channel clients. It is bound to one active Sales Channel when created and can enter the complete Store API. Operation-specific Shopper credentials, tracking capabilities, resource ownership, and business rules protect non-public data and mutations. It cannot authenticate trusted administration clients or invoke Store administration. Its plaintext format is `pk_<24 Base58 characters>`.
+A Store-scoped public credential for storefront or Channel clients. It is bound
+to one active Channel when created and can enter the complete Store API.
+Operation-specific Shopper credentials, tracking capabilities, resource
+ownership, and business rules protect non-public data and mutations. It cannot
+authenticate administration clients or invoke Store administration. Its
+plaintext format is `pk_<24 Base58 characters>`.

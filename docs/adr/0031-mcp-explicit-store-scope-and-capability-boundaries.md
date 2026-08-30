@@ -5,7 +5,8 @@
 
 ## Context
 
-Chaos MCP operates multiple Stores with one User-owned Access Key. A custom
+Chaos MCP operates multiple Stores with one User identity authenticated through
+OAuth. A custom
 `X-Chaos-Store-Id` request header is transport-specific and is easy for an AI
 client to omit or accidentally encode as a tool argument. The tool schema is
 the interface the model actually sees, so Store scope must be represented in
@@ -19,7 +20,7 @@ leasing are Integration concerns, not ordinary Store mutations.
 ## Decision
 
 Every Store-scoped MCP tool declares a required `store_id: string` input and
-passes that value through the common Access Key and membership authorization
+passes that value through the common OAuth and membership authorization
 path. The server does not read Store scope from an HTTP header. The only
 User-scoped exceptions are `create_store` and `list_stores`, because they run
 before a target Store exists or intentionally enumerate the User's Stores.

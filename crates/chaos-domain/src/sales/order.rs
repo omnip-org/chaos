@@ -84,6 +84,7 @@ pub enum OrderPaymentStatus {
     Pending,
     Paid,
     Failed,
+    Expired,
     PartiallyRefunded,
     Refunded,
 }
@@ -94,6 +95,7 @@ impl OrderPaymentStatus {
             Self::Pending => "pending",
             Self::Paid => "paid",
             Self::Failed => "failed",
+            Self::Expired => "expired",
             Self::PartiallyRefunded => "partially_refunded",
             Self::Refunded => "refunded",
         }
@@ -104,6 +106,7 @@ impl OrderPaymentStatus {
             "pending" => Some(Self::Pending),
             "paid" => Some(Self::Paid),
             "failed" => Some(Self::Failed),
+            "expired" => Some(Self::Expired),
             "partially_refunded" => Some(Self::PartiallyRefunded),
             "refunded" => Some(Self::Refunded),
             _ => None,

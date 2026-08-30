@@ -150,7 +150,7 @@ export interface Cart {
   id: UUID;
   price_list_id: UUID;
   currency: CurrencyCode;
-  status: "active" | "locked" | "abandoned";
+  status: "active" | "locked" | "completed" | "abandoned";
   version: number;
   lines: CartLine[];
   subtotal_amount_minor: number;
@@ -206,7 +206,7 @@ export interface OrderLine {
 
 /** The current payment state exposed for an Order. */
 export interface OrderPaymentAttempt {
-  status: "pending" | "authorized" | "captured" | "failed" | "cancelled";
+  status: "pending" | "authorized" | "captured" | "failed" | "expired" | "cancelled";
   amount_minor: number;
   provider_reference_id?: string;
   failure_code?: string;
@@ -256,7 +256,7 @@ export interface Order {
   currency: CurrencyCode;
   status: "pending" | "confirmed" | "cancelled";
   payment_status:
-    "pending" | "paid" | "failed" | "partially_refunded" | "refunded";
+    "pending" | "paid" | "failed" | "expired" | "partially_refunded" | "refunded";
   shipping_status:
     "pending" | "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
   payment_provider?: "stripe";
@@ -291,7 +291,7 @@ export interface TrackedOrder {
   currency: CurrencyCode;
   status: "pending" | "confirmed" | "cancelled";
   payment_status:
-    "pending" | "paid" | "failed" | "partially_refunded" | "refunded";
+    "pending" | "paid" | "failed" | "expired" | "partially_refunded" | "refunded";
   shipping_status:
     "pending" | "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
   shipping_locality?: string;
@@ -364,6 +364,7 @@ export type OrderConfirmationState =
   | "pending"
   | "confirmed"
   | "failed"
+  | "expired"
   | "cancelled";
 
 // Envelopes — every Store API response wraps its payload in { data } (and

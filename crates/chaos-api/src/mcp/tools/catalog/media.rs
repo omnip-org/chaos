@@ -106,7 +106,7 @@ pub struct ListMediaAssetsParams {
     /// Opaque cursor from a previous page's next_cursor.
     #[serde(default)]
     pub cursor: Option<String>,
-    /// Optional lifecycle status: pending_upload, ready, or archived.
+    /// Optional lifecycle status: pending, ready, or archived.
     #[serde(default)]
     pub status: Option<String>,
     /// Optional media kind: image or video.
@@ -1681,7 +1681,7 @@ impl ChaosMcp {
         store_id: &str,
     ) -> Result<chaos_core::contracts::AdminActor, CallToolResult> {
         crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             parts,
             store_id,
@@ -1905,7 +1905,7 @@ fn refreshed_media_result(
 ) -> CallToolResult {
     CallToolResult::structured(json!({
         "media_asset_id": media_asset_id.as_uuid(),
-        "status": "pending_upload",
+        "status": "pending",
         "upload": upload_request_json(upload),
         "next_step": next_step,
     }))

@@ -300,10 +300,10 @@ impl PostgresCatalogReadRepository {
     ) -> Result<Vec<CatalogProductPublication>, ApplicationError> {
         let mut transaction = self.begin(actor).await?;
         let rows = sqlx::query_scalar::<_, Uuid>(
-            "SELECT sales_channel_id \
+            "SELECT channel_id \
              FROM commerce.product_publications \
              WHERE store_id = $1 AND product_id = $2 \
-             ORDER BY sales_channel_id ASC",
+             ORDER BY channel_id ASC",
         )
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
@@ -313,8 +313,8 @@ impl PostgresCatalogReadRepository {
         transaction.commit().await.map_err(database_error)?;
         Ok(rows
             .into_iter()
-            .map(|sales_channel_id| CatalogProductPublication {
-                sales_channel_id: SalesChannelId::from_uuid(sales_channel_id),
+            .map(|channel_id| CatalogProductPublication {
+                channel_id: SalesChannelId::from_uuid(channel_id),
             })
             .collect())
     }
@@ -444,13 +444,12 @@ mod tests {
             .execute(&owner_pool)
             .await
             .unwrap();
-        for (id, code) in [(store_id, "catalog-read"), (other_store_id, "other-read")] {
+        for id in [store_id, other_store_id] {
             sqlx::query(
-                "INSERT INTO commerce.stores (id, code, name) \
-                 VALUES ($1, $2, 'Catalog Read Store')",
+                "INSERT INTO commerce.stores (id, name) \
+                 VALUES ($1, 'Catalog Read Store')",
             )
             .bind(id.as_uuid())
-            .bind(format!("{code}-{suffix}"))
             .execute(&owner_pool)
             .await
             .unwrap();

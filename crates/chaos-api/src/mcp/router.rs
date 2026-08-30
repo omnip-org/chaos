@@ -62,13 +62,7 @@ async fn authenticate_http_request(
             "authentication is required",
         );
     };
-    match super::auth::authenticate_token(
-        &state.access_key_authentication,
-        &state.mcp_oauth,
-        &token,
-    )
-    .await
-    {
+    match super::auth::authenticate_token(&state.mcp_oauth, &token).await {
         Ok(principal) => {
             request.extensions_mut().insert(principal);
             next.run(request).await

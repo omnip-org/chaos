@@ -234,11 +234,10 @@ mod tests {
         }
         sqlx::query(
             "INSERT INTO commerce.stores \
-            (id, code, name, region, currency, status) \
-             VALUES ($1, $2, 'Catalog Store', 'US', 'USD', 'active')",
+            (id, name, region, currency, status) \
+             VALUES ($1, 'Catalog Store', 'US', 'USD', 'active')",
         )
         .bind(store_id.as_uuid())
-        .bind(format!("catalog-{suffix}"))
         .execute(&owner_pool)
         .await
         .unwrap();

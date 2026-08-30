@@ -8,12 +8,12 @@
 Chaos can host multiple Stores and multiple Sales Channels in one deployment.
 Order confirmation emails contain a customer-facing order-tracking link, but a
 deployment-level storefront URL cannot identify which Store or Sales Channel
-should receive that link. An Order already records its `sales_channel_id`, and
+should receive that link. An Order already records its `channel_id`, and
 Storefront Publishable Keys resolve an active Store and Sales Channel.
 
 ## Decision
 
-Each Sales Channel stores one normalized `storefront_origin`, such as
+Each Sales Channel stores one normalized `origin`, such as
 `https://shop.example.com/`. The origin must be an absolute HTTP(S) origin with
 no credentials, path, query, or fragment and is unique across Sales Channels.
 

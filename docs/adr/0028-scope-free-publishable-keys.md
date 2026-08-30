@@ -13,8 +13,8 @@ authentication, transport, and testing states.
 
 Sensitive operations already require stronger possession or authority: Shopper
 credentials bind carts, Orders, and Payment Attempts; guest tracking capabilities bind
-Order tracking; verified Provider webhooks confirm payments; and User Access Keys
-plus current Store membership authorize MCP administration.
+Order tracking; verified Provider webhooks confirm payments; and OAuth plus
+current Store membership authorize MCP administration.
 
 ## Decision
 

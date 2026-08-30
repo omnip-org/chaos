@@ -233,16 +233,12 @@ mod tests {
             .execute(&owner_pool)
             .await
             .unwrap();
-        for (id, code) in [
-            (store_id, format!("pricing-{suffix}")),
-            (other_store_id, format!("pricing-other-{suffix}")),
-        ] {
+        for id in [store_id, other_store_id] {
             sqlx::query(
-                "INSERT INTO commerce.stores (id, code, name, status) \
-                 VALUES ($1, $2, 'Pricing Store', 'active')",
+                "INSERT INTO commerce.stores (id, name, status) \
+                 VALUES ($1, 'Pricing Store', 'active')",
             )
             .bind(id.as_uuid())
-            .bind(code)
             .execute(&owner_pool)
             .await
             .unwrap();

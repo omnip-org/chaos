@@ -56,7 +56,7 @@ pub struct CollectionPublicationInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
     pub collection_id: CollectionId,
-    pub sales_channel_id: SalesChannelId,
+    pub channel_id: SalesChannelId,
     pub now: OffsetDateTime,
 }
 
@@ -220,7 +220,7 @@ impl CollectionAdministration {
                 CollectionPublicationRecord {
                     store_id: input.store_id,
                     collection_id: input.collection_id,
-                    sales_channel_id: input.sales_channel_id,
+                    channel_id: input.channel_id,
                     published,
                     changed_at: input.now,
                 },

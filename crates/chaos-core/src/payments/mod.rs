@@ -485,7 +485,7 @@ impl PaymentWorkers {
 }
 
 fn require_checkout_key(actor: &MachineActor) -> Result<(), ApplicationError> {
-    if actor.sales_channel_id.is_some() {
+    if actor.channel_id.is_some() {
         Ok(())
     } else {
         Err(ApplicationError::Forbidden)

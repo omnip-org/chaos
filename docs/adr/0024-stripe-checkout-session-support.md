@@ -73,7 +73,7 @@ are:
   `no_payment_required` → `payment.captured`;
 - `checkout.session.async_payment_succeeded` → `payment.captured`;
 - `checkout.session.async_payment_failed` → `payment.failed`;
-- `checkout.session.expired` → `payment.cancelled`.
+- `checkout.session.expired` → `payment.expired`.
 - `charge.refunded` → a full Refund reconciliation for the PaymentIntent;
 - `refund.created`, `refund.updated`, and `refund.failed` → the corresponding
   local refund status transition.

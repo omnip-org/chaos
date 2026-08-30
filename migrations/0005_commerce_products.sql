@@ -2,7 +2,7 @@ CREATE TYPE commerce.product_status AS ENUM ('draft', 'active', 'archived');
 CREATE TYPE commerce.variant_status AS ENUM ('active', 'archived');
 CREATE TYPE commerce.collection_status AS ENUM ('draft', 'active', 'archived');
 CREATE TYPE commerce.media_kind AS ENUM ('image', 'video');
-CREATE TYPE commerce.media_asset_status AS ENUM ('pending_upload', 'ready', 'archived');
+CREATE TYPE commerce.media_asset_status AS ENUM ('pending', 'ready', 'archived');
 CREATE TYPE commerce.review_status AS ENUM ('pending', 'approved', 'rejected');
 CREATE TYPE commerce.review_origin AS ENUM ('storefront', 'manual');
 CREATE TYPE commerce.price_list_status AS ENUM ('draft', 'active', 'archived');
@@ -57,10 +57,10 @@ CREATE TABLE commerce.product_option_values (
     created_at  TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT product_option_values_store_id_product_id_option_id_id_key          UNIQUE (store_id, product_id, option_id, id),
-    CONSTRAINT product_option_values_store_id_product_id_option_id_fkey            FOREIGN KEY (store_id, product_id, option_id) REFERENCES commerce.product_options (store_id, product_id, id) ON DELETE CASCADE,
-    CONSTRAINT product_option_values_value_length_check                            CHECK (length(trim(value::text)) BETWEEN 1 AND 120),
-    CONSTRAINT product_option_values_position_check                                CHECK (position BETWEEN 0 AND 999)
+    CONSTRAINT product_option_values_store_id_product_id_option_id_id_key  UNIQUE (store_id, product_id, option_id, id),
+    CONSTRAINT product_option_values_store_id_product_id_option_id_fkey    FOREIGN KEY (store_id, product_id, option_id) REFERENCES commerce.product_options (store_id, product_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_option_values_value_length_check                    CHECK (length(trim(value::text)) BETWEEN 1 AND 120),
+    CONSTRAINT product_option_values_position_check                        CHECK (position BETWEEN 0 AND 999)
 );
 
 CREATE TABLE commerce.product_variants (
@@ -106,13 +106,13 @@ CREATE TABLE commerce.variant_selected_options (
 CREATE TABLE commerce.product_publications (
     store_id          UUID        NOT NULL,
     product_id        UUID        NOT NULL,
-    sales_channel_id  UUID        NOT NULL,
+    channel_id        UUID        NOT NULL,
     published_at      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT product_publications_pkey                        PRIMARY KEY (store_id, product_id, sales_channel_id),
+    CONSTRAINT product_publications_pkey                        PRIMARY KEY (store_id, product_id, channel_id),
     CONSTRAINT product_publications_store_id_product_fkey       FOREIGN KEY (store_id, product_id) REFERENCES commerce.products (store_id, id) ON DELETE CASCADE,
-    CONSTRAINT product_publications_store_id_sales_channel_fkey FOREIGN KEY (store_id, sales_channel_id) REFERENCES commerce.store_sales_channels (store_id, id) ON DELETE CASCADE
+    CONSTRAINT product_publications_store_id_channel_fkey       FOREIGN KEY (store_id, channel_id) REFERENCES commerce.channels (store_id, id) ON DELETE CASCADE
 );
 
 CREATE TABLE commerce.collections (
@@ -153,12 +153,12 @@ CREATE TABLE commerce.collection_products (
 CREATE TABLE commerce.collection_publications (
     store_id          UUID        NOT NULL,
     collection_id     UUID        NOT NULL,
-    sales_channel_id  UUID        NOT NULL,
+    channel_id        UUID        NOT NULL,
     published_at      TIMESTAMPTZ NOT NULL,
 
-    CONSTRAINT collection_publications_pkey                        PRIMARY KEY (store_id, collection_id, sales_channel_id),
+    CONSTRAINT collection_publications_pkey                        PRIMARY KEY (store_id, collection_id, channel_id),
     CONSTRAINT collection_publications_store_id_collection_fkey    FOREIGN KEY (store_id, collection_id) REFERENCES commerce.collections (store_id, id) ON DELETE CASCADE,
-    CONSTRAINT collection_publications_store_id_sales_channel_fkey FOREIGN KEY (store_id, sales_channel_id) REFERENCES commerce.store_sales_channels (store_id, id) ON DELETE CASCADE
+    CONSTRAINT collection_publications_store_id_channel_fkey       FOREIGN KEY (store_id, channel_id) REFERENCES commerce.channels (store_id, id) ON DELETE CASCADE
 );
 
 CREATE TABLE commerce.media_assets (
@@ -170,7 +170,7 @@ CREATE TABLE commerce.media_assets (
     media_kind         commerce.media_kind         NOT NULL,
     byte_size          BIGINT                      NOT NULL,
     sha256_digest      BYTEA                       NOT NULL,
-    status             commerce.media_asset_status NOT NULL DEFAULT 'pending_upload',
+    status             commerce.media_asset_status NOT NULL DEFAULT 'pending',
     public_url         TEXT,
     ready_at           TIMESTAMPTZ,
     archived_at        TIMESTAMPTZ,
@@ -184,7 +184,7 @@ CREATE TABLE commerce.media_assets (
     CONSTRAINT media_assets_type_kind_check        CHECK ((media_kind = 'image' AND media_type IN ('image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif') AND byte_size BETWEEN 1 AND 26214400) OR (media_kind = 'video' AND media_type IN ('video/mp4', 'video/webm') AND byte_size BETWEEN 1 AND 524288000)),
     CONSTRAINT media_assets_sha256_check           CHECK (octet_length(sha256_digest) = 32),
     CONSTRAINT media_assets_public_url_check       CHECK (public_url IS NULL OR (length(public_url) BETWEEN 12 AND 2048 AND public_url ~ '^https://')),
-    CONSTRAINT media_assets_lifecycle_check        CHECK ((status = 'pending_upload' AND public_url IS NULL AND ready_at IS NULL AND archived_at IS NULL) OR (status = 'ready' AND public_url IS NOT NULL AND ready_at IS NOT NULL AND archived_at IS NULL) OR (status = 'archived' AND archived_at IS NOT NULL AND ((public_url IS NULL AND ready_at IS NULL) OR (public_url IS NOT NULL AND ready_at IS NOT NULL))))
+    CONSTRAINT media_assets_lifecycle_check        CHECK ((status = 'pending' AND public_url IS NULL AND ready_at IS NULL AND archived_at IS NULL) OR (status = 'ready' AND public_url IS NOT NULL AND ready_at IS NOT NULL AND archived_at IS NULL) OR (status = 'archived' AND archived_at IS NOT NULL AND ((public_url IS NULL AND ready_at IS NULL) OR (public_url IS NOT NULL AND ready_at IS NOT NULL))))
 );
 
 CREATE TABLE commerce.product_media_assets (
@@ -390,11 +390,11 @@ CREATE UNIQUE INDEX product_option_values_active_value_idx ON commerce.product_o
 CREATE UNIQUE INDEX product_option_values_active_position_idx ON commerce.product_option_values (store_id, product_id, option_id, position) WHERE archived_at IS NULL;
 CREATE INDEX variant_selected_options_product_idx ON commerce.variant_selected_options (store_id, product_id, variant_id, option_id);
 CREATE INDEX variant_selected_options_option_value_idx ON commerce.variant_selected_options (store_id, product_id, option_id, option_value_id, variant_id);
-CREATE INDEX product_publications_channel_product_idx ON commerce.product_publications (store_id, sales_channel_id, product_id);
+CREATE INDEX product_publications_channel_product_idx ON commerce.product_publications (store_id, channel_id, product_id);
 CREATE INDEX collections_store_status_created_idx ON commerce.collections (store_id, status, created_at DESC, id DESC);
 CREATE INDEX collection_products_product_idx ON commerce.collection_products (store_id, product_id, collection_id);
 CREATE INDEX collection_products_collection_position_idx ON commerce.collection_products (store_id, collection_id, position, product_id);
-CREATE INDEX collection_publications_channel_collection_idx ON commerce.collection_publications (store_id, sales_channel_id, collection_id);
+CREATE INDEX collection_publications_channel_collection_idx ON commerce.collection_publications (store_id, channel_id, collection_id);
 CREATE INDEX media_assets_store_status_idx ON commerce.media_assets (store_id, status, created_at, id);
 CREATE UNIQUE INDEX product_media_assets_position_active_idx ON commerce.product_media_assets (store_id, product_id, position) WHERE archived_at IS NULL;
 CREATE INDEX product_media_assets_product_idx ON commerce.product_media_assets (store_id, product_id, position, media_asset_id);
@@ -467,6 +467,166 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION commerce.capture_product_change ()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    INSERT INTO integration.event_outbox (
+        id,
+        store_id,
+        aggregate_type,
+        aggregate_id,
+        internal_event_type,
+        payload
+    ) VALUES (
+        uuidv7(),
+        NEW.store_id,
+        'product',
+        NEW.id,
+        'search.product.changed',
+        jsonb_build_object('product_id', NEW.id)
+    )
+    ON CONFLICT (store_id, aggregate_id, internal_event_type)
+    WHERE internal_event_type = 'search.product.changed'
+      AND processed_at IS NULL
+      AND failed_at IS NULL
+    DO NOTHING;
+    RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION commerce.capture_variant_change ()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+    owning_store_id    UUID;
+    changed_product_id UUID;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        owning_store_id    := OLD.store_id;
+        changed_product_id := OLD.product_id;
+    ELSE
+        owning_store_id    := NEW.store_id;
+        changed_product_id := NEW.product_id;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM commerce.stores WHERE id = owning_store_id) THEN
+        INSERT INTO integration.event_outbox (
+            id,
+            store_id,
+            aggregate_type,
+            aggregate_id,
+            internal_event_type,
+            payload
+        ) VALUES (
+            uuidv7(),
+            owning_store_id,
+            'product',
+            changed_product_id,
+            'search.product.changed',
+            jsonb_build_object('product_id', changed_product_id)
+        )
+        ON CONFLICT (store_id, aggregate_id, internal_event_type)
+        WHERE internal_event_type = 'search.product.changed'
+          AND processed_at IS NULL
+          AND failed_at IS NULL
+        DO NOTHING;
+    END IF;
+
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION commerce.rebuild_store_products (requested_store_id UUID)
+RETURNS BIGINT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+    rebuilt    BIGINT := 0;
+BEGIN
+    DELETE FROM commerce.product_documents WHERE store_id = requested_store_id;
+
+    INSERT INTO commerce.product_documents (store_id, product_id, document, indexed_at)
+    SELECT
+        product.store_id,
+        product.id,
+        to_tsvector('simple', concat_ws(
+            ' ',
+            product.handle::text,
+            product.title,
+            product.description,
+            string_agg(concat_ws(' ', variant.title, variant.sku::text), ' ')
+        )),
+        CURRENT_TIMESTAMP
+    FROM commerce.products AS product
+    LEFT JOIN commerce.product_variants AS variant
+        ON variant.store_id = product.store_id
+       AND variant.product_id = product.id
+       AND variant.status = 'active'
+    WHERE product.store_id = requested_store_id
+    GROUP BY product.store_id, product.id;
+
+    GET DIAGNOSTICS rebuilt = ROW_COUNT;
+
+    RETURN rebuilt;
+END;
+$$;
+
+CREATE FUNCTION commerce.process_events (
+    batch_size    INTEGER,
+    max_attempts  INTEGER,
+    finished_at   TIMESTAMPTZ
+)
+RETURNS BIGINT
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+    event     RECORD;
+    processed BIGINT := 0;
+BEGIN
+    FOR event IN
+        SELECT
+            outbox.id,
+            outbox.store_id,
+            outbox.aggregate_id,
+            outbox.attempts
+        FROM integration.claim_event_outbox(
+            'chaos_search_events', batch_size
+        ) AS outbox
+    LOOP
+        BEGIN
+            PERFORM commerce.refresh_product_document(
+                event.store_id, event.aggregate_id
+            );
+            PERFORM integration.finish_event_outbox(
+                event.id, event.attempts, true, '', max_attempts, finished_at
+            );
+            processed := processed + 1;
+        EXCEPTION WHEN OTHERS THEN
+            PERFORM integration.finish_event_outbox(
+                event.id, event.attempts, false, SQLERRM, max_attempts, finished_at
+            );
+        END;
+    END LOOP;
+
+    RETURN processed;
 END;
 $$;
 
@@ -573,6 +733,10 @@ CREATE POLICY store_isolation ON commerce.price_list_items
 
 REVOKE ALL ON FUNCTION commerce.check_price_list_currency () FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.refresh_product_document (UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.capture_product_change () FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.capture_variant_change () FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.rebuild_store_products (UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.process_events (INTEGER, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON commerce.products,

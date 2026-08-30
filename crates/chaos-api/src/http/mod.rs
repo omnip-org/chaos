@@ -1,5 +1,4 @@
 mod health;
-mod identity;
 mod oauth;
 mod shared;
 mod storefront;
@@ -28,11 +27,7 @@ use chaos_core::{
         PostgresStripeRepository,
     },
     adapters::security::{
-        identity::{
-            JwtAccessTokenCodec, OidcIdentityVerifier, OidcProviderConfiguration,
-            PostgresAccessKeyRepository, PostgresIdentityRepository,
-            SecureAccessKeyMaterialGenerator,
-        },
+        identity::{OidcIdentityVerifier, OidcProviderConfiguration, PostgresIdentityRepository},
         provider_secrets::DynamicSecretResolver,
         shopper::HmacShopperCredentialCodec,
     },
@@ -55,7 +50,7 @@ use chaos_core::{
     },
     email::{EmailBrandAdministration, EmailProviderAccountAdministration, EmailWebhooks},
     fulfillment::FulfillmentManagement,
-    identity::{AccessKeyAuthentication, AccessKeyManagement, IdentityService},
+    identity::IdentityService,
     inventory::InventoryManagement,
     payments::{PaymentService, StripeAccountAdministration},
     pricing::{CreatePriceList, PricingManagement},
@@ -65,7 +60,6 @@ use chaos_core::{
         PublishableKeyManagement, StoreAdministration, StoreMembershipManagement, StoreQueries,
     },
 };
-use secrecy::ExposeSecret as _;
 use std::sync::Arc;
 use tower_http::{
     catch_panic::CatchPanicLayer, request_id::PropagateRequestIdLayer, trace::TraceLayer,
@@ -73,8 +67,8 @@ use tower_http::{
 
 pub use shared::error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use shared::extract::{
-    AnalyticsShopper, ApiJson, ApiPath, ApiQuery, AuthenticatedUser, CartMachine, CartShopper,
-    OrderLookupMachine, PaymentShopper, StoreContext, StorefrontMachine,
+    AnalyticsShopper, ApiJson, ApiPath, ApiQuery, CartMachine, CartShopper, OrderLookupMachine,
+    PaymentShopper, StorefrontMachine,
 };
 pub use shared::response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
@@ -84,8 +78,6 @@ pub struct ApiState {
     pub lifecycle: Lifecycle,
     pub public_base_url: String,
     pub identity_auth: Arc<dyn IdentityAuthentication>,
-    pub access_key_management: Arc<AccessKeyManagement>,
-    pub access_key_authentication: Arc<AccessKeyAuthentication>,
     pub mcp_oauth: Arc<crate::mcp::McpOAuthService>,
     pub mcp_allowed_hosts: Vec<String>,
     pub mcp_allowed_origins: Vec<String>,
@@ -165,21 +157,7 @@ impl ApiState {
             Arc::new(PostgresIdentityRepository::new(
                 infrastructure.identity_pool(),
             )),
-            Arc::new(JwtAccessTokenCodec::new(
-                settings.auth_jwt_issuer.clone(),
-                settings.auth_jwt_audience.clone(),
-                settings.auth_jwt_secret.expose_secret().as_bytes(),
-                settings.auth_jwt_lifetime_seconds,
-            )?),
         );
-        let access_key_repository = Arc::new(PostgresAccessKeyRepository::new(
-            infrastructure.identity_pool(),
-        ));
-        let access_key_management = AccessKeyManagement::new(
-            access_key_repository.clone(),
-            Arc::new(SecureAccessKeyMaterialGenerator),
-        );
-        let access_key_authentication = AccessKeyAuthentication::new(access_key_repository);
         let mcp_oauth = crate::mcp::McpOAuthService::new(
             infrastructure.identity_pool(),
             &settings.public_base_url,
@@ -345,8 +323,6 @@ impl ApiState {
             lifecycle,
             public_base_url: settings.public_base_url.to_string(),
             identity_auth: Arc::new(identity_auth),
-            access_key_management: Arc::new(access_key_management),
-            access_key_authentication: Arc::new(access_key_authentication),
             mcp_oauth: Arc::new(mcp_oauth),
             mcp_allowed_hosts: settings.mcp_allowed_hosts.clone(),
             mcp_allowed_origins: settings.mcp_allowed_origins.clone(),
@@ -391,7 +367,6 @@ pub fn router(state: ApiState) -> Router {
     let mcp_router = crate::mcp::router(state.clone());
     Router::new()
         .nest("/health", health::routes())
-        .nest("/identity/v1", identity::v1::routes())
         .merge(oauth::routes())
         .nest("/storefront/v1", storefront::v1::routes())
         .nest("/integrations/v1", storefront::integration_routes())
@@ -443,12 +418,6 @@ mod tests {
             database_runtime_role: "chaos_runtime".into(),
             database_identity_role: "chaos_identity".into(),
             redis_url: "redis://localhost".into(),
-            auth_jwt_issuer: "https://identity.chaos.test".into(),
-            auth_jwt_audience: "chaos-api".into(),
-            auth_jwt_secret: secrecy::SecretString::from(
-                "test-jwt-secret-that-is-at-least-32-bytes",
-            ),
-            auth_jwt_lifetime_seconds: 3600,
             mcp_allowed_hosts: vec!["localhost".into()],
             mcp_allowed_origins: vec!["http://localhost:8080".into()],
             public_base_url: "http://localhost:8080/".parse().unwrap(),
@@ -550,7 +519,6 @@ mod tests {
         let state = test_state();
         let requests = [
             (Method::GET, "/health/live"),
-            (Method::POST, "/identity/v1/auth/external"),
             (Method::GET, "/storefront/v1/products"),
             (Method::GET, "/storefront/v1/collections"),
             (Method::POST, "/storefront/v1/analytics/events"),
@@ -597,9 +565,17 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_json_uses_the_error_envelope() {
-        let response = router(test_state())
+        async fn accepts_json(
+            ApiJson(_body): ApiJson<Value>,
+        ) -> Result<ApiResponse<Value>, ApiError> {
+            Ok(ApiResponse::ok(Value::Null))
+        }
+
+        let response = Router::new()
+            .route("/test", axum::routing::post(accepts_json))
+            .with_state(test_state())
             .oneshot(
-                Request::post("/identity/v1/auth/external")
+                Request::post("/test")
                     .header("content-type", "application/json")
                     .body(Body::from("{"))
                     .unwrap(),
@@ -611,6 +587,23 @@ mod tests {
         let body = to_bytes(response.into_body(), 2048).await.unwrap();
         let json = serde_json::from_slice::<Value>(&body).unwrap();
         assert_eq!(json["error"]["code"], "invalid_json");
+    }
+
+    #[tokio::test]
+    async fn direct_identity_http_api_is_not_routed() {
+        let response = router(test_state())
+            .oneshot(
+                Request::post("/identity/v1/auth/external")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"provider":"google","identity_token":"provider-token"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

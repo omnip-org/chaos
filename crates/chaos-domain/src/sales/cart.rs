@@ -64,6 +64,7 @@ sales_id!(ShopperId);
 pub enum CartStatus {
     Active,
     Locked,
+    Completed,
     Abandoned,
 }
 
@@ -72,6 +73,7 @@ impl CartStatus {
         match self {
             Self::Active => "active",
             Self::Locked => "locked",
+            Self::Completed => "completed",
             Self::Abandoned => "abandoned",
         }
     }
@@ -80,6 +82,7 @@ impl CartStatus {
         match value {
             "active" => Some(Self::Active),
             "locked" => Some(Self::Locked),
+            "completed" => Some(Self::Completed),
             "abandoned" => Some(Self::Abandoned),
             _ => None,
         }
@@ -177,7 +180,7 @@ impl CartLine {
 pub struct Cart {
     id: CartId,
     store_id: StoreId,
-    sales_channel_id: SalesChannelId,
+    channel_id: SalesChannelId,
     price_list_id: PriceListId,
     currency: CurrencyCode,
     status: CartStatus,
@@ -187,14 +190,14 @@ pub struct Cart {
 impl Cart {
     pub fn create(
         store_id: StoreId,
-        sales_channel_id: SalesChannelId,
+        channel_id: SalesChannelId,
         price_list_id: PriceListId,
         currency: CurrencyCode,
     ) -> Self {
         Self {
             id: CartId::new(),
             store_id,
-            sales_channel_id,
+            channel_id,
             price_list_id,
             currency,
             status: CartStatus::Active,
@@ -206,7 +209,7 @@ impl Cart {
     pub fn rehydrate(
         id: CartId,
         store_id: StoreId,
-        sales_channel_id: SalesChannelId,
+        channel_id: SalesChannelId,
         price_list_id: PriceListId,
         currency: CurrencyCode,
         status: CartStatus,
@@ -215,7 +218,7 @@ impl Cart {
         let mut cart = Self {
             id,
             store_id,
-            sales_channel_id,
+            channel_id,
             price_list_id,
             currency,
             status,
@@ -253,8 +256,8 @@ impl Cart {
         self.store_id
     }
 
-    pub const fn sales_channel_id(&self) -> SalesChannelId {
-        self.sales_channel_id
+    pub const fn channel_id(&self) -> SalesChannelId {
+        self.channel_id
     }
 
     pub const fn price_list_id(&self) -> PriceListId {

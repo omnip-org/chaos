@@ -190,7 +190,7 @@ pub struct PaymentCommand {
 pub struct OrderMetadataContext {
     pub store_id: Uuid,
     pub shopper_id: Uuid,
-    pub sales_channel_id: Uuid,
+    pub channel_id: Uuid,
     pub order_number: String,
 }
 

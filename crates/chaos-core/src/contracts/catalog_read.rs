@@ -65,7 +65,7 @@ pub struct CatalogProductDetail {
 }
 
 pub struct CatalogProductPublication {
-    pub sales_channel_id: chaos_domain::store::SalesChannelId,
+    pub channel_id: chaos_domain::store::SalesChannelId,
 }
 
 pub struct CatalogProductWorkspace {

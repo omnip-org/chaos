@@ -126,11 +126,11 @@ async fn ensure_cart_owner(
 ) -> Result<(), ApplicationError> {
     let owned: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM commerce.carts \
-         WHERE store_id = $1 AND sales_channel_id = $2 \
+         WHERE store_id = $1 AND channel_id = $2 \
            AND id = $3 AND shopper_id = $4)",
     )
     .bind(actor.store_id.as_uuid())
-    .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
+    .bind(actor.channel_id.map(SalesChannelId::as_uuid))
     .bind(cart_id.as_uuid())
     .bind(shopper_id.as_uuid())
     .fetch_one(&mut **transaction)
@@ -151,11 +151,11 @@ async fn ensure_order_owner(
 ) -> Result<(), ApplicationError> {
     let owned: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM commerce.orders \
-         WHERE store_id = $1 AND sales_channel_id = $2 \
+         WHERE store_id = $1 AND channel_id = $2 \
            AND id = $3 AND shopper_id = $4)",
     )
     .bind(actor.store_id.as_uuid())
-    .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
+    .bind(actor.channel_id.map(SalesChannelId::as_uuid))
     .bind(order_id.as_uuid())
     .bind(shopper_id.as_uuid())
     .fetch_one(&mut **transaction)
@@ -169,7 +169,7 @@ async fn ensure_order_owner(
 }
 
 fn require_channel(actor: &MachineActor) -> Result<SalesChannelId, ApplicationError> {
-    actor.sales_channel_id.ok_or(ApplicationError::Forbidden)
+    actor.channel_id.ok_or(ApplicationError::Forbidden)
 }
 
 fn parse_currency(value: &str) -> Result<CurrencyCode, ApplicationError> {
@@ -210,7 +210,7 @@ fn checkout_request_fingerprint(
     fingerprint_part(
         &mut hasher,
         actor
-            .sales_channel_id
+            .channel_id
             .map(SalesChannelId::as_uuid)
             .unwrap_or(Uuid::nil())
             .as_bytes(),
@@ -233,7 +233,7 @@ fn checkout_insert_error(error: sqlx::Error) -> ApplicationError {
         _ => None,
     };
     match constraint {
-        Some("orders_store_id_sales_channel_id_shopper_id_idempotency_key_key") => {
+        Some("orders_store_id_channel_id_shopper_id_idempotency_key_key") => {
             idempotency_key_reused()
         }
         Some("orders_one_order_per_cart_key") => checkout_cart_already_started(),

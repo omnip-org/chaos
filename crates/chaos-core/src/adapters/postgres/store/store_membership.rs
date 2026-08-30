@@ -274,11 +274,10 @@ mod tests {
                 .unwrap();
         }
         sqlx::query(
-            "INSERT INTO commerce.stores (id, code, name, status) \
-             VALUES ($1, $2, 'Membership Store', 'active')",
+            "INSERT INTO commerce.stores (id, name, status) \
+             VALUES ($1, 'Membership Store', 'active')",
         )
         .bind(store_id.as_uuid())
-        .bind(format!("members-{suffix}"))
         .execute(&owner_pool)
         .await
         .unwrap();

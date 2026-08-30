@@ -183,7 +183,7 @@ pub trait StorefrontCatalogRepository: Send + Sync {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorefrontContext {
     pub store_id: StoreId,
-    pub sales_channel_id: SalesChannelId,
+    pub channel_id: SalesChannelId,
 }
 
 #[cfg(test)]

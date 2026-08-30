@@ -1,42 +1,17 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use axum::{
     body::{Body, to_bytes},
     http::{Method, Request},
 };
 use chaos_core::runtime::{config::Settings, state::AppState};
-use chaos_core::{
-    ApplicationError,
-    contracts::{AccessTokenGrant, IdentityAuthentication},
-};
-use chaos_domain::identity::{IdentityProvider, UserId};
-use secrecy::SecretString;
 use serde_json::Value;
 
 use chaos_core::runtime::lifecycle::Lifecycle;
 
 use crate::http::ApiState;
 
-struct FixedSession(UserId);
-
-#[async_trait::async_trait]
-impl IdentityAuthentication for FixedSession {
-    fn authenticate(&self, _token: &SecretString) -> Result<UserId, ApplicationError> {
-        Ok(self.0)
-    }
-
-    async fn sign_in(
-        &self,
-        _provider: IdentityProvider,
-        _identity_token: &SecretString,
-    ) -> Result<AccessTokenGrant, ApplicationError> {
-        Err(ApplicationError::Unexpected(anyhow::anyhow!(
-            "unused authentication operation"
-        )))
-    }
-}
-
-pub(crate) fn test_state(database_url: &str, user_id: UserId) -> ApiState {
+pub(crate) fn test_state(database_url: &str) -> ApiState {
     let settings = Settings {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         database_url: database_url.into(),
@@ -47,10 +22,6 @@ pub(crate) fn test_state(database_url: &str, user_id: UserId) -> ApiState {
         database_runtime_role: "chaos_runtime".into(),
         database_identity_role: "chaos_identity".into(),
         redis_url: "redis://127.0.0.1:1".into(),
-        auth_jwt_issuer: "https://identity.chaos.test".into(),
-        auth_jwt_audience: "chaos-api".into(),
-        auth_jwt_secret: SecretString::from("test-jwt-secret-that-is-at-least-32-bytes"),
-        auth_jwt_lifetime_seconds: 3600,
         mcp_allowed_hosts: vec!["localhost".into()],
         mcp_allowed_origins: vec!["http://localhost:8080".into()],
         public_base_url: "http://localhost:8080/".parse().unwrap(),
@@ -71,14 +42,12 @@ pub(crate) fn test_state(database_url: &str, user_id: UserId) -> ApiState {
         log_filter: "off".into(),
         log_json: false,
     };
-    let mut state = ApiState::new(
+    ApiState::new(
         AppState::new(&settings).unwrap(),
         Lifecycle::new(),
         &settings,
     )
-    .unwrap();
-    state.identity_auth = Arc::new(FixedSession(user_id));
-    state
+    .unwrap()
 }
 
 pub(crate) async fn response_json(response: axum::response::Response) -> Value {

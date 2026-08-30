@@ -310,7 +310,7 @@ pub struct ProductPublicationParams {
     /// The product's UUID.
     pub product_id: String,
     /// The sales channel's UUID to publish to or unpublish from.
-    pub sales_channel_id: String,
+    pub channel_id: String,
     /// Reject the write if the Product changed since this revision.
     #[serde(default)]
     pub expected_revision: Option<i64>,
@@ -332,7 +332,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<ListProductsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -426,7 +426,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<GetProductParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -505,7 +505,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<GetProductParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -529,7 +529,7 @@ impl ChaosMcp {
             Ok(workspace) => Ok(text_result(json!({
                 "product": product_detail_json(workspace.product),
                 "media": workspace.media.into_iter().map(workspace_media_json).collect::<Vec<_>>(),
-                "published_sales_channel_ids": workspace.publications.into_iter().map(|publication| publication.sales_channel_id.as_uuid()).collect::<Vec<_>>(),
+                "published_channel_ids": workspace.publications.into_iter().map(|publication| publication.channel_id.as_uuid()).collect::<Vec<_>>(),
             }))),
             Err(error) => Ok(tool_error(error)),
         }
@@ -551,7 +551,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<CreateProductParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -640,7 +640,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<PreviewProductConfigurationParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -694,7 +694,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<ProductConfigurationParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -770,7 +770,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<UpdateProductParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -823,7 +823,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<UpdateProductVariantParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -883,7 +883,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<PatchProductParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -935,7 +935,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<PatchProductVariantParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -1040,7 +1040,7 @@ impl ChaosMcp {
         activate: bool,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -1085,7 +1085,7 @@ impl ChaosMcp {
         publish: bool,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -1103,8 +1103,7 @@ impl ChaosMcp {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let sales_channel_id = match parse_uuid_field(&params.sales_channel_id, "sales_channel_id")
-        {
+        let channel_id = match parse_uuid_field(&params.channel_id, "channel_id") {
             Ok(id) => SalesChannelId::from_uuid(id),
             Err(result) => return Ok(result),
         };
@@ -1112,7 +1111,7 @@ impl ChaosMcp {
             actor,
             store_id,
             product_id,
-            sales_channel_id,
+            channel_id,
             expected_revision: params.expected_revision,
         };
         let result = if publish {

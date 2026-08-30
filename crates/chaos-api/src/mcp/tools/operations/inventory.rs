@@ -51,7 +51,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<ListVariantInventoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -113,7 +113,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<AdjustInventoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,

@@ -4,7 +4,7 @@
 
 PostgreSQL schemas represent data ownership, not individual users, Stores, Rust modules, or deployment units. Current business schemas are `identity`, `commerce`, and `integration`. Utility extension objects live in `extensions`; `public` contains no business tables.
 
-`commerce` owns Stores, Store memberships, Sales Channels, public Storefront Keys, catalogs, pricing, inventory, sales, payment state, refunds, and fulfillment state. `integration` owns the shared Provider account registry, canonical verified webhook inbox, and generic event routing. There is no merchant-account schema or aggregate. A User-owned trusted-client credential is stored in `identity.access_keys`; a Storefront public key is stored as plaintext in `commerce.store_publishable_keys` because it is intentionally safe to embed in frontend code.
+`commerce` owns Stores, Store memberships, Channels, public Storefront Keys, catalogs, pricing, inventory, sales, payment state, refunds, and fulfillment state. `integration` owns the shared Provider account registry, canonical verified webhook inbox, and generic event routing. There is no merchant-account schema or aggregate. A Channel publishable key is stored as plaintext in `commerce.channel_publishable_keys` because it is intentionally safe to embed in frontend code, and every key is bound to one Channel.
 
 Do not create a schema merely because a Rust module exists. A new schema requires a distinct data owner, security boundary, or operational lifecycle. `commerce` contains Store-owned catalog, inventory, sales, payment state, fulfillment state, and rebuildable Storefront read models. `integration` contains external Provider account configuration, capability/provider identity, the webhook inbox, outbox/event routing, and analytical processing state.
 
@@ -18,8 +18,8 @@ security-definer routines rather than receiving direct access to extension-owned
 tables. Scheduled scans derived from current business state are not queues and
 may use short, recoverable row leases.
 
-The Worker runs bounded retention for expired OAuth requests, codes, bearer
-tokens, refresh tokens, Order tracking capabilities, and terminal integration
+The Worker runs bounded retention for expired OAuth requests, authorization
+codes, bearer tokens, refresh tokens, Order tracking capabilities, and terminal integration
 outbox/webhook rows. Pending media uploads are not deleted by database
 maintenance because their corresponding object-store object must be removed
 through the storage provider first.
@@ -59,7 +59,7 @@ only for explicit Store-local rules.
 
 ## Identity
 
-`identity.users` owns the internal user identifier and current verified email. `identity.credentials` maps a provider subject to a User. Provider subjects are opaque, case-sensitive strings and form a composite key with provider.
+`identity.users` owns the internal user identifier and current verified email. `identity.credentials` maps a provider subject to a User. OAuth clients, authorization codes, access tokens, and refresh tokens are also owned by `identity`. Provider subjects are opaque, case-sensitive strings and form a composite key with provider.
 
 Identity access uses the non-owner `chaos_identity` role. It can access only the `identity` schema. It must not gain access to Store-owned tables merely to simplify a query.
 
@@ -82,15 +82,12 @@ Migration files use zero-padded sequence numbers and concise English names. Befo
 The bootstrap uses `0001_platform.sql`, `0002_identity.sql`,
 `0003_commerce.sql`, `0004_integration.sql`,
 `0005_commerce_products.sql`, `0006_commerce_orders.sql`, and
-`0007_integration_analytics.sql`, followed by `0008_identity_oauth.sql`,
-`0009_checkout_lifecycle.sql`, `0010_checkout_attempts.sql`,
-`0011_order_centric_checkout.sql`, and `0012_publishable_key_channel_binding.sql`.
-The last migration binds legacy Publishable Keys to each Store's active default
-Sales Channel, makes the binding required, and contracts authentication to the
-bound active channel. Migration `0011` contracts the temporary
-Checkout Attempt implementation into an Order-centric checkout: Cart status is
-`active | locked | abandoned`, and the private payment-form handoff lives in
-`commerce.carts.payment_client_action`.
+`0007_integration_analytics.sql`. OAuth state is created directly in
+`0002_identity.sql`; Channel-bound publishable keys and checkout lifecycle
+state are created directly in their owning Commerce migrations. There are no
+follow-up checkout-attempt or key-binding migrations.
+Cart status is `active | locked | completed | abandoned`, and the private
+payment-form handoff lives in `commerce.carts.payment_client_action`.
 Catalog media attachments and manual-review provenance are part of
 `0005_commerce_products.sql`. Release-hardening constraints, capability checks,
 and cleanup routines are defined in the migration that creates each dependent
@@ -102,17 +99,6 @@ types, tables, indexes, routines, triggers, row-level security, policies, and
 grants.
 
 Production startup never runs migrations. Releases use a separate migration job and expand/migrate/contract changes when adjacent application versions may overlap. Destructive operations, table rewrites, large backfills, and blocking indexes require an explicit rollout plan.
-
-Migration `0011_order_centric_checkout.sql` is the contract step for the
-temporary Checkout Attempt schema: it drops the old table and status types.
-The deployment must drain the old API before applying it, then start the
-Order-centric API; the old and new checkout implementations must not serve
-traffic against the same database concurrently.
-
-Migration `0012_publishable_key_channel_binding.sql` is a fix-forward data
-contract. It must complete the legacy NULL backfill before setting
-`commerce.store_publishable_keys.sales_channel_id` to `NOT NULL`; a key without
-an active default channel intentionally blocks the migration for operator repair.
 
 ## SQL style
 
@@ -169,12 +155,17 @@ the build pipeline provides the migrated database or offline query metadata.
 
 ### Checkout lifecycle invariants
 
-- The checkout transaction locks one active Cart, creates one pending Order,
-  snapshots its lines, and reserves inventory. It never calls a Provider and
-  never creates a successor Cart.
+- The checkout transaction locks one active Cart, resolves current catalog and
+  pricing data, validates the current line subtotal, reserves inventory, creates one
+  pending Order, and snapshots its lines. It never calls a Provider and never
+  creates a successor Cart.
 - `(store_id, cart_id)` is unique on Orders. A locked Cart is immutable and
   cannot start a second checkout; the storefront obtains or creates the next
   active Cart after the transaction.
+- `commerce.cart_lines` stores only the selected Variant and quantity. Product
+  titles, SKU, inventory behavior, and current price are resolved from the
+  active catalog for cart reads and checkout; immutable history belongs to
+  `commerce.order_lines`.
 - `commerce.carts.payment_client_action` is private provider-form recovery
   state. It is allowed only on a locked Cart, is returned only by checkout
   handoff endpoints, and is cleared by every terminal payment or Order path.
@@ -182,6 +173,7 @@ the build pipeline provides the migrated database or offline query metadata.
   return it without a Provider call. If it does not exist, a retry may create
   the Provider form with the Order-derived idempotency key; the retry must
   provide a return URL because it is intentionally not persisted.
-- Provider callbacks, not a local timer, decide payment expiry. Callback
-  handling is responsible for clearing the action and releasing inventory on
-  failure or cancellation.
+- Provider callbacks, not a local timer, decide payment expiry. Failure and
+  expiry callbacks cancel the pending Order, release inventory, clear the
+  action, and mark the source Cart `abandoned`. A successful payment consumes
+  the reservation, confirms the Order, and marks the source Cart `completed`.

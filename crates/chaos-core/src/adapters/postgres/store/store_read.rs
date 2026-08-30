@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use chaos_domain::{
     CurrencyCode, RegionCode,
     identity::UserId,
-    store::{StoreCode, StoreId, StoreRole, StoreStatus},
+    store::{StoreId, StoreRole, StoreStatus},
 };
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -58,8 +58,8 @@ impl StoreReadRepository for PostgresStoreReadRepository {
     ) -> Result<Vec<StoreListItem>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         set_user_context(&mut transaction, user_id).await?;
-        let rows = sqlx::query_as::<_, (Uuid, String, String, String, String, String, String)>(
-            "SELECT store.id, store.code::text, store.name, store.region::text, \
+        let rows = sqlx::query_as::<_, (Uuid, String, String, String, String, String)>(
+            "SELECT store.id, store.name, store.region::text, \
                     store.currency::text, store.status::text, membership.role::text \
              FROM commerce.store_memberships AS membership \
              INNER JOIN commerce.stores AS store ON store.id = membership.store_id \
@@ -77,10 +77,9 @@ impl StoreReadRepository for PostgresStoreReadRepository {
         transaction.commit().await.map_err(database_error)?;
 
         rows.into_iter()
-            .map(|(id, code, name, region, currency, status, role)| {
+            .map(|(id, name, region, currency, status, role)| {
                 Ok(StoreListItem {
                     id: StoreId::from_uuid(id),
-                    code: StoreCode::parse(code).map_err(corrupt_database_value)?,
                     name,
                     region: RegionCode::parse(region.trim_end()).map_err(corrupt_database_value)?,
                     currency: CurrencyCode::parse(currency.trim_end())
@@ -156,14 +155,13 @@ mod tests {
                 .await
                 .unwrap();
         }
-        for (id, code, name) in [
-            (first_store_id, format!("first-{unique_suffix}"), "First"),
-            (second_store_id, format!("second-{unique_suffix}"), "Second"),
-            (other_store_id, format!("other-{unique_suffix}"), "Other"),
+        for (id, name) in [
+            (first_store_id, "First"),
+            (second_store_id, "Second"),
+            (other_store_id, "Other"),
         ] {
-            sqlx::query("INSERT INTO commerce.stores (id, code, name) VALUES ($1, $2, $3)")
+            sqlx::query("INSERT INTO commerce.stores (id, name) VALUES ($1, $2)")
                 .bind(id.as_uuid())
-                .bind(code)
                 .bind(name)
                 .execute(&owner_pool)
                 .await

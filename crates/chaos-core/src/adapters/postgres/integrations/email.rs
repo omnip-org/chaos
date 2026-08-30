@@ -277,12 +277,12 @@ impl PostgresEmailRepository {
         let row = sqlx::query_as::<_, EmailOrderConfirmationRow>(
             "SELECT order_row.contact_email::text, order_row.order_number, \
                     order_row.total_amount_minor, order_row.currency::text, \
-                    channel.storefront_origin, \
+                    channel.origin, \
                     account.provider, account.credential_secret_reference, account.configuration \
              FROM commerce.orders AS order_row \
-             INNER JOIN commerce.store_sales_channels AS channel \
+             INNER JOIN commerce.channels AS channel \
                ON channel.store_id = order_row.store_id \
-              AND channel.id = order_row.sales_channel_id \
+              AND channel.id = order_row.channel_id \
              INNER JOIN integration.provider_accounts AS account \
                ON account.store_id = order_row.store_id \
               AND account.capability = 'email' \
@@ -303,7 +303,7 @@ impl PostgresEmailRepository {
             order_number,
             total_amount_minor,
             currency,
-            storefront_origin,
+            origin,
             provider,
             credential_secret_reference,
             account_configuration,
@@ -313,7 +313,7 @@ impl PostgresEmailRepository {
             return Ok(None);
         };
         let sender = parse_email_account_configuration(account_configuration)?.sender();
-        let tracking_url = order_tracking_url(&storefront_origin, tracking_token)?;
+        let tracking_url = order_tracking_url(&origin, tracking_token)?;
         let brand = load_email_brand(&mut transaction, StoreId::from_uuid(job.store_id))
             .await?
             .ok_or_else(email_provider_account_not_found_for_brand)

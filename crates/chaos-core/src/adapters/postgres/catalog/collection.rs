@@ -120,7 +120,7 @@ impl PostgresCollectionRepository {
         };
         let products = sqlx::query_as::<_, (Uuid,i32)>("SELECT product_id, position FROM commerce.collection_products WHERE store_id=$1 AND collection_id=$2 ORDER BY position")
             .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_all(&mut *tx).await.map_err(database_error)?;
-        let channels = sqlx::query_scalar::<_,Uuid>("SELECT sales_channel_id FROM commerce.collection_publications WHERE store_id=$1 AND collection_id=$2 ORDER BY sales_channel_id")
+        let channels = sqlx::query_scalar::<_,Uuid>("SELECT channel_id FROM commerce.collection_publications WHERE store_id=$1 AND collection_id=$2 ORDER BY channel_id")
             .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_all(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
         Ok(Some(CollectionDetail {
@@ -138,7 +138,7 @@ impl PostgresCollectionRepository {
                     })
                 })
                 .collect::<Result<_, ApplicationError>>()?,
-            published_sales_channel_ids: channels
+            published_channel_ids: channels
                 .into_iter()
                 .map(SalesChannelId::from_uuid)
                 .collect(),
@@ -256,7 +256,7 @@ impl PostgresCollectionRepository {
         let CollectionPublicationRecord {
             store_id,
             collection_id,
-            sales_channel_id,
+            channel_id,
             published,
             changed_at: now,
         } = record;
@@ -276,17 +276,17 @@ impl PostgresCollectionRepository {
                 message: "the Collection must be active before publication",
             });
         }
-        let channel:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM commerce.store_sales_channels WHERE store_id=$1 AND id=$2 AND status='active')").bind(store_id.as_uuid()).bind(sales_channel_id.as_uuid()).fetch_one(&mut *tx).await.map_err(database_error)?;
+        let channel:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM commerce.channels WHERE store_id=$1 AND id=$2 AND status='active')").bind(store_id.as_uuid()).bind(channel_id.as_uuid()).fetch_one(&mut *tx).await.map_err(database_error)?;
         if published && !channel {
             return Err(ApplicationError::NotFound {
-                resource: "sales_channel",
-                id: sales_channel_id.as_uuid().to_string(),
+                resource: "channel",
+                id: channel_id.as_uuid().to_string(),
             });
         }
         if published {
-            sqlx::query("INSERT INTO commerce.collection_publications (store_id,collection_id,sales_channel_id,published_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(sales_channel_id.as_uuid()).bind(now).execute(&mut *tx).await.map_err(database_error)?;
+            sqlx::query("INSERT INTO commerce.collection_publications (store_id,collection_id,channel_id,published_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(channel_id.as_uuid()).bind(now).execute(&mut *tx).await.map_err(database_error)?;
         } else {
-            sqlx::query("DELETE FROM commerce.collection_publications WHERE store_id=$1 AND collection_id=$2 AND sales_channel_id=$3").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(sales_channel_id.as_uuid()).execute(&mut *tx).await.map_err(database_error)?;
+            sqlx::query("DELETE FROM commerce.collection_publications WHERE store_id=$1 AND collection_id=$2 AND channel_id=$3").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(channel_id.as_uuid()).execute(&mut *tx).await.map_err(database_error)?;
         }
         tx.commit().await.map_err(database_error)?;
         Ok(collection_id)
@@ -298,9 +298,9 @@ impl PostgresCollectionRepository {
         after: Option<CollectionId>,
         limit: u16,
     ) -> Result<Vec<StorefrontCollectionItem>, ApplicationError> {
-        let channel = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
+        let channel = actor.channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut tx = self.begin_storefront(actor).await?;
-        let rows=sqlx::query_as::<_,(Uuid,String,String,String,Option<serde_json::Value>,i64)>("SELECT collection.id,collection.handle::text,collection.title,collection.description,collection.meta,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM commerce.collections AS collection INNER JOIN commerce.collection_publications AS publication ON publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.sales_channel_id=$2 INNER JOIN commerce.stores AS store ON store.id=collection.store_id AND store.status='active' INNER JOIN commerce.store_sales_channels AS channel ON channel.store_id=collection.store_id AND channel.id=$2 AND channel.status='active' LEFT JOIN commerce.collection_products AS member ON member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN commerce.products AS product ON product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN commerce.product_publications AS product_publication ON product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.sales_channel_id=$2 WHERE collection.store_id=$1 AND collection.status='active' AND ($3::uuid IS NULL OR collection.id>$3) GROUP BY collection.id ORDER BY collection.id LIMIT $4")
+        let rows=sqlx::query_as::<_,(Uuid,String,String,String,Option<serde_json::Value>,i64)>("SELECT collection.id,collection.handle::text,collection.title,collection.description,collection.meta,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM commerce.collections AS collection INNER JOIN commerce.collection_publications AS publication ON publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.channel_id=$2 INNER JOIN commerce.stores AS store ON store.id=collection.store_id AND store.status='active' INNER JOIN commerce.channels AS channel ON channel.store_id=collection.store_id AND channel.id=$2 AND channel.status='active' LEFT JOIN commerce.collection_products AS member ON member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN commerce.products AS product ON product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN commerce.product_publications AS product_publication ON product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.channel_id=$2 WHERE collection.store_id=$1 AND collection.status='active' AND ($3::uuid IS NULL OR collection.id>$3) GROUP BY collection.id ORDER BY collection.id LIMIT $4")
             .bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(after.map(CollectionId::as_uuid)).bind(i64::from(limit)).fetch_all(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
         rows.into_iter().map(storefront_item).collect()
@@ -311,9 +311,9 @@ impl PostgresCollectionRepository {
         actor: &MachineActor,
         handle: &str,
     ) -> Result<Option<StorefrontCollectionItem>, ApplicationError> {
-        let channel = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
+        let channel = actor.channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut tx = self.begin_storefront(actor).await?;
-        let row=sqlx::query_as::<_,(Uuid,String,String,String,Option<serde_json::Value>,i64)>("SELECT collection.id,collection.handle::text,collection.title,collection.description,collection.meta,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM commerce.collections AS collection INNER JOIN commerce.collection_publications AS publication ON publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.sales_channel_id=$2 INNER JOIN commerce.stores AS store ON store.id=collection.store_id AND store.status='active' INNER JOIN commerce.store_sales_channels AS channel ON channel.store_id=collection.store_id AND channel.id=$2 AND channel.status='active' LEFT JOIN commerce.collection_products AS member ON member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN commerce.products AS product ON product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN commerce.product_publications AS product_publication ON product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.sales_channel_id=$2 WHERE collection.store_id=$1 AND collection.status='active' AND collection.handle=$3 GROUP BY collection.id")
+        let row=sqlx::query_as::<_,(Uuid,String,String,String,Option<serde_json::Value>,i64)>("SELECT collection.id,collection.handle::text,collection.title,collection.description,collection.meta,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM commerce.collections AS collection INNER JOIN commerce.collection_publications AS publication ON publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.channel_id=$2 INNER JOIN commerce.stores AS store ON store.id=collection.store_id AND store.status='active' INNER JOIN commerce.channels AS channel ON channel.store_id=collection.store_id AND channel.id=$2 AND channel.status='active' LEFT JOIN commerce.collection_products AS member ON member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN commerce.products AS product ON product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN commerce.product_publications AS product_publication ON product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.channel_id=$2 WHERE collection.store_id=$1 AND collection.status='active' AND collection.handle=$3 GROUP BY collection.id")
             .bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(handle).fetch_optional(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
         row.map(storefront_item).transpose()

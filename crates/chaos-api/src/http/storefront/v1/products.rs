@@ -443,18 +443,18 @@ mod tests {
     async fn insert_publishable_key(
         pool: &PgPool,
         store_id: StoreId,
-        sales_channel_id: SalesChannelId,
+        channel_id: SalesChannelId,
     ) -> GeneratedPublishableKey {
         let material = DefaultPublishableKeyGenerator.generate();
         let key_id = PublishableKeyId::new();
         sqlx::query(
-            "INSERT INTO commerce.store_publishable_keys \
-             (id, store_id, sales_channel_id, public_key, name) \
+            "INSERT INTO commerce.channel_publishable_keys \
+             (id, store_id, channel_id, public_key, name) \
              VALUES ($1, $2, $3, $4, 'Storefront HTTP')",
         )
         .bind(key_id.as_uuid())
         .bind(store_id.as_uuid())
-        .bind(sales_channel_id.as_uuid())
+        .bind(channel_id.as_uuid())
         .bind(&material.public_key)
         .execute(pool)
         .await
@@ -489,18 +489,17 @@ mod tests {
             .unwrap();
         sqlx::query(
             "INSERT INTO commerce.stores \
-             (id, code, name, status) \
-             VALUES ($1, $2, 'Storefront HTTP', 'active')",
+             (id, name, status) \
+             VALUES ($1, 'Storefront HTTP', 'active')",
         )
         .bind(store_id.as_uuid())
-        .bind(format!("storefront-{suffix}"))
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.store_sales_channels \
-             (id, store_id, code, name, storefront_origin, is_default) \
-             VALUES ($1, $2, 'web', 'Web', $3, true)",
+            "INSERT INTO commerce.channels \
+             (id, store_id, name, origin) \
+             VALUES ($1, $2, 'Web', $3)",
         )
         .bind(channel_id.as_uuid())
         .bind(store_id.as_uuid())
@@ -531,7 +530,7 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO commerce.product_publications \
-             (store_id, product_id, sales_channel_id) \
+             (store_id, product_id, channel_id) \
              VALUES ($1, $2, $3)",
         )
         .bind(store_id.as_uuid())
@@ -563,7 +562,7 @@ mod tests {
         .await
         .unwrap();
         let material = insert_publishable_key(&owner_pool, store_id, channel_id).await;
-        let state = test_state(&database_url, user_id);
+        let state = test_state(&database_url);
         assert!(
             chaos_core::adapters::postgres::PostgresSearchIndexer::new(
                 state.infrastructure.runtime_pool(),

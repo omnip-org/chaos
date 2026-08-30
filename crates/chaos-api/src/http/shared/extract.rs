@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use axum::{
     Json,
     extract::{FromRequest, FromRequestParts, Path, Query, Request},
@@ -8,12 +6,9 @@ use axum::{
 use chaos_core::{
     ApplicationError,
     contracts::{MachineActor, ShopperActor},
-    store::StoreActor,
 };
-use chaos_domain::{FieldViolation, identity::UserId, store::StoreId};
 use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
-use uuid::Uuid;
 
 use crate::http::{ApiError, ApiState};
 
@@ -68,10 +63,6 @@ where
                 message: "one or more path parameters are invalid",
             })
     }
-}
-
-pub struct AuthenticatedUser {
-    pub user_id: UserId,
 }
 
 pub struct StorefrontMachine(pub MachineActor);
@@ -149,19 +140,6 @@ storefront_shopper_extractor!(CartShopper);
 storefront_shopper_extractor!(PaymentShopper);
 storefront_shopper_extractor!(AnalyticsShopper);
 
-impl FromRequestParts<ApiState> for AuthenticatedUser {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &ApiState,
-    ) -> Result<Self, Self::Rejection> {
-        let token = bearer_token(&parts.headers)?;
-        let user_id = state.identity_auth.authenticate(&token)?;
-        Ok(Self { user_id })
-    }
-}
-
 fn bearer_token(headers: &HeaderMap) -> Result<SecretString, ApiError> {
     let value = headers
         .get(AUTHORIZATION)
@@ -179,41 +157,4 @@ fn shopper_credential(headers: &HeaderMap) -> Result<SecretString, ApiError> {
         .filter(|value| !value.is_empty())
         .ok_or(ApplicationError::Unauthorized)?;
     Ok(SecretString::from(value.to_owned()))
-}
-
-#[derive(Clone, Copy)]
-pub struct StoreContext(pub StoreActor);
-
-impl FromRequestParts<ApiState> for StoreContext {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &ApiState,
-    ) -> Result<Self, Self::Rejection> {
-        let session = AuthenticatedUser::from_request_parts(parts, state).await?;
-        let Path(parameters) = Path::<HashMap<String, String>>::from_request_parts(parts, state)
-            .await
-            .map_err(|_| invalid_store_id())?;
-        let store_id = parameters
-            .get("store_id")
-            .and_then(|value| Uuid::parse_str(value).ok())
-            .map(StoreId::from_uuid)
-            .ok_or_else(invalid_store_id)?;
-        let actor = state
-            .store_queries
-            .authorize(session.user_id, store_id)
-            .await?;
-        Ok(Self(actor))
-    }
-}
-
-fn invalid_store_id() -> ApiError {
-    ApplicationError::Validation {
-        violations: vec![FieldViolation {
-            field: "store_id",
-            reason: "must be a valid UUID".into(),
-        }],
-    }
-    .into()
 }

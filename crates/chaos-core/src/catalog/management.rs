@@ -79,7 +79,7 @@ pub struct ProductPublicationInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
     pub product_id: ProductId,
-    pub sales_channel_id: SalesChannelId,
+    pub channel_id: SalesChannelId,
     pub expected_revision: Option<i64>,
 }
 
@@ -273,16 +273,13 @@ impl CatalogManagement {
         ensure_revision(snapshot.revision, input.expected_revision)?;
         ProductLifecycle::from_snapshot(snapshot.status, snapshot.variant_count)
             .require_publishable()?;
-        if !transaction
-            .active_channel_exists(input.sales_channel_id)
-            .await?
-        {
+        if !transaction.active_channel_exists(input.channel_id).await? {
             return Err(ApplicationError::NotFound {
                 resource: "sales_channel",
-                id: input.sales_channel_id.as_uuid().to_string(),
+                id: input.channel_id.as_uuid().to_string(),
             });
         }
-        transaction.publish(input.sales_channel_id).await?;
+        transaction.publish(input.channel_id).await?;
         let revision = transaction.product_revision().await?;
         transaction.commit().await?;
         Ok(ProductMutationOutput {
@@ -305,7 +302,7 @@ impl CatalogManagement {
             .await?
             .ok_or_else(|| product_not_found(input.product_id))?;
         ensure_revision(snapshot.revision, input.expected_revision)?;
-        transaction.unpublish(input.sales_channel_id).await?;
+        transaction.unpublish(input.channel_id).await?;
         let revision = transaction.product_revision().await?;
         transaction.commit().await?;
         Ok(ProductMutationOutput {

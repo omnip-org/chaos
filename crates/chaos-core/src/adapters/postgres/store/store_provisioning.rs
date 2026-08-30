@@ -41,11 +41,10 @@ impl PostgresStoreProvisioningTransaction {
             .map_err(database_error)?;
         sqlx::query(
             "INSERT INTO commerce.stores \
-             (id, code, name, region, currency, meta, status) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'active')",
+             (id, name, region, currency, meta, status) \
+             VALUES ($1, $2, $3, $4, $5, 'active')",
         )
         .bind(store.id().as_uuid())
-        .bind(store.code().as_str())
         .bind(store.name())
         .bind(store.region().as_str())
         .bind(store.currency().as_str())
@@ -96,22 +95,20 @@ impl PostgresStoreProvisioningTransaction {
         Ok(())
     }
 
-    pub(crate) async fn insert_default_sales_channel(
+    pub(crate) async fn insert_initial_channel(
         &mut self,
         channel: &SalesChannel,
     ) -> Result<(), ApplicationError> {
         sqlx::query(
-            "INSERT INTO commerce.store_sales_channels \
-             (id, store_id, code, name, storefront_origin, status, is_default) \
-             VALUES ($1, $2, $3, $4, $5, $6::commerce.sales_channel_status, $7)",
+            "INSERT INTO commerce.channels \
+             (id, store_id, name, origin, status) \
+             VALUES ($1, $2, $3, $4, $5::commerce.sales_channel_status)",
         )
         .bind(channel.id().as_uuid())
         .bind(channel.store_id().as_uuid())
-        .bind(channel.code().as_str())
         .bind(channel.name())
-        .bind(channel.storefront_origin().as_str())
+        .bind(channel.origin().as_str())
         .bind(channel.status().as_str())
-        .bind(channel.is_default())
         .execute(&mut *self.transaction)
         .await
         .map_err(database_error)?;
@@ -124,14 +121,6 @@ impl PostgresStoreProvisioningTransaction {
 }
 
 fn map_store_write_error(error: sqlx::Error) -> ApplicationError {
-    if let sqlx::Error::Database(database_error) = &error
-        && database_error.constraint() == Some("stores_code_key")
-    {
-        return ApplicationError::Conflict {
-            code: "store_code_taken",
-            message: "the store code is already in use",
-        };
-    }
     database_error(error)
 }
 
@@ -183,22 +172,21 @@ mod tests {
         )));
         let make_input = || CreateStoreInput {
             user_id: owner_user_id,
-            code: format!("primary-{unique_suffix}"),
             name: "Primary Store".into(),
             region: None,
             currency: None,
             meta: None,
-            storefront_origin: format!("https://{unique_suffix}.shop.example.test"),
+            origin: format!("https://{unique_suffix}.shop.example.test"),
         };
 
         let output = service.execute(make_input()).await.unwrap();
 
-        let stored: (String, String, String, String, String, bool) = sqlx::query_as(
+        let stored: (String, String, String, String) = sqlx::query_as(
             "SELECT store.status::text, store.region::text, \
                     store.currency::text, \
-                    channel.code::text, channel.storefront_origin, channel.is_default \
+                    channel.origin \
              FROM commerce.stores AS store \
-             INNER JOIN commerce.store_sales_channels AS channel \
+             INNER JOIN commerce.channels AS channel \
                  ON channel.store_id = store.id \
              WHERE store.id = $1",
         )
@@ -212,9 +200,7 @@ mod tests {
                 "active".into(),
                 "US".into(),
                 "USD".into(),
-                "web".into(),
                 format!("https://{unique_suffix}.shop.example.test/"),
-                true,
             )
         );
 

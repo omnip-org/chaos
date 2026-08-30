@@ -27,8 +27,6 @@ use crate::mcp::{
 pub struct UpdateStoreParams {
     /// The Store UUID to modify.
     pub store_id: String,
-    /// URL-safe code, globally unique across Stores.
-    pub code: String,
     pub name: String,
     /// Two-letter ISO 3166-1 region code.
     pub region: String,
@@ -53,18 +51,16 @@ pub struct GetSalesChannelParams {
     /// The Store UUID containing the sales channel.
     pub store_id: String,
     /// The sales channel's UUID.
-    pub sales_channel_id: String,
+    pub channel_id: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreateSalesChannelParams {
     /// The Store UUID to modify.
     pub store_id: String,
-    /// URL-safe code, unique within the Store.
-    pub code: String,
     pub name: String,
     /// Absolute HTTP(S) origin used by customer-facing links for this channel.
-    pub storefront_origin: String,
+    pub origin: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
 }
@@ -74,11 +70,10 @@ pub struct UpdateSalesChannelParams {
     /// The Store UUID containing the sales channel.
     pub store_id: String,
     /// The sales channel's UUID.
-    pub sales_channel_id: String,
-    pub code: String,
+    pub channel_id: String,
     pub name: String,
     /// Absolute HTTP(S) origin used by customer-facing links for this channel.
-    pub storefront_origin: String,
+    pub origin: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
 }
@@ -88,7 +83,7 @@ pub struct ChangeSalesChannelStatusParams {
     /// The Store UUID containing the sales channel.
     pub store_id: String,
     /// The sales channel's UUID.
-    pub sales_channel_id: String,
+    pub channel_id: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
 }
@@ -114,7 +109,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<StoreIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -144,7 +139,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<StoreIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -181,7 +176,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<SetShippingCountryParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -211,7 +206,7 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(description = "Update the selected Store's code, name, region, \
+    #[tool(description = "Update the selected Store's name, region, \
                         and currency. Requires confirm: true.")]
     async fn update_store(
         &self,
@@ -219,7 +214,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<UpdateStoreParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -239,7 +234,6 @@ impl ChaosMcp {
             .update_store(UpdateStoreInput {
                 actor,
                 store_id,
-                code: params.code,
                 name: params.name,
                 region: params.region,
                 currency: params.currency,
@@ -284,7 +278,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<StoreIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -317,7 +311,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<GetSalesChannelParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -328,8 +322,7 @@ impl ChaosMcp {
             Err(result) => return Ok(result),
         };
         let store_id = actor.store_id();
-        let sales_channel_id = match parse_uuid_field(&params.sales_channel_id, "sales_channel_id")
-        {
+        let channel_id = match parse_uuid_field(&params.channel_id, "channel_id") {
             Ok(id) => SalesChannelId::from_uuid(id),
             Err(result) => return Ok(result),
         };
@@ -337,7 +330,7 @@ impl ChaosMcp {
         match self
             .state
             .store_administration
-            .get_sales_channel(actor, store_id, sales_channel_id)
+            .get_sales_channel(actor, store_id, channel_id)
             .await
         {
             Ok(item) => Ok(text_result(sales_channel_json(item))),
@@ -356,7 +349,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<CreateSalesChannelParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -376,9 +369,8 @@ impl ChaosMcp {
             .create_sales_channel(CreateSalesChannelInput {
                 actor,
                 store_id,
-                code: params.code,
                 name: params.name,
-                storefront_origin: params.storefront_origin,
+                origin: params.origin,
             })
             .await
         {
@@ -388,7 +380,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Update a sales channel's code, name, and storefront origin in the \
+        description = "Update a sales channel's name and storefront origin in the \
                         selected Store. \
                         Requires confirm: true."
     )]
@@ -398,7 +390,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<UpdateSalesChannelParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -412,8 +404,7 @@ impl ChaosMcp {
             return Ok(result);
         }
         let store_id = actor.store_id();
-        let sales_channel_id = match parse_uuid_field(&params.sales_channel_id, "sales_channel_id")
-        {
+        let channel_id = match parse_uuid_field(&params.channel_id, "channel_id") {
             Ok(id) => SalesChannelId::from_uuid(id),
             Err(result) => return Ok(result),
         };
@@ -423,10 +414,9 @@ impl ChaosMcp {
             .update_sales_channel(UpdateSalesChannelInput {
                 actor,
                 store_id,
-                sales_channel_id,
-                code: params.code,
+                channel_id,
                 name: params.name,
-                storefront_origin: params.storefront_origin,
+                origin: params.origin,
             })
             .await
         {
@@ -448,7 +438,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Archive a sales channel in the selected Store. The default \
+        description = "Archive a sales channel in the selected Store. The last active \
                         channel cannot be archived. Requires confirm: true and an \
                         confirm: true."
     )]
@@ -469,7 +459,7 @@ impl ChaosMcp {
         activate: bool,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -502,7 +492,7 @@ impl ChaosMcp {
         activate: bool,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -516,15 +506,14 @@ impl ChaosMcp {
             return Ok(result);
         }
         let store_id = actor.store_id();
-        let sales_channel_id = match parse_uuid_field(&params.sales_channel_id, "sales_channel_id")
-        {
+        let channel_id = match parse_uuid_field(&params.channel_id, "channel_id") {
             Ok(id) => SalesChannelId::from_uuid(id),
             Err(result) => return Ok(result),
         };
         let input = ChangeSalesChannelStatusInput {
             actor,
             store_id,
-            sales_channel_id,
+            channel_id,
         };
         let result = if activate {
             self.state
@@ -547,7 +536,6 @@ impl ChaosMcp {
 fn store_json(item: StoreAdminItem) -> serde_json::Value {
     json!({
         "id": item.id.as_uuid(),
-        "code": item.code.as_str(),
         "name": item.name,
         "region": item.region.as_str(),
         "currency": item.currency.as_str(),
@@ -561,11 +549,9 @@ fn store_json(item: StoreAdminItem) -> serde_json::Value {
 fn sales_channel_json(item: SalesChannelAdminItem) -> serde_json::Value {
     json!({
         "id": item.id.as_uuid(),
-        "code": item.code.as_str(),
         "name": item.name,
-        "storefront_origin": item.storefront_origin.as_str(),
+        "origin": item.origin.as_str(),
         "status": item.status.as_str(),
-        "is_default": item.is_default,
         "created_at": format_time(item.created_at),
         "updated_at": format_time(item.updated_at),
     })

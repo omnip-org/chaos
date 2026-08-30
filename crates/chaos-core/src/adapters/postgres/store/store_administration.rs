@@ -6,8 +6,8 @@ use crate::{
 use chaos_domain::{
     CurrencyCode, RegionCode,
     store::{
-        SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelStatus, Store, StoreCode,
-        StoreId, StoreStatus, StorefrontOrigin,
+        SalesChannel, SalesChannelId, SalesChannelStatus, Store, StoreId, StoreStatus,
+        StorefrontOrigin,
     },
 };
 use sqlx::{PgPool, Postgres, Transaction};
@@ -45,23 +45,13 @@ type StoreRow = (
     String,
     String,
     String,
-    String,
     Option<serde_json::Value>,
     String,
     OffsetDateTime,
     OffsetDateTime,
 );
 
-type ChannelRow = (
-    Uuid,
-    String,
-    String,
-    String,
-    String,
-    bool,
-    OffsetDateTime,
-    OffsetDateTime,
-);
+type ChannelRow = (Uuid, String, String, String, OffsetDateTime, OffsetDateTime);
 
 type ShippingCountryRow = (String, bool, OffsetDateTime, OffsetDateTime);
 
@@ -73,7 +63,7 @@ impl PostgresStoreAdministrationRepository {
     ) -> Result<Option<StoreAdminItem>, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         let row = sqlx::query_as::<_, StoreRow>(
-            "SELECT id, code::text, name, region::text, currency::text, meta, \
+            "SELECT id, name, region::text, currency::text, meta, \
                     status::text, created_at, updated_at \
              FROM commerce.stores WHERE id = $1",
         )
@@ -93,19 +83,18 @@ impl PostgresStoreAdministrationRepository {
     ) -> Result<StoreId, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         let result = sqlx::query(
-            "UPDATE commerce.stores SET code = $2, name = $3, region = $4, \
-                    currency = $5, meta = $6, updated_at = CURRENT_TIMESTAMP \
+            "UPDATE commerce.stores SET name = $2, region = $3, \
+                    currency = $4, meta = $5, updated_at = CURRENT_TIMESTAMP \
              WHERE id = $1",
         )
         .bind(store_id.as_uuid())
-        .bind(replacement.code().as_str())
         .bind(replacement.name())
         .bind(replacement.region().as_str())
         .bind(replacement.currency().as_str())
         .bind(replacement.meta().cloned())
         .execute(&mut *transaction)
         .await
-        .map_err(map_store_error)?;
+        .map_err(database_error)?;
         if result.rows_affected() == 0 {
             return Err(store_not_found(store_id));
         }
@@ -155,15 +144,6 @@ impl PostgresStoreAdministrationRepository {
         .await
         .map_err(database_error)?
         .ok_or_else(|| store_not_found(store_id))?;
-        let previous_enabled: Option<bool> = sqlx::query_scalar(
-            "SELECT enabled FROM commerce.store_shipping_countries \
-             WHERE store_id = $1 AND country_code = $2 FOR UPDATE",
-        )
-        .bind(store_id.as_uuid())
-        .bind(country_code)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(database_error)?;
         let row = sqlx::query_as::<_, ShippingCountryRow>(
             "INSERT INTO commerce.store_shipping_countries \
              (store_id, country_code, enabled) VALUES ($1, $2, $3) \
@@ -177,18 +157,6 @@ impl PostgresStoreAdministrationRepository {
         .fetch_one(&mut *transaction)
         .await
         .map_err(database_error)?;
-        if previous_enabled != Some(enabled) {
-            sqlx::query(
-                "UPDATE commerce.stores \
-                 SET shipping_policy_version = shipping_policy_version + 1, \
-                     updated_at = CURRENT_TIMESTAMP \
-                 WHERE id = $1",
-            )
-            .bind(store_id.as_uuid())
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
-        }
         transaction.commit().await.map_err(database_error)?;
         shipping_country_item(row)
     }
@@ -207,16 +175,16 @@ impl PostgresStoreAdministrationRepository {
             .map_err(database_error)?
             .ok_or_else(|| store_not_found(store_id))?;
         if status == StoreStatus::Active {
-            let active_default_channel: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM commerce.store_sales_channels \
+            let active_channel_exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM commerce.channels \
                  WHERE store_id = $1 \
-                   AND is_default AND status = 'active')",
+                   AND status = 'active')",
             )
             .bind(store_id.as_uuid())
             .fetch_one(&mut *transaction)
             .await
             .map_err(database_error)?;
-            Store::validate_activation(active_default_channel)?;
+            Store::validate_activation(active_channel_exists)?;
         }
         sqlx::query(
             "UPDATE commerce.stores SET status = $2::commerce.store_status, \
@@ -244,8 +212,8 @@ impl PostgresStoreAdministrationRepository {
             return Ok(None);
         }
         let rows = sqlx::query_as::<_, ChannelRow>(
-            "SELECT id, code::text, name, storefront_origin, status::text, is_default, \
-                    created_at, updated_at FROM commerce.store_sales_channels \
+            "SELECT id, name, origin, status::text, \
+                    created_at, updated_at FROM commerce.channels \
              WHERE store_id = $1 \
                AND ($2::uuid IS NULL OR id > $2) ORDER BY id ASC LIMIT $3",
         )
@@ -266,16 +234,16 @@ impl PostgresStoreAdministrationRepository {
         &self,
         actor: AdminActor,
         store_id: StoreId,
-        sales_channel_id: SalesChannelId,
+        channel_id: SalesChannelId,
     ) -> Result<Option<SalesChannelAdminItem>, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         let row = sqlx::query_as::<_, ChannelRow>(
-            "SELECT id, code::text, name, storefront_origin, status::text, is_default, \
-                    created_at, updated_at FROM commerce.store_sales_channels \
+            "SELECT id, name, origin, status::text, \
+                    created_at, updated_at FROM commerce.channels \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
-        .bind(sales_channel_id.as_uuid())
+        .bind(channel_id.as_uuid())
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -291,15 +259,14 @@ impl PostgresStoreAdministrationRepository {
         let mut transaction = self.begin(&actor).await?;
         require_writable_store(&mut transaction, channel.store_id()).await?;
         sqlx::query(
-            "INSERT INTO commerce.store_sales_channels \
-             (id, store_id, code, name, storefront_origin, status, is_default) \
-             VALUES ($1, $2, $3, $4, $5, 'active', false)",
+            "INSERT INTO commerce.channels \
+             (id, store_id, name, origin, status) \
+             VALUES ($1, $2, $3, $4, 'active')",
         )
         .bind(channel.id().as_uuid())
         .bind(channel.store_id().as_uuid())
-        .bind(channel.code().as_str())
         .bind(channel.name())
-        .bind(channel.storefront_origin().as_str())
+        .bind(channel.origin().as_str())
         .execute(&mut *transaction)
         .await
         .map_err(map_channel_error)?;
@@ -310,64 +277,78 @@ impl PostgresStoreAdministrationRepository {
     pub(crate) async fn update_sales_channel(
         &self,
         actor: AdminActor,
-        sales_channel_id: SalesChannelId,
+        channel_id: SalesChannelId,
         replacement: &SalesChannel,
     ) -> Result<SalesChannelId, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         let result = sqlx::query(
-            "UPDATE commerce.store_sales_channels SET code = $3, name = $4, \
-                    storefront_origin = $5, updated_at = CURRENT_TIMESTAMP \
+            "UPDATE commerce.channels SET name = $3, origin = $4, \
+                    updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(replacement.store_id().as_uuid())
-        .bind(sales_channel_id.as_uuid())
-        .bind(replacement.code().as_str())
+        .bind(channel_id.as_uuid())
         .bind(replacement.name())
-        .bind(replacement.storefront_origin().as_str())
+        .bind(replacement.origin().as_str())
         .execute(&mut *transaction)
         .await
         .map_err(map_channel_error)?;
         if result.rows_affected() == 0 {
-            return Err(channel_not_found(sales_channel_id));
+            return Err(channel_not_found(channel_id));
         }
         transaction.commit().await.map_err(database_error)?;
-        Ok(sales_channel_id)
+        Ok(channel_id)
     }
 
     pub(crate) async fn change_sales_channel_status(
         &self,
         actor: AdminActor,
         store_id: StoreId,
-        sales_channel_id: SalesChannelId,
+        channel_id: SalesChannelId,
         status: SalesChannelStatus,
     ) -> Result<SalesChannelId, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
-        let is_default = sqlx::query_scalar::<_, bool>(
-            "SELECT is_default FROM commerce.store_sales_channels \
+        let current_status = sqlx::query_scalar::<_, String>(
+            "SELECT status::text FROM commerce.channels \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
-        .bind(sales_channel_id.as_uuid())
+        .bind(channel_id.as_uuid())
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?
-        .ok_or_else(|| channel_not_found(sales_channel_id))?;
-        if status == SalesChannelStatus::Archived {
-            SalesChannel::validate_archival(is_default)?;
+        .ok_or_else(|| channel_not_found(channel_id))?;
+        if status == SalesChannelStatus::Archived && current_status == "active" {
+            let active_channel_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM commerce.channels \
+                 WHERE store_id = $1 AND status = 'active'",
+            )
+            .bind(store_id.as_uuid())
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            if active_channel_count <= 1 {
+                return Err(ApplicationError::Validation {
+                    violations: vec![chaos_domain::FieldViolation {
+                        field: "channels",
+                        reason: "must contain at least one active channel".into(),
+                    }],
+                });
+            }
         }
         sqlx::query(
-            "UPDATE commerce.store_sales_channels \
+            "UPDATE commerce.channels \
              SET status = $3::commerce.sales_channel_status, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
-        .bind(sales_channel_id.as_uuid())
+        .bind(channel_id.as_uuid())
         .bind(status.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
         transaction.commit().await.map_err(database_error)?;
-        Ok(sales_channel_id)
+        Ok(channel_id)
     }
 }
 
@@ -402,10 +383,9 @@ async fn require_writable_store(
 }
 
 fn store_item(row: StoreRow) -> Result<StoreAdminItem, ApplicationError> {
-    let (id, code, name, region, currency, meta, status, created_at, updated_at) = row;
+    let (id, name, region, currency, meta, status, created_at, updated_at) = row;
     Ok(StoreAdminItem {
         id: StoreId::from_uuid(id),
-        code: StoreCode::parse(code)?,
         name,
         region: RegionCode::parse(&region)?,
         currency: CurrencyCode::parse(&currency)?,
@@ -417,14 +397,12 @@ fn store_item(row: StoreRow) -> Result<StoreAdminItem, ApplicationError> {
 }
 
 fn channel_item(row: ChannelRow) -> Result<SalesChannelAdminItem, ApplicationError> {
-    let (id, code, name, storefront_origin, status, is_default, created_at, updated_at) = row;
+    let (id, name, origin, status, created_at, updated_at) = row;
     Ok(SalesChannelAdminItem {
         id: SalesChannelId::from_uuid(id),
-        code: SalesChannelCode::parse(code)?,
         name,
-        storefront_origin: StorefrontOrigin::parse(storefront_origin)?,
+        origin: StorefrontOrigin::parse(origin)?,
         status: SalesChannelStatus::parse(&status).ok_or_else(corrupt_status)?,
-        is_default,
         created_at,
         updated_at,
     })
@@ -446,31 +424,13 @@ fn corrupt_status() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("database contains an unknown status"))
 }
 
-fn map_store_error(error: sqlx::Error) -> ApplicationError {
-    if let sqlx::Error::Database(database_error) = &error
-        && database_error.constraint() == Some("stores_code_key")
-    {
-        return ApplicationError::Conflict {
-            code: "store_code_taken",
-            message: "the store code is already in use",
-        };
-    }
-    database_error(error)
-}
-
 fn map_channel_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(database_error) = &error {
         let conflict = match database_error.constraint() {
-            Some("store_sales_channels_store_id_code_key") => Some(ApplicationError::Conflict {
-                code: "sales_channel_code_taken",
-                message: "the Sales Channel code is already in use for this Store",
+            Some("channels_origin_key") => Some(ApplicationError::Conflict {
+                code: "channel_origin_taken",
+                message: "the storefront origin is already in use by another channel",
             }),
-            Some("store_sales_channels_storefront_origin_key") => {
-                Some(ApplicationError::Conflict {
-                    code: "sales_channel_origin_taken",
-                    message: "the storefront origin is already in use by another Sales Channel",
-                })
-            }
             _ => None,
         };
         if let Some(conflict) = conflict {
@@ -489,7 +449,7 @@ fn store_not_found(store_id: StoreId) -> ApplicationError {
 
 fn channel_not_found(channel_id: SalesChannelId) -> ApplicationError {
     ApplicationError::NotFound {
-        resource: "sales_channel",
+        resource: "channel",
         id: channel_id.as_uuid().to_string(),
     }
 }
@@ -537,7 +497,7 @@ mod tests {
         let owner_id = UserId::new();
         let store_id = StoreId::new();
         let other_store_id = StoreId::new();
-        let default_channel_id = SalesChannelId::new();
+        let initial_channel_id = SalesChannelId::new();
         let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
@@ -546,16 +506,12 @@ mod tests {
             .execute(&owner_pool)
             .await
             .unwrap();
-        for (id, code) in [
-            (store_id, "admin-store"),
-            (other_store_id, "other-admin-store"),
-        ] {
+        for id in [store_id, other_store_id] {
             sqlx::query(
-                "INSERT INTO commerce.stores (id, code, name) \
-                 VALUES ($1, $2, 'Admin Store')",
+                "INSERT INTO commerce.stores (id, name) \
+                 VALUES ($1, 'Admin Store')",
             )
             .bind(id.as_uuid())
-            .bind(format!("{code}-{suffix}"))
             .execute(&owner_pool)
             .await
             .unwrap();
@@ -578,11 +534,11 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.store_sales_channels \
-             (id, store_id, code, name, storefront_origin, is_default) \
-             VALUES ($1, $2, 'web', 'Online Store', $3, true)",
+            "INSERT INTO commerce.channels \
+             (id, store_id, name, origin) \
+             VALUES ($1, $2, 'Online Store', $3)",
         )
-        .bind(default_channel_id.as_uuid())
+        .bind(initial_channel_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(format!("https://{suffix}.default.example.test"))
         .execute(&owner_pool)
@@ -638,7 +594,6 @@ mod tests {
             .update_store(UpdateStoreInput {
                 actor: AdminActor::Store(owner),
                 store_id,
-                code: format!("admin-store-updated-{suffix}"),
                 name: "Updated Admin Store".into(),
                 region: "SG".into(),
                 currency: "SGD".into(),
@@ -671,9 +626,8 @@ mod tests {
             .create_sales_channel(CreateSalesChannelInput {
                 actor: AdminActor::Store(owner),
                 store_id,
-                code: "mobile".into(),
                 name: "Mobile App".into(),
-                storefront_origin: format!("https://{suffix}.mobile.example.test"),
+                origin: format!("https://{suffix}.mobile.example.test"),
             })
             .await
             .unwrap();
@@ -686,10 +640,9 @@ mod tests {
             .update_sales_channel(UpdateSalesChannelInput {
                 actor: AdminActor::Store(owner),
                 store_id,
-                sales_channel_id: channel_id,
-                code: "mobile-app".into(),
+                channel_id,
                 name: "Updated Mobile App".into(),
-                storefront_origin: format!("https://{suffix}.updated.example.test"),
+                origin: format!("https://{suffix}.updated.example.test"),
             })
             .await
             .unwrap();
@@ -697,7 +650,7 @@ mod tests {
             .archive_sales_channel(ChangeSalesChannelStatusInput {
                 actor: AdminActor::Store(owner),
                 store_id,
-                sales_channel_id: channel_id,
+                channel_id,
             })
             .await
             .unwrap();
@@ -713,19 +666,19 @@ mod tests {
             .activate_sales_channel(ChangeSalesChannelStatusInput {
                 actor: AdminActor::Store(owner),
                 store_id,
-                sales_channel_id: channel_id,
+                channel_id,
             })
             .await
             .unwrap();
-        let default_archive = service
+        let initial_archive = service
             .archive_sales_channel(ChangeSalesChannelStatusInput {
                 actor: AdminActor::Store(owner),
                 store_id,
-                sales_channel_id: default_channel_id,
+                channel_id: initial_channel_id,
             })
             .await;
         assert!(matches!(
-            default_archive,
+            initial_archive,
             Err(ApplicationError::Validation { .. })
         ));
         assert!(

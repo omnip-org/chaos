@@ -26,7 +26,7 @@ pub struct CollectionDetail {
     pub description: String,
     pub status: CollectionStatus,
     pub products: Vec<CollectionProductItem>,
-    pub published_sales_channel_ids: Vec<SalesChannelId>,
+    pub published_channel_ids: Vec<SalesChannelId>,
     pub metadata: Option<serde_json::Value>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -51,7 +51,7 @@ pub struct CreateCollectionRecord {
 pub struct CollectionPublicationRecord {
     pub store_id: StoreId,
     pub collection_id: CollectionId,
-    pub sales_channel_id: SalesChannelId,
+    pub channel_id: SalesChannelId,
     pub published: bool,
     pub changed_at: OffsetDateTime,
 }

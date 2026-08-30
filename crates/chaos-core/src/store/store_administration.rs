@@ -3,8 +3,8 @@ use std::sync::Arc;
 use chaos_domain::{
     CurrencyCode, RegionCode,
     store::{
-        SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelStatus, Store, StoreCode,
-        StoreId, StoreStatus, StorefrontOrigin,
+        SalesChannel, SalesChannelId, SalesChannelStatus, Store, StoreId, StoreStatus,
+        StorefrontOrigin,
     },
 };
 
@@ -19,7 +19,6 @@ use super::Page;
 pub struct UpdateStoreInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
-    pub code: String,
     pub name: String,
     pub region: String,
     pub currency: String,
@@ -34,24 +33,22 @@ pub struct ChangeStoreStatusInput {
 pub struct CreateSalesChannelInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
-    pub code: String,
     pub name: String,
-    pub storefront_origin: String,
+    pub origin: String,
 }
 
 pub struct UpdateSalesChannelInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
-    pub sales_channel_id: SalesChannelId,
-    pub code: String,
+    pub channel_id: SalesChannelId,
     pub name: String,
-    pub storefront_origin: String,
+    pub origin: String,
 }
 
 pub struct ChangeSalesChannelStatusInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
-    pub sales_channel_id: SalesChannelId,
+    pub channel_id: SalesChannelId,
 }
 
 pub struct SetShippingCountryInput {
@@ -84,7 +81,6 @@ impl StoreAdministration {
     pub async fn update_store(&self, input: UpdateStoreInput) -> Result<StoreId, ApplicationError> {
         input.actor.require_owner()?;
         let replacement = Store::create(
-            StoreCode::parse(input.code)?,
             input.name,
             RegionCode::parse(&input.region)?,
             CurrencyCode::parse(&input.currency)?,
@@ -161,12 +157,12 @@ impl StoreAdministration {
         &self,
         actor: AdminActor,
         store_id: StoreId,
-        sales_channel_id: SalesChannelId,
+        channel_id: SalesChannelId,
     ) -> Result<SalesChannelAdminItem, ApplicationError> {
         self.repository
-            .get_sales_channel(actor, store_id, sales_channel_id)
+            .get_sales_channel(actor, store_id, channel_id)
             .await?
-            .ok_or_else(|| channel_not_found(sales_channel_id))
+            .ok_or_else(|| channel_not_found(channel_id))
     }
 
     pub async fn create_sales_channel(
@@ -174,12 +170,7 @@ impl StoreAdministration {
         input: CreateSalesChannelInput,
     ) -> Result<SalesChannelId, ApplicationError> {
         input.actor.require_owner()?;
-        let channel = channel(
-            input.store_id,
-            input.code,
-            input.name,
-            input.storefront_origin,
-        )?;
+        let channel = channel(input.store_id, input.name, input.origin)?;
         self.repository
             .create_sales_channel(input.actor, &channel)
             .await
@@ -190,14 +181,9 @@ impl StoreAdministration {
         input: UpdateSalesChannelInput,
     ) -> Result<SalesChannelId, ApplicationError> {
         input.actor.require_owner()?;
-        let replacement = channel(
-            input.store_id,
-            input.code,
-            input.name,
-            input.storefront_origin,
-        )?;
+        let replacement = channel(input.store_id, input.name, input.origin)?;
         self.repository
-            .update_sales_channel(input.actor, input.sales_channel_id, &replacement)
+            .update_sales_channel(input.actor, input.channel_id, &replacement)
             .await
     }
 
@@ -224,27 +210,20 @@ impl StoreAdministration {
     ) -> Result<SalesChannelId, ApplicationError> {
         input.actor.require_owner()?;
         self.repository
-            .change_sales_channel_status(
-                input.actor,
-                input.store_id,
-                input.sales_channel_id,
-                status,
-            )
+            .change_sales_channel_status(input.actor, input.store_id, input.channel_id, status)
             .await
     }
 }
 
 fn channel(
     store_id: StoreId,
-    code: String,
     name: String,
-    storefront_origin: String,
+    origin: String,
 ) -> Result<SalesChannel, ApplicationError> {
     Ok(SalesChannel::create(
         store_id,
-        SalesChannelCode::parse(code)?,
         name,
-        StorefrontOrigin::parse(storefront_origin)?,
+        StorefrontOrigin::parse(origin)?,
     )?)
 }
 
@@ -255,10 +234,10 @@ fn store_not_found(store_id: StoreId) -> ApplicationError {
     }
 }
 
-fn channel_not_found(sales_channel_id: SalesChannelId) -> ApplicationError {
+fn channel_not_found(channel_id: SalesChannelId) -> ApplicationError {
     ApplicationError::NotFound {
-        resource: "sales_channel",
-        id: sales_channel_id.as_uuid().to_string(),
+        resource: "channel",
+        id: channel_id.as_uuid().to_string(),
     }
 }
 

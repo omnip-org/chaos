@@ -119,7 +119,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<CreateManualReviewParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -177,7 +177,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<ListReviewsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -240,7 +240,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<ApproveReviewParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -287,7 +287,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<RejectReviewParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -331,7 +331,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<AddReviewReplyParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,

@@ -7,7 +7,7 @@ pub struct GeneratedPublishableKey {
 
 pub struct PublishableKeyListItem {
     pub id: PublishableKeyId,
-    pub sales_channel_id: SalesChannelId,
+    pub channel_id: SalesChannelId,
     pub name: String,
     pub public_key: String,
     pub created_at: OffsetDateTime,
@@ -18,5 +18,5 @@ pub struct PublishableKeyListItem {
 pub struct MachineActor {
     pub publishable_key_id: PublishableKeyId,
     pub store_id: StoreId,
-    pub sales_channel_id: Option<SalesChannelId>,
+    pub channel_id: Option<SalesChannelId>,
 }

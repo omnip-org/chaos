@@ -71,7 +71,7 @@ impl PostgresStorefrontCatalogRepository {
                  FROM commerce.price_lists AS price_list \
                  INNER JOIN commerce.stores AS store \
                    ON store.id = price_list.store_id \
-                 INNER JOIN commerce.store_sales_channels AS channel \
+                 INNER JOIN commerce.channels AS channel \
                    ON channel.store_id = store.id \
                   AND channel.id = $2 \
                  WHERE price_list.store_id = $1 \
@@ -101,7 +101,7 @@ impl PostgresStorefrontCatalogRepository {
              ORDER BY variant.id ASC",
         )
         .bind(actor.store_id.as_uuid())
-        .bind(actor.sales_channel_id.map(|id| id.as_uuid()))
+        .bind(actor.channel_id.map(|id| id.as_uuid()))
         .bind(product_id.as_uuid())
         .bind(currency.map(|value| value.as_str().to_owned()))
         .fetch_all(&mut **transaction)
@@ -396,14 +396,14 @@ impl PostgresStorefrontCatalogRepository {
              INNER JOIN commerce.collection_publications AS publication \
                ON publication.store_id = collection.store_id \
               AND publication.collection_id = collection.id \
-              AND publication.sales_channel_id = $2 \
+              AND publication.channel_id = $2 \
              WHERE member.store_id = $1 \
                AND member.product_id = $3 \
                AND collection.status = 'active' \
              ORDER BY collection.handle ASC",
         )
         .bind(actor.store_id.as_uuid())
-        .bind(actor.sales_channel_id.map(|id| id.as_uuid()))
+        .bind(actor.channel_id.map(|id| id.as_uuid()))
         .bind(product_id.as_uuid())
         .fetch_all(&mut **transaction)
         .await
@@ -446,7 +446,7 @@ impl PostgresStorefrontCatalogRepository {
                  FROM commerce.price_lists AS price_list \
                  INNER JOIN commerce.stores AS store \
                    ON store.id = price_list.store_id \
-                 INNER JOIN commerce.store_sales_channels AS channel \
+                 INNER JOIN commerce.channels AS channel \
                    ON channel.store_id = store.id \
                   AND channel.id = $2 \
                  WHERE price_list.store_id = $1 \
@@ -475,7 +475,7 @@ impl PostgresStorefrontCatalogRepository {
              ORDER BY variant.product_id ASC, variant.id ASC",
         )
         .bind(actor.store_id.as_uuid())
-        .bind(actor.sales_channel_id.map(|id| id.as_uuid()))
+        .bind(actor.channel_id.map(|id| id.as_uuid()))
         .bind(product_ids)
         .bind(currency.map(|value| value.as_str().to_owned()))
         .fetch_all(&mut **transaction)
@@ -757,14 +757,14 @@ impl PostgresStorefrontCatalogRepository {
              INNER JOIN commerce.collection_publications AS publication \
                ON publication.store_id = collection.store_id \
               AND publication.collection_id = collection.id \
-              AND publication.sales_channel_id = $2 \
+              AND publication.channel_id = $2 \
              WHERE member.store_id = $1 \
                AND member.product_id = ANY($3::uuid[]) \
                AND collection.status = 'active' \
              ORDER BY member.product_id, collection.handle ASC",
         )
         .bind(actor.store_id.as_uuid())
-        .bind(actor.sales_channel_id.map(|id| id.as_uuid()))
+        .bind(actor.channel_id.map(|id| id.as_uuid()))
         .bind(product_ids)
         .fetch_all(&mut **transaction)
         .await
@@ -890,7 +890,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                      INNER JOIN commerce.collection_publications AS publication \
                        ON publication.store_id = collection.store_id \
                       AND publication.collection_id = collection.id \
-                      AND publication.sales_channel_id = $2 \
+                      AND publication.channel_id = $2 \
                      WHERE collection.store_id = $1 \
                        AND collection.handle = $5 \
                        AND collection.status = 'active' \
@@ -907,13 +907,13 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                  FROM commerce.products AS product \
                  INNER JOIN commerce.stores AS store \
                    ON store.id = product.store_id \
-                 INNER JOIN commerce.store_sales_channels AS channel \
+                 INNER JOIN commerce.channels AS channel \
                    ON channel.store_id = product.store_id \
                   AND channel.id = $2 \
                  INNER JOIN commerce.product_publications AS publication \
                    ON publication.store_id = product.store_id \
                   AND publication.product_id = product.id \
-                  AND publication.sales_channel_id = channel.id \
+                  AND publication.channel_id = channel.id \
                  LEFT JOIN commerce.product_documents AS search_document \
                    ON search_document.store_id = product.store_id \
                   AND search_document.product_id = product.id \
@@ -934,7 +934,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                  LIMIT 100",
             )
             .bind(actor.store_id.as_uuid())
-            .bind(actor.sales_channel_id.map(|id| id.as_uuid()))
+            .bind(actor.channel_id.map(|id| id.as_uuid()))
             .bind(scan_after.map(ProductId::as_uuid))
             .bind(query)
             .bind(collection_handle)
@@ -1025,13 +1025,13 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
              FROM commerce.products AS product \
              INNER JOIN commerce.stores AS store \
                ON store.id = product.store_id \
-             INNER JOIN commerce.store_sales_channels AS channel \
+             INNER JOIN commerce.channels AS channel \
                ON channel.store_id = product.store_id \
               AND channel.id = $2 \
              INNER JOIN commerce.product_publications AS publication \
                ON publication.store_id = product.store_id \
               AND publication.product_id = product.id \
-              AND publication.sales_channel_id = channel.id \
+              AND publication.channel_id = channel.id \
              WHERE product.store_id = $1 \
                AND product.handle = $3 \
                AND store.status = 'active' \
@@ -1039,7 +1039,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                AND product.status = 'active'",
         )
         .bind(actor.store_id.as_uuid())
-        .bind(actor.sales_channel_id.map(|id| id.as_uuid()))
+        .bind(actor.channel_id.map(|id| id.as_uuid()))
         .bind(handle)
         .fetch_optional(&mut *transaction)
         .await
@@ -1200,35 +1200,29 @@ mod tests {
         let other_variant_id = ProductVariantId::new();
         let price_list_id = Uuid::now_v7();
         let other_price_list_id = Uuid::now_v7();
-        let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
-
-        for (id, code) in [
-            (store_id, format!("storefront-{suffix}")),
-            (other_store_id, format!("other-storefront-{suffix}")),
-        ] {
+        for id in [store_id, other_store_id] {
             sqlx::query(
                 "INSERT INTO commerce.stores \
-                 (id, code, name, status) \
-                 VALUES ($1, $2, 'Storefront Test', 'active')",
+                 (id, name, status) \
+                 VALUES ($1, 'Storefront Test', 'active')",
             )
             .bind(id.as_uuid())
-            .bind(&code)
             .execute(&owner_pool)
             .await
             .unwrap();
         }
-        for (id, store, code) in [
-            (channel_id, store_id, "web"),
-            (other_channel_id, other_store_id, "other-web"),
+        for (id, store, name) in [
+            (channel_id, store_id, "Web"),
+            (other_channel_id, other_store_id, "Other Web"),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.store_sales_channels \
-                 (id, store_id, code, name, storefront_origin, is_default) \
-                 VALUES ($1, $2, $3, 'Web', $4, true)",
+                "INSERT INTO commerce.channels \
+                 (id, store_id, name, origin) \
+                 VALUES ($1, $2, $3, $4)",
             )
             .bind(id.as_uuid())
             .bind(store.as_uuid())
-            .bind(code)
+            .bind(name)
             .bind(format!(
                 "https://{}.storefront.example.test/",
                 id.as_uuid().simple()
@@ -1292,7 +1286,7 @@ mod tests {
         ] {
             sqlx::query(
                 "INSERT INTO commerce.product_publications \
-                 (store_id, product_id, sales_channel_id) \
+                 (store_id, product_id, channel_id) \
                  VALUES ($1, $2, $3)",
             )
             .bind(store.as_uuid())
@@ -1347,7 +1341,7 @@ mod tests {
         let actor = MachineActor {
             publishable_key_id: PublishableKeyId::new(),
             store_id,
-            sales_channel_id: Some(channel_id),
+            channel_id: Some(channel_id),
         };
         let indexer = crate::adapters::postgres::PostgresSearchIndexer::new(runtime_pool.clone());
         assert!(

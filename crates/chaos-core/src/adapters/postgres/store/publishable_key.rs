@@ -49,17 +49,17 @@ impl PostgresPublishableKeyRepository {
         require_active_sales_channel(
             &mut transaction,
             publishable_key.store_id(),
-            publishable_key.sales_channel_id(),
+            publishable_key.channel_id(),
         )
         .await?;
         sqlx::query(
-            "INSERT INTO commerce.store_publishable_keys \
-             (id, store_id, sales_channel_id, public_key, name) \
+            "INSERT INTO commerce.channel_publishable_keys \
+             (id, store_id, channel_id, public_key, name) \
              VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(publishable_key.id().as_uuid())
         .bind(publishable_key.store_id().as_uuid())
-        .bind(publishable_key.sales_channel_id().as_uuid())
+        .bind(publishable_key.channel_id().as_uuid())
         .bind(&generated_key.public_key)
         .bind(publishable_key.name())
         .execute(&mut *transaction)
@@ -91,9 +91,9 @@ impl PostgresPublishableKeyRepository {
                 Option<OffsetDateTime>,
             ),
         >(
-            "SELECT key.id, key.sales_channel_id, key.name, key.public_key, \
+            "SELECT key.id, key.channel_id, key.name, key.public_key, \
                         key.created_at, key.revoked_at \
-             FROM commerce.store_publishable_keys AS key \
+             FROM commerce.channel_publishable_keys AS key \
              WHERE key.store_id = $1 \
                AND ($2::uuid IS NULL OR key.id > $2) \
              ORDER BY key.id ASC \
@@ -109,10 +109,10 @@ impl PostgresPublishableKeyRepository {
 
         rows.into_iter()
             .map(
-                |(id, sales_channel_id, name, public_key, created_at, revoked_at)| {
+                |(id, channel_id, name, public_key, created_at, revoked_at)| {
                     Ok(PublishableKeyListItem {
                         id: PublishableKeyId::from_uuid(id),
-                        sales_channel_id: SalesChannelId::from_uuid(sales_channel_id),
+                        channel_id: SalesChannelId::from_uuid(channel_id),
                         name,
                         public_key,
                         created_at,
@@ -133,7 +133,7 @@ impl PostgresPublishableKeyRepository {
         set_context(&mut transaction, &actor).await?;
         require_store(&mut transaction, store_id).await?;
         let result = sqlx::query(
-            "UPDATE commerce.store_publishable_keys \
+            "UPDATE commerce.channel_publishable_keys \
              SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP), \
                  updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
@@ -161,7 +161,7 @@ impl PostgresPublishableKeyRepository {
             return Ok(None);
         }
         let row = sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
-            "SELECT publishable_key_id, store_id, sales_channel_id \
+            "SELECT publishable_key_id, store_id, channel_id \
              FROM commerce.authenticate_publishable_key($1)",
         )
         .bind(presented_key)
@@ -169,11 +169,11 @@ impl PostgresPublishableKeyRepository {
         .await
         .map_err(database_error)?;
 
-        row.map(|(publishable_key_id, store_id, sales_channel_id)| {
+        row.map(|(publishable_key_id, store_id, channel_id)| {
             Ok(MachineActor {
                 publishable_key_id: PublishableKeyId::from_uuid(publishable_key_id),
                 store_id: StoreId::from_uuid(store_id),
-                sales_channel_id: Some(SalesChannelId::from_uuid(sales_channel_id)),
+                channel_id: Some(SalesChannelId::from_uuid(channel_id)),
             })
         })
         .transpose()
@@ -215,23 +215,23 @@ async fn require_store(
 async fn require_active_sales_channel(
     transaction: &mut Transaction<'_, Postgres>,
     store_id: StoreId,
-    sales_channel_id: SalesChannelId,
+    channel_id: SalesChannelId,
 ) -> Result<(), ApplicationError> {
-    let channel_id: Option<Uuid> = sqlx::query_scalar(
+    let active_channel_id: Option<Uuid> = sqlx::query_scalar(
         "SELECT id \
-         FROM commerce.store_sales_channels \
+         FROM commerce.channels \
          WHERE store_id = $1 AND id = $2 AND status = 'active' \
          FOR UPDATE",
     )
     .bind(store_id.as_uuid())
-    .bind(sales_channel_id.as_uuid())
+    .bind(channel_id.as_uuid())
     .fetch_optional(&mut **transaction)
     .await
     .map_err(database_error)?;
-    if channel_id.is_none() {
+    if active_channel_id.is_none() {
         return Err(ApplicationError::NotFound {
-            resource: "sales_channel",
-            id: sales_channel_id.as_uuid().to_string(),
+            resource: "channel",
+            id: channel_id.as_uuid().to_string(),
         });
     }
     Ok(())
@@ -336,18 +336,17 @@ mod tests {
             .unwrap();
         sqlx::query(
             "INSERT INTO commerce.stores \
-             (id, code, name, status) \
-             VALUES ($1, $2, 'API Test', 'active')",
+             (id, name, status) \
+             VALUES ($1, 'API Test', 'active')",
         )
         .bind(store_id.as_uuid())
-        .bind(format!("api-test-{unique_suffix}"))
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.store_sales_channels \
-             (id, store_id, code, name, storefront_origin, is_default) \
-             VALUES ($1, $2, 'web', 'Web', $3, true)",
+            "INSERT INTO commerce.channels \
+             (id, store_id, name, origin) \
+             VALUES ($1, $2, 'Web', $3)",
         )
         .bind(channel_id.as_uuid())
         .bind(store_id.as_uuid())
@@ -375,9 +374,9 @@ mod tests {
         let authentication = PublishableKeyAuthentication::new(repository);
         let archived_channel_id = SalesChannelId::new();
         sqlx::query(
-            "INSERT INTO commerce.store_sales_channels \
-             (id, store_id, code, name, storefront_origin, status) \
-             VALUES ($1, $2, 'archived', 'Archived', $3, 'archived')",
+            "INSERT INTO commerce.channels \
+             (id, store_id, name, origin, status) \
+             VALUES ($1, $2, 'Archived', $3, 'archived')",
         )
         .bind(archived_channel_id.as_uuid())
         .bind(store_id.as_uuid())
@@ -385,10 +384,10 @@ mod tests {
         .execute(&owner_pool)
         .await
         .unwrap();
-        let creation_input = |sales_channel_id| CreatePublishableKeyInput {
+        let creation_input = |channel_id| CreatePublishableKeyInput {
             actor: actor.clone(),
             store_id,
-            sales_channel_id,
+            channel_id,
             name: "Storefront production".into(),
         };
 
@@ -397,14 +396,14 @@ mod tests {
                 .create(creation_input(SalesChannelId::new()))
                 .await,
             Err(ApplicationError::NotFound {
-                resource: "sales_channel",
+                resource: "channel",
                 ..
             })
         ));
         assert!(matches!(
             management.create(creation_input(archived_channel_id)).await,
             Err(ApplicationError::NotFound {
-                resource: "sales_channel",
+                resource: "channel",
                 ..
             })
         ));
@@ -413,7 +412,7 @@ mod tests {
         let publishable_key_id = issued.publishable_key.id();
         let public_key = issued.public_key;
         let stored_public_key: String = sqlx::query_scalar(
-            "SELECT public_key FROM commerce.store_publishable_keys WHERE id = $1",
+            "SELECT public_key FROM commerce.channel_publishable_keys WHERE id = $1",
         )
         .bind(publishable_key_id.as_uuid())
         .fetch_one(&owner_pool)
@@ -432,8 +431,8 @@ mod tests {
 
         let machine_actor = authentication.authenticate(&public_key).await.unwrap();
         assert_eq!(machine_actor.store_id, store_id);
-        assert_eq!(machine_actor.sales_channel_id, Some(channel_id));
-        assert_eq!(page.items[0].sales_channel_id, channel_id);
+        assert_eq!(machine_actor.channel_id, Some(channel_id));
+        assert_eq!(page.items[0].channel_id, channel_id);
 
         management
             .revoke(actor.clone(), store_id, publishable_key_id)

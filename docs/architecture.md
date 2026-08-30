@@ -13,14 +13,19 @@ User ── Store Membership ── Store ── Sales Channel
   │                              ├── Payments and refunds
   │                              └── Publishable channel keys
   │
-  └── User-owned Access Key ── MCP tools ── Store membership authorization
+  └── OAuth 2.1 + PKCE ── MCP tools ── Store membership authorization
 ```
 
 A User may create and leave Stores, while Store Owners explicitly add Users and manage their roles. A Store is the tenant, authorization boundary, and commerce-data isolation boundary. There is no merchant-account layer. A Sales Channel controls where Store products are published; it is not an ownership boundary.
 
-Human Users authenticate with an external identity provider and receive a short-lived Chaos JWT. Google and Apple are the initial providers behind one application port. The provider subject, not the email address, is the durable external identity.
+Human Users authenticate through the MCP OAuth 2.1 authorization-code flow with an external identity provider. Google and Apple are the initial providers behind one application port. The provider subject, not the email address, is the durable external identity.
 
-Users create private Access Keys in the Identity control plane. An Access Key identifies one User, not one Store, and is never embedded in a storefront. It is a general trusted-client credential; MCP is its first consumer. Every Store-scoped request selects a Store explicitly and rechecks the User's current Store membership before invoking a commerce use case. For MCP, the Store UUID is a required `store_id` field in the tool input, while `Authorization` is the only required HTTP header; Store scope is not carried in a custom header. Leaving a Store removes access immediately without rotating the User's Key.
+MCP clients authenticate through OAuth 2.1 authorization-code flow with PKCE. An
+OAuth access token identifies one User for the MCP resource, while every
+Store-scoped request selects a Store explicitly and rechecks the User's current
+Store membership before invoking a commerce use case. For MCP, the Store UUID
+is a required `store_id` field in the tool input, while `Authorization` is the
+only required HTTP header; Store scope is not carried in a custom header.
 
 The MCP HTTP transport is stateless. Protocol context and authentication are supplied on each request, allowing any API replica to handle it without local session affinity.
 
@@ -28,7 +33,7 @@ Stores issue public Storefront Keys for Sales Channels. Each key is bound to one
 active Sales Channel at creation; it cannot invoke trusted-client or
 administration use cases.
 
-Commerce administration is exposed through MCP rather than an Admin HTTP API. HTTP remains for identity bootstrap, storefront and channel traffic, provider webhooks, and health checks.
+Commerce administration is exposed through MCP rather than an Admin HTTP API. HTTP remains for the MCP OAuth protocol, storefront and channel traffic, provider webhooks, and health checks.
 
 ## Code structure
 
@@ -46,7 +51,7 @@ chaos-worker ----------> chaos-core -> chaos-domain
 
 External boundaries that genuinely need replacement live in `chaos-core::contracts`; their concrete adapters live beside the use cases under `integrations`, `repositories`, `security`, and `storage`. The API and
 Worker compose separate runtime dependency sets; starting a Worker does not
-construct HTTP routes, MCP state, OIDC verification, or JWT services.
+construct HTTP routes, MCP state, OIDC verification, or OAuth services.
 
 Bounded contexts may depend on another context only through a small core-level interface when there is a real external or test seam. HTTP and MCP handlers do not execute SQL. Database records do not become domain entities.
 
@@ -83,16 +88,18 @@ Identity owns:
 - Users;
 - external Provider identities;
 - external identity verification;
-- Chaos access-token issuance and verification;
-- User-owned Access Key issuance, verification, listing, and revocation.
+- MCP OAuth client registration, authorization-code flow, and token rotation.
 
 MCP OAuth authorization-code transactions, PKCE challenges, short-lived access
 tokens, and rotated refresh tokens are also owned by the identity database. The
-MCP resource server accepts both OAuth access tokens and legacy Access Keys.
+MCP resource server accepts OAuth access tokens scoped to its protected
+resource.
 
-The database stores no passwords, magic links, passkeys, or human sessions. JWTs contain issuer, audience, subject, issued-at, and expiry claims and are signed with HS256. Provider ID tokens are accepted only after signature, algorithm, issuer, audience, expiry, subject, and verified-email validation against cached Provider JWKS.
+The database stores no passwords, magic links, passkeys, or human sessions. MCP OAuth access and refresh tokens are stored as digests and bound to the MCP resource. Provider ID tokens are accepted only after signature, algorithm, issuer, audience, expiry, subject, and verified-email validation against cached Provider JWKS.
 
-Identity uses a dedicated non-owner database role because sign-in and Access Key authentication occur before any Store context exists. That role can access only the `identity` schema.
+Identity uses a dedicated non-owner database role because sign-in and OAuth
+authentication occur before any Store context exists. That role can access only
+the `identity` schema.
 
 Automatic account linking by email is not supported. A different Provider presenting an email already assigned to a User receives a conflict. Explicit Provider linking can be added later as an authenticated use case.
 
@@ -106,13 +113,12 @@ Every Store-owned table includes `store_id`. Every Store transaction sets transa
 
 Credential resolution is intentionally asymmetric:
 
-- a User JWT yields `user_id`, followed by a Store membership check;
-- a User Access Key yields `access_key_id` and `user_id`, followed by a fresh Store membership check;
-- a Publishable Store Key yields `store_id` and its bound `sales_channel_id`;
+- an MCP OAuth access token yields `user_id`, followed by a fresh Store membership check;
+- a Publishable Store Key yields `store_id` and its bound `channel_id`;
 - a webhook yields `store_id` only after signature verification and Provider mapping;
 - a Worker carries `store_id` in its durable job and establishes a fresh transaction context.
 
-The MCP operation chain is `request_id -> mcp credential -> user_id -> store_id -> use case`. OAuth access tokens are short-lived, audience-bound to the MCP resource, and refresh-token rotation is enforced; Access Keys remain a backwards-compatible long-lived credential. Neither credential contains a cached membership or role.
+The MCP operation chain is `request_id -> oauth access token -> user_id -> store_id -> use case`. OAuth access tokens are short-lived, audience-bound to the MCP resource, and refresh-token rotation is enforced. Tokens do not contain a cached membership or role.
 
 ## Commerce reliability
 
@@ -153,10 +159,12 @@ Cart from creating a second Order; the provider idempotency key is derived from
 that Order ID and is not another database field.
 
 Cart and Order have separate responsibilities. The Checkout API transaction
-creates a pending Order snapshot, reserves tracked inventory, and marks the
-source Cart `locked`. It does not create a successor Cart inside the checkout
-transaction. The storefront obtains or creates a new active Cart after the
-transaction, while the source Cart remains an immutable commercial input.
+resolves and verifies the current cart amount, reserves tracked inventory,
+creates a pending Order snapshot, and marks the source Cart `locked`. It does
+not create a successor Cart inside the checkout transaction. The storefront
+obtains or creates a new active Cart after the transaction. A successful
+payment marks the source Cart `completed`; a failed, cancelled, or expired
+payment marks it `abandoned`.
 Stripe owns the checkout UI, address, shipping, tax, and payment collection;
 Chaos stores only the provider-neutral `payment_client_action` needed to resume
 the form and stores final provider facts on the Order after a verified webhook.
@@ -166,9 +174,10 @@ paying. All of those paths resume the same pending Order and stored client
 action. The server checkout bridge also checks for a pending Order belonging to
 the Cart cookie before creating a replacement Cart, so a lost response cannot
 turn a retry into checkout against an empty Cart. A successful payment confirms
-the Order and clears the action; a provider failure or expiry cancels the Order,
-releases the reservation, and clears the action. The source Cart remains
-`locked` in every payment outcome.
+the Order, consumes the reservation, and clears the action; a provider failure,
+cancellation, or expiry cancels the Order, releases the reservation, and clears
+the action. `cart_lines` stores only Variant identity and quantity; Order lines
+retain the immutable product and pricing snapshot.
 There is no local checkout expiry job: the provider callback is the source of
 truth. New products are added only to a separate active Cart and a later
 checkout creates a new Order.

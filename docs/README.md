@@ -22,8 +22,8 @@ preserve the dependency direction in
 
 | Runtime | Entry point | Responsibility |
 | --- | --- | --- |
-| HTTP API | `crates/chaos-api/src/bin/chaos-api.rs` | Identity bootstrap, Storefront APIs, Provider webhooks, and health |
-| MCP | `crates/chaos-api/src/mcp/router.rs` | AI-operated Store administration authenticated by User Access Keys |
+| HTTP API | `crates/chaos-api/src/bin/chaos-api.rs` | MCP OAuth endpoints, Storefront APIs, Provider webhooks, and health |
+| MCP | `crates/chaos-api/src/mcp/router.rs` | AI-operated Store administration authenticated by MCP OAuth |
 | Worker | `crates/chaos-worker/src/bin/chaos-worker.rs` | Durable polling and Provider reconciliation outside API replicas |
 | Migration job | `crates/chaos-api/src/bin/chaos-migrate.rs` | Applies SQL migrations before an application rollout |
 
@@ -40,7 +40,7 @@ preserve the dependency direction in
 
 | Product area | Domain and use cases | Delivery and adapters | Database ownership |
 | --- | --- | --- | --- |
-| Users, external identity, Access Keys | `identity` | HTTP auth and identity adapter | `identity` |
+| Users, external identity, and OAuth | `identity` | MCP OAuth endpoints and identity adapter | `identity` |
 | Stores, memberships, channels, shipping countries, Publishable Keys | `store` | MCP Store tools and Store repositories | `commerce` |
 | Products, variants, collections, media | `catalog` | MCP catalog tools and catalog repositories | `commerce` |
 | Price lists | `pricing` | MCP pricing tools and pricing repositories | `commerce` |
@@ -58,7 +58,7 @@ matching PostgreSQL schemas.
 HTTP delivery code is grouped by public responsibility under
 `crates/chaos-api/src/http/`:
 
-- `identity/` contains account bootstrap and User Access Key endpoints;
+- `oauth.rs` contains MCP OAuth discovery, authorization, consent, and token endpoints;
 - `storefront/` contains every publishable Store API surface;
 - `storefront/v1/carts.rs` contains cart and checkout delivery; Provider callbacks are mounted under `/integrations/v1/webhooks`;
 - `health.rs` contains health checks;
@@ -81,7 +81,7 @@ not in application use cases.
 ## Contracts and operations
 
 - `packages/js/` is the typed Storefront JavaScript client and public HTTP contract.
-- `migrations/0001_platform.sql` through `0012_publishable_key_channel_binding.sql` are the
+- `migrations/0001_platform.sql` through `0007_integration_analytics.sql` are the
   fresh bootstrap schema. Catalog media attachments and manual-review
   provenance are defined in `0005_commerce_products.sql`. `0004_integration.sql`
   owns the shared Integration account, webhook inbox, and queue infrastructure;

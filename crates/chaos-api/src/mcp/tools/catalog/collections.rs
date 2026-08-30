@@ -107,7 +107,7 @@ pub struct CollectionPublicationParams {
     /// The collection's UUID.
     pub collection_id: String,
     /// The sales channel's UUID to publish to or unpublish from.
-    pub sales_channel_id: String,
+    pub channel_id: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
 }
@@ -125,7 +125,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<ListCollectionsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -193,7 +193,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<GetCollectionParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -225,7 +225,7 @@ impl ChaosMcp {
                     "product_id": item.product_id.as_uuid(),
                     "position": item.position,
                 })).collect::<Vec<_>>(),
-                "published_sales_channel_ids": detail.published_sales_channel_ids.into_iter()
+                "published_channel_ids": detail.published_channel_ids.into_iter()
                     .map(|id| id.as_uuid()).collect::<Vec<_>>(),
                 "metadata": detail.metadata,
                 "created_at": format_time(detail.created_at),
@@ -245,7 +245,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<CreateCollectionParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -290,7 +290,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<UpdateCollectionParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -360,7 +360,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<AddProductsToCollectionParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -435,7 +435,7 @@ impl ChaosMcp {
         activate: bool,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -477,7 +477,7 @@ impl ChaosMcp {
         publish: bool,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -495,8 +495,7 @@ impl ChaosMcp {
             Ok(id) => CollectionId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let sales_channel_id = match parse_uuid_field(&params.sales_channel_id, "sales_channel_id")
-        {
+        let channel_id = match parse_uuid_field(&params.channel_id, "channel_id") {
             Ok(id) => SalesChannelId::from_uuid(id),
             Err(result) => return Ok(result),
         };
@@ -504,7 +503,7 @@ impl ChaosMcp {
             actor,
             store_id,
             collection_id,
-            sales_channel_id,
+            channel_id,
             now: self.state.clock.now(),
         };
         let result = if publish {

@@ -282,21 +282,10 @@ async fn consent(
     };
     let transaction_id = body.transaction_id;
     let identity_token = secrecy::SecretString::from(body.identity_token);
-    let grant = match state.identity_auth.sign_in(provider, &identity_token).await {
-        Ok(grant) => grant,
-        Err(error) => {
-            return consent_identity_error_response(error, request_id, transaction_id, provider);
-        }
-    };
-    let user_id = match state.identity_auth.authenticate(&grant.token) {
+    let user_id = match state.identity_auth.sign_in(provider, &identity_token).await {
         Ok(user_id) => user_id,
         Err(error) => {
-            return consent_access_token_error_response(
-                error,
-                request_id,
-                transaction_id,
-                provider,
-            );
+            return consent_identity_error_response(error, request_id, transaction_id, provider);
         }
     };
     match state
@@ -601,46 +590,6 @@ fn consent_identity_error_response(
     }
 }
 
-fn consent_access_token_error_response(
-    error: ApplicationError,
-    request_id: &str,
-    transaction_id: Uuid,
-    provider: IdentityProvider,
-) -> Response {
-    match error {
-        ApplicationError::Unavailable { service, source } => oauth_dependency_error(
-            request_id,
-            transaction_id,
-            provider,
-            "access_token_authentication",
-            service,
-            source,
-        ),
-        ApplicationError::Unexpected(source) => oauth_unexpected_error(
-            request_id,
-            transaction_id,
-            provider,
-            "access_token_authentication",
-            source,
-        ),
-        error => {
-            tracing::error!(
-                request_id,
-                transaction_id = %transaction_id,
-                provider = %provider.as_str(),
-                stage = "access_token_authentication",
-                error_kind = application_error_kind(&error),
-                "issued OAuth access token could not be authenticated"
-            );
-            oauth_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server_error",
-                "an unexpected error occurred",
-            )
-        }
-    }
-}
-
 fn consent_authorization_error_response(
     error: ApplicationError,
     request_id: &str,
@@ -898,7 +847,7 @@ mod tests {
     use std::sync::Arc;
 
     use axum::http::{Method, StatusCode};
-    use chaos_core::contracts::{AccessTokenGrant, IdentityAuthentication};
+    use chaos_core::contracts::IdentityAuthentication;
     use chaos_domain::identity::{IdentityProvider, UserId};
     use secrecy::SecretString;
     use serde_json::json;
@@ -927,7 +876,7 @@ mod tests {
             &self,
             _provider: IdentityProvider,
             _identity_token: &SecretString,
-        ) -> Result<AccessTokenGrant, ApplicationError> {
+        ) -> Result<UserId, ApplicationError> {
             Err(match self.failure {
                 SignInFailure::Unavailable => ApplicationError::Unavailable {
                     service: "identity_provider",
@@ -937,10 +886,6 @@ mod tests {
                     ApplicationError::Unexpected(anyhow::anyhow!("identity token state is invalid"))
                 }
             })
-        }
-
-        fn authenticate(&self, _token: &SecretString) -> Result<UserId, ApplicationError> {
-            Err(ApplicationError::Unauthorized)
         }
     }
 
@@ -953,7 +898,7 @@ mod tests {
     }
 
     async fn consent_with_failure(failure: SignInFailure) -> (StatusCode, serde_json::Value) {
-        let mut state = test_state("postgres://localhost/chaos", UserId::new());
+        let mut state = test_state("postgres://localhost/chaos");
         state.identity_auth = Arc::new(FailingAuthentication { failure });
         let response = router(state)
             .oneshot(request(

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    identity::{AccessKeyId, UserId},
+    identity::UserId,
     store::{StoreId, StoreRole},
 };
 
@@ -20,7 +20,6 @@ pub struct StoreActor {
     user_id: UserId,
     store_id: StoreId,
     role: StoreRole,
-    access_key_id: Option<AccessKeyId>,
 }
 
 impl StoreActor {
@@ -29,13 +28,7 @@ impl StoreActor {
             user_id,
             store_id,
             role,
-            access_key_id: None,
         }
-    }
-
-    pub const fn with_access_key(mut self, key_id: AccessKeyId) -> Self {
-        self.access_key_id = Some(key_id);
-        self
     }
 
     pub const fn user_id(self) -> UserId {
@@ -48,10 +41,6 @@ impl StoreActor {
 
     pub const fn role(self) -> StoreRole {
         self.role
-    }
-
-    pub const fn access_key_id(self) -> Option<AccessKeyId> {
-        self.access_key_id
     }
 }
 

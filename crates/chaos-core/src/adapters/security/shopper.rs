@@ -26,11 +26,11 @@ impl HmacShopperCredentialCodec {
         &self,
         shopper_id: Uuid,
         store_id: Uuid,
-        sales_channel_id: Uuid,
+        channel_id: Uuid,
     ) -> Result<Vec<u8>, ApplicationError> {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.secret)
             .map_err(|error| ApplicationError::Unexpected(error.into()))?;
-        mac.update(signing_input(shopper_id, store_id, sales_channel_id).as_bytes());
+        mac.update(signing_input(shopper_id, store_id, channel_id).as_bytes());
         Ok(mac.finalize().into_bytes().to_vec())
     }
 }
@@ -41,13 +41,11 @@ impl ShopperCredentialCodec for HmacShopperCredentialCodec {
         actor: &MachineActor,
         shopper_id: ShopperId,
     ) -> Result<SecretString, ApplicationError> {
-        let sales_channel_id = actor
-            .sales_channel_id
-            .ok_or(ApplicationError::Unauthorized)?;
+        let channel_id = actor.channel_id.ok_or(ApplicationError::Unauthorized)?;
         let signature = self.signature(
             shopper_id.as_uuid(),
             actor.store_id.as_uuid(),
-            sales_channel_id.as_uuid(),
+            channel_id.as_uuid(),
         )?;
         Ok(SecretString::from(format!(
             "{TOKEN_PREFIX}.{}.{}",
@@ -66,21 +64,14 @@ impl ShopperCredentialCodec for HmacShopperCredentialCodec {
             return Err(ApplicationError::Unauthorized);
         }
         let shopper_id = Uuid::parse_str(parts[1]).map_err(|_| ApplicationError::Unauthorized)?;
-        let sales_channel_id = actor
-            .sales_channel_id
-            .ok_or(ApplicationError::Unauthorized)?;
+        let channel_id = actor.channel_id.ok_or(ApplicationError::Unauthorized)?;
         let presented = URL_SAFE_NO_PAD
             .decode(parts[2])
             .map_err(|_| ApplicationError::Unauthorized)?;
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.secret)
             .map_err(|error| ApplicationError::Unexpected(error.into()))?;
         mac.update(
-            signing_input(
-                shopper_id,
-                actor.store_id.as_uuid(),
-                sales_channel_id.as_uuid(),
-            )
-            .as_bytes(),
+            signing_input(shopper_id, actor.store_id.as_uuid(), channel_id.as_uuid()).as_bytes(),
         );
         mac.verify_slice(&presented)
             .map_err(|_| ApplicationError::Unauthorized)?;
@@ -88,8 +79,8 @@ impl ShopperCredentialCodec for HmacShopperCredentialCodec {
     }
 }
 
-fn signing_input(shopper_id: Uuid, store_id: Uuid, sales_channel_id: Uuid) -> String {
-    format!("{TOKEN_PREFIX}:{shopper_id}:{store_id}:{sales_channel_id}")
+fn signing_input(shopper_id: Uuid, store_id: Uuid, channel_id: Uuid) -> String {
+    format!("{TOKEN_PREFIX}:{shopper_id}:{store_id}:{channel_id}")
 }
 
 fn validate_secret(value: Vec<u8>) -> anyhow::Result<Vec<u8>> {
@@ -114,7 +105,7 @@ mod tests {
         MachineActor {
             publishable_key_id: PublishableKeyId::new(),
             store_id: StoreId::new(),
-            sales_channel_id: Some(SalesChannelId::new()),
+            channel_id: Some(SalesChannelId::new()),
         }
     }
 
@@ -145,7 +136,7 @@ mod tests {
         let shopper_id = ShopperId::new();
         let credential = codec.issue(&actor, shopper_id).unwrap();
         let other_channel = MachineActor {
-            sales_channel_id: Some(SalesChannelId::new()),
+            channel_id: Some(SalesChannelId::new()),
             ..actor
         };
 

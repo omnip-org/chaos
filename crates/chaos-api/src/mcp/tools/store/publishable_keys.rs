@@ -22,7 +22,7 @@ pub struct CreatePublishableKeyParams {
     /// The Store UUID to modify.
     pub store_id: String,
     /// The active Sales Channel UUID to bind to the key.
-    pub sales_channel_id: String,
+    pub channel_id: String,
     pub name: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
@@ -64,7 +64,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<CreatePublishableKeyParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -78,8 +78,7 @@ impl ChaosMcp {
             return Ok(result);
         }
         let store_id = actor.store_id();
-        let sales_channel_id = match parse_uuid_field(&params.sales_channel_id, "sales_channel_id")
-        {
+        let channel_id = match parse_uuid_field(&params.channel_id, "channel_id") {
             Ok(id) => SalesChannelId::from_uuid(id),
             Err(result) => return Ok(result),
         };
@@ -89,14 +88,14 @@ impl ChaosMcp {
             .create(CreatePublishableKeyInput {
                 actor,
                 store_id,
-                sales_channel_id,
+                channel_id,
                 name: params.name,
             })
             .await
         {
             Ok(output) => Ok(text_result(json!({
                 "id": output.publishable_key.id().as_uuid(),
-                "sales_channel_id": output.publishable_key.sales_channel_id().as_uuid(),
+                "channel_id": output.publishable_key.channel_id().as_uuid(),
                 "name": output.publishable_key.name(),
                 "public_key": output.public_key,
             }))),
@@ -115,7 +114,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<ListPublishableKeysParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -174,7 +173,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<RevokePublishableKeyParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
+            &self.state.mcp_oauth,
             &self.state.store_queries,
             &parts,
             &params.store_id,
@@ -210,7 +209,7 @@ fn publishable_key_summary(
 ) -> serde_json::Value {
     json!({
         "id": item.id.as_uuid(),
-        "sales_channel_id": item.sales_channel_id.as_uuid(),
+        "channel_id": item.channel_id.as_uuid(),
         "name": item.name,
         "public_key": item.public_key,
         "created_at": format_time(item.created_at),

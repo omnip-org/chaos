@@ -55,7 +55,7 @@ impl PostgresStorefrontSalesRepository {
         // requests return the canonical active Cart without minting another.
         if let Some(cart_id) = sqlx::query_scalar::<_, Uuid>(
             "SELECT id FROM commerce.carts \
-             WHERE store_id = $1 AND sales_channel_id = $2 AND shopper_id = $3 \
+             WHERE store_id = $1 AND channel_id = $2 AND shopper_id = $3 \
                AND status = 'active' \
              ORDER BY updated_at DESC, id DESC LIMIT 1 FOR UPDATE",
         )
@@ -84,9 +84,9 @@ impl PostgresStorefrontSalesRepository {
         );
         sqlx::query(
             "INSERT INTO commerce.carts \
-             (id, store_id, shopper_id, sales_channel_id, price_list_id) \
+             (id, store_id, shopper_id, channel_id, price_list_id) \
              VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT (store_id, sales_channel_id, shopper_id) \
+             ON CONFLICT (store_id, channel_id, shopper_id) \
                  WHERE status = 'active' DO NOTHING",
         )
         .bind(cart.id().as_uuid())
@@ -99,7 +99,7 @@ impl PostgresStorefrontSalesRepository {
         .map_err(database_error)?;
         let canonical_id: Uuid = sqlx::query_scalar(
             "SELECT id FROM commerce.carts \
-             WHERE store_id = $1 AND sales_channel_id = $2 AND shopper_id = $3 \
+             WHERE store_id = $1 AND channel_id = $2 AND shopper_id = $3 \
                AND status = 'active' \
              ORDER BY updated_at DESC, id DESC LIMIT 1",
         )
@@ -334,9 +334,28 @@ impl PostgresStorefrontSalesRepository {
         .await
         .map_err(database_error)?
         .ok_or_else(payment_provider_unavailable)?;
+        // The checkout transaction owns the complete handoff: freeze the Cart,
+        // reserve stock, create the pending Order, and persist its immutable
+        // line snapshot. Any later failure rolls the whole handoff back.
+        let cart_locked = sqlx::query(
+            "UPDATE commerce.carts SET status = 'locked'::commerce.cart_status, \
+                    version = version + 1, updated_at = $3 \
+             WHERE store_id = $1 AND id = $2 AND status = 'active'",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(cart_id.as_uuid())
+        .bind(request.now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .rows_affected();
+        if cart_locked != 1 {
+            return Err(cart_not_active());
+        }
+        reserve_inventory_for_cart(&mut transaction, actor, &cart).await?;
         sqlx::query(
             "INSERT INTO commerce.orders \
-             (id, store_id, order_number, sales_channel_id, cart_id, shopper_id, idempotency_key, \
+             (id, store_id, order_number, channel_id, cart_id, shopper_id, idempotency_key, \
               price_list_id, currency, payment_provider_account_id, contact_email, \
              checkout_request_fingerprint, \
              subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
@@ -361,20 +380,7 @@ impl PostgresStorefrontSalesRepository {
         .await
         .map_err(checkout_insert_error)?;
         let order_id = requested_order_id;
-        reserve_inventory_for_cart(&mut transaction, actor, &cart).await?;
         insert_order_lines(&mut transaction, actor, order_id, &cart, request.now).await?;
-
-        sqlx::query(
-            "UPDATE commerce.carts SET status = 'locked', \
-                    version = version + 1, updated_at = $3 \
-             WHERE store_id = $1 AND id = $2 AND status = 'active'",
-        )
-        .bind(actor.store_id.as_uuid())
-        .bind(cart_id.as_uuid())
-        .bind(request.now)
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
         let draft = CheckoutDraft {
             order_id,
             source_cart_id: cart_id,
@@ -416,14 +422,14 @@ impl PostgresStorefrontSalesRepository {
                    SELECT 1 FROM commerce.orders AS order_row \
                    WHERE order_row.store_id=token.store_id \
                      AND order_row.id=token.order_id \
-                     AND order_row.sales_channel_id=$4 \
+                     AND order_row.channel_id=$4 \
                ) \
              RETURNING token.order_id",
         )
         .bind(now)
         .bind(actor.store_id.as_uuid())
         .bind(digest.as_slice())
-        .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
+        .bind(actor.channel_id.map(SalesChannelId::as_uuid))
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -463,11 +469,11 @@ async fn existing_checkout_draft(
                 sales_order.currency::text, sales_order.subtotal_amount_minor, \
                 sales_order.checkout_request_fingerprint \
          FROM commerce.orders AS sales_order \
-         WHERE sales_order.store_id = $1 AND sales_order.sales_channel_id = $2 \
+         WHERE sales_order.store_id = $1 AND sales_order.channel_id = $2 \
            AND sales_order.shopper_id = $3 AND sales_order.cart_id = $4",
     )
     .bind(actor.store_id.as_uuid())
-    .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
+    .bind(actor.channel_id.map(SalesChannelId::as_uuid))
     .bind(shopper_id.as_uuid())
     .bind(cart_id.as_uuid())
     .fetch_optional(&mut **transaction)

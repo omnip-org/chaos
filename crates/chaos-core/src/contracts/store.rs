@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chaos_domain::{
     CurrencyCode, RegionCode,
     identity::UserId,
-    store::{StoreCode, StoreId, StoreRole, StoreStatus},
+    store::{StoreId, StoreRole, StoreStatus},
 };
 use time::OffsetDateTime;
 
@@ -10,7 +10,6 @@ use crate::{ApplicationError, store::StoreActor};
 
 pub struct StoreListItem {
     pub id: StoreId,
-    pub code: StoreCode,
     pub name: String,
     pub region: RegionCode,
     pub currency: CurrencyCode,

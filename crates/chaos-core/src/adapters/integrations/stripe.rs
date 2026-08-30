@@ -248,8 +248,8 @@ impl PaymentProvider for StripeGateway {
                             command.order_context.shopper_id.to_string(),
                         ),
                         (
-                            "metadata[chaos_sales_channel_id]".into(),
-                            command.order_context.sales_channel_id.to_string(),
+                            "metadata[chaos_channel_id]".into(),
+                            command.order_context.channel_id.to_string(),
                         ),
                         (
                             "metadata[chaos_order_number]".into(),
@@ -301,8 +301,8 @@ impl PaymentProvider for StripeGateway {
                 command.order_context.shopper_id.to_string(),
             ),
             (
-                "metadata[chaos_sales_channel_id]".into(),
-                command.order_context.sales_channel_id.to_string(),
+                "metadata[chaos_channel_id]".into(),
+                command.order_context.channel_id.to_string(),
             ),
             (
                 "metadata[chaos_order_number]".into(),
@@ -797,7 +797,7 @@ fn map_stripe_event(event: &StripeEventEnvelope) -> Result<MappedStripeEvent, Ap
         // provider event until a later follow-up event arrives.
         "checkout.session.async_payment_succeeded" => (Some("payment.captured"), "cs_"),
         "checkout.session.async_payment_failed" => (Some("payment.failed"), "cs_"),
-        "checkout.session.expired" => (Some("payment.cancelled"), "cs_"),
+        "checkout.session.expired" => (Some("payment.expired"), "cs_"),
         // A charge-level notification is the trigger for a provider API
         // reconciliation. It contains the aggregate amount but not the
         // individual Refund objects, so it must never create a local Refund
@@ -1058,7 +1058,7 @@ mod tests {
         OrderMetadataContext {
             store_id: Uuid::from_u128(3),
             shopper_id: Uuid::from_u128(4),
-            sales_channel_id: Uuid::from_u128(5),
+            channel_id: Uuid::from_u128(5),
             order_number: "W-20260101-ABCDEFGH".into(),
         }
     }
@@ -1709,11 +1709,11 @@ mod tests {
     }
 
     #[test]
-    fn checkout_session_expired_cancels() {
+    fn checkout_session_expired_expires_payment() {
         let aggregate_id = Uuid::now_v7();
         let event = checkout_session_event("checkout.session.expired", None, aggregate_id);
         let (event_type, ..) = map_stripe_event(&event).unwrap();
-        assert_eq!(event_type.as_deref(), Some("payment.cancelled"));
+        assert_eq!(event_type.as_deref(), Some("payment.expired"));
     }
 
     fn refund_event(

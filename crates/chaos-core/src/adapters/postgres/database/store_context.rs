@@ -47,14 +47,13 @@ mod tests {
             .await
             .unwrap();
 
-        for (store_id, code) in [(store_a, "store-a"), (store_b, "store-b")] {
+        for (store_id, name) in [(store_a, "store-a"), (store_b, "store-b")] {
             sqlx::query(
-                "INSERT INTO commerce.stores (id, code, name, currency, status) \
-                 VALUES ($1, $2, $3, 'USD', 'active')",
+                "INSERT INTO commerce.stores (id, name, currency, status) \
+                 VALUES ($1, $2, 'USD', 'active')",
             )
             .bind(store_id)
-            .bind(code)
-            .bind(code)
+            .bind(name)
             .execute(&pool)
             .await
             .unwrap();
@@ -68,17 +67,17 @@ mod tests {
             .await
             .unwrap();
         }
-        for (channel_id, store_id, code) in
+        for (channel_id, store_id, name) in
             [(channel_a, store_a, "web-a"), (channel_b, store_b, "web-b")]
         {
             sqlx::query(
-                "INSERT INTO commerce.store_sales_channels \
-                 (id, store_id, code, name, storefront_origin, is_default) \
-                 VALUES ($1, $2, $3, $3, $4, true)",
+                "INSERT INTO commerce.channels \
+                 (id, store_id, name, origin) \
+                 VALUES ($1, $2, $3, $4)",
             )
             .bind(channel_id)
             .bind(store_id)
-            .bind(code)
+            .bind(name)
             .bind(format!("https://{}.example.test/", store_id.simple()))
             .execute(&pool)
             .await
@@ -99,18 +98,18 @@ mod tests {
             .await
             .unwrap();
         }
-        for (key_id, store_id, sales_channel_id, public_key) in [
+        for (key_id, store_id, channel_id, public_key) in [
             (key_a, store_a, channel_a, "pk_123456789ABCDEFGHJKLMNPQ"),
             (key_b, store_b, channel_b, "pk_23456789ABCDEFGHJKLMNPQR"),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.store_publishable_keys \
-                 (id, store_id, sales_channel_id, public_key, name) \
+                "INSERT INTO commerce.channel_publishable_keys \
+                 (id, store_id, channel_id, public_key, name) \
                  VALUES ($1, $2, $3, $4, 'RLS test key')",
             )
             .bind(key_id)
             .bind(store_id)
-            .bind(sales_channel_id)
+            .bind(channel_id)
             .bind(public_key)
             .execute(&pool)
             .await
@@ -151,12 +150,12 @@ mod tests {
                 .await
                 .unwrap();
         let visible_key_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.store_publishable_keys ORDER BY id")
+            sqlx::query_scalar("SELECT id FROM commerce.channel_publishable_keys ORDER BY id")
                 .fetch_all(&mut *transaction)
                 .await
                 .unwrap();
         let visible_channel_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.store_sales_channels ORDER BY id")
+            sqlx::query_scalar("SELECT id FROM commerce.channels ORDER BY id")
                 .fetch_all(&mut *transaction)
                 .await
                 .unwrap();
@@ -218,14 +217,11 @@ mod tests {
         let option_a = Uuid::now_v7();
         let option_value_a = Uuid::now_v7();
         let variant_b = Uuid::now_v7();
-        let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
-
         sqlx::query(
-            "INSERT INTO commerce.stores (id, code, name) \
-             VALUES ($1, $2, 'Catalog Test')",
+            "INSERT INTO commerce.stores (id, name) \
+             VALUES ($1, 'Catalog Test')",
         )
         .bind(store_id)
-        .bind(format!("catalog-test-{suffix}"))
         .execute(&pool)
         .await
         .unwrap();

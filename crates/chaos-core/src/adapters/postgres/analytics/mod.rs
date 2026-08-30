@@ -469,13 +469,13 @@ impl PostgresAnalyticsEventStore {
         events: &[AnalyticsEventInput],
         received_at: OffsetDateTime,
     ) -> Result<usize, ApplicationError> {
-        let channel = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
+        let channel = actor.channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut tx = self.pool.begin().await.map_err(db)?;
         context(&mut tx, actor.store_id.as_uuid(), None).await?;
         let active: bool = sqlx::query_scalar(
             "SELECT EXISTS(
                 SELECT 1 FROM commerce.stores s
-                JOIN commerce.store_sales_channels c ON c.store_id=s.id
+                JOIN commerce.channels c ON c.store_id=s.id
                 WHERE s.id=$1 AND c.id=$2 AND s.status='active' AND c.status='active'
             )",
         )

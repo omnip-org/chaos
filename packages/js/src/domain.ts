@@ -73,9 +73,10 @@ export function getAverageRating(reviews: readonly Review[]): number | null {
 export function getOrderConfirmationState(
   status: string | undefined,
   paymentStatus: string | undefined,
-): "pending" | "confirmed" | "failed" | "cancelled" {
-  if (status === "cancelled") return "cancelled";
+): "pending" | "confirmed" | "failed" | "expired" | "cancelled" {
+  if (paymentStatus === "expired") return "expired";
   if (paymentStatus === "failed") return "failed";
+  if (status === "cancelled") return "cancelled";
   if (status === "confirmed") return "confirmed";
   return "pending";
 }

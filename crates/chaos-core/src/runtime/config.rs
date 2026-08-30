@@ -2,7 +2,6 @@ use std::{env, net::SocketAddr, str::FromStr, time::Duration};
 
 use anyhow::{Context, bail};
 use base64::Engine as _;
-use secrecy::SecretString;
 use url::Url;
 
 #[derive(Clone, Debug)]
@@ -16,10 +15,6 @@ pub struct Settings {
     pub database_runtime_role: String,
     pub database_identity_role: String,
     pub redis_url: String,
-    pub auth_jwt_issuer: String,
-    pub auth_jwt_audience: String,
-    pub auth_jwt_secret: SecretString,
-    pub auth_jwt_lifetime_seconds: u32,
     pub mcp_allowed_hosts: Vec<String>,
     pub mcp_allowed_origins: Vec<String>,
     pub public_base_url: Url,
@@ -105,10 +100,6 @@ impl Settings {
             database_runtime_role: required_role("DATABASE_RUNTIME_ROLE")?,
             database_identity_role: required_role("DATABASE_IDENTITY_ROLE")?,
             redis_url: required("REDIS_URL")?,
-            auth_jwt_issuer: required("AUTH_JWT_ISSUER")?,
-            auth_jwt_audience: required("AUTH_JWT_AUDIENCE")?,
-            auth_jwt_secret: SecretString::from(required("AUTH_JWT_SECRET")?),
-            auth_jwt_lifetime_seconds: parse_or("AUTH_JWT_LIFETIME_SECONDS", "3600")?,
             mcp_allowed_hosts: comma_separated_or("MCP_ALLOWED_HOSTS", "localhost,127.0.0.1,::1")?,
             mcp_allowed_origins: comma_separated_origins(
                 "MCP_ALLOWED_ORIGINS",

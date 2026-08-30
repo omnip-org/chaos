@@ -23,12 +23,12 @@ impl PostgresStripeRepository {
         shopper: &ShopperActor,
     ) -> Result<Vec<PendingPaymentOrder>, ApplicationError> {
         let actor = &shopper.machine;
-        let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
+        let channel_id = actor.channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut transaction = self.begin_shopper(shopper).await?;
         let rows = sqlx::query_as::<_, (Uuid, Uuid, String, i64, OffsetDateTime, OffsetDateTime)>(
             "SELECT id, cart_id, currency::text, subtotal_amount_minor, created_at, updated_at \
              FROM commerce.orders \
-             WHERE store_id = $1 AND sales_channel_id = $2 AND shopper_id = $3 \
+             WHERE store_id = $1 AND channel_id = $2 AND shopper_id = $3 \
                AND status = 'pending' AND payment_status = 'pending' \
              ORDER BY created_at DESC, id DESC",
         )
@@ -90,7 +90,7 @@ impl PostgresStripeRepository {
             return Err(stripe_invalid_response());
         }
         let actor = &shopper.machine;
-        let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
+        let channel_id = actor.channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut transaction = self.begin_shopper(shopper).await?;
         let existing = sqlx::query_as::<_, (Uuid, String, String, Option<Value>)>(
             "SELECT sales_order.cart_id, sales_order.status::text, \
@@ -98,7 +98,7 @@ impl PostgresStripeRepository {
              FROM commerce.orders AS sales_order \
              INNER JOIN commerce.carts AS source_cart \
                ON source_cart.store_id = sales_order.store_id AND source_cart.id = sales_order.cart_id \
-             WHERE sales_order.store_id = $1 AND sales_order.sales_channel_id = $2 \
+             WHERE sales_order.store_id = $1 AND sales_order.channel_id = $2 \
                AND sales_order.shopper_id = $3 AND sales_order.id = $4 \
              FOR UPDATE OF sales_order, source_cart",
         )
@@ -156,11 +156,11 @@ impl PostgresStripeRepository {
         let mut transaction = self.begin_shopper(shopper).await?;
         let row = sqlx::query_as::<_, (Uuid, String)>(
             "SELECT cart_id, status::text FROM commerce.orders \
-             WHERE store_id = $1 AND sales_channel_id = $2 AND shopper_id = $3 AND id = $4 \
+             WHERE store_id = $1 AND channel_id = $2 AND shopper_id = $3 AND id = $4 \
              FOR UPDATE",
         )
         .bind(actor.store_id.as_uuid())
-        .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
+        .bind(actor.channel_id.map(SalesChannelId::as_uuid))
         .bind(shopper.shopper_id.as_uuid())
         .bind(order_id.as_uuid())
         .fetch_optional(&mut *transaction)
@@ -174,7 +174,8 @@ impl PostgresStripeRepository {
         release_order_inventory(&mut transaction, actor.store_id.as_uuid(), order_id.as_uuid())
             .await?;
         sqlx::query(
-            "UPDATE commerce.orders SET status = 'cancelled', payment_status = 'failed', \
+            "UPDATE commerce.orders SET status = 'cancelled'::commerce.order_status, \
+                    payment_status = 'failed'::commerce.order_payment_status, \
                     payment_failure_code = $3, updated_at = $4 \
              WHERE store_id = $1 AND id = $2 AND status = 'pending'",
         )
@@ -186,7 +187,8 @@ impl PostgresStripeRepository {
         .await
         .map_err(database_error)?;
         sqlx::query(
-            "UPDATE commerce.carts SET payment_client_action = NULL, updated_at = $3 \
+            "UPDATE commerce.carts SET status = 'abandoned'::commerce.cart_status, \
+                    payment_client_action = NULL, updated_at = $3 \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(actor.store_id.as_uuid())
@@ -224,13 +226,14 @@ impl PostgresStripeRepository {
         // partially refunded) is eligible for a further refund.
         let payment_status = match row.2.as_str() {
             "paid" | "partially_refunded" => PaymentAttemptStatus::Captured,
+            "expired" => PaymentAttemptStatus::Expired,
             _ => PaymentAttemptStatus::Failed,
         };
         // Pending refunds already claim their share of the captured amount,
         // so a second concurrent request cannot double-spend it before the
         // first one confirms via webhook.
         let already_refunded: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(amount_minor), 0)::bigint FROM commerce.refunds \
+            "SELECT COALESCE(SUM(amount_minor), 0)::bigint FROM commerce.order_refunds \
              WHERE store_id = $1 AND order_id = $2 AND status IN ('pending', 'succeeded')",
         )
         .bind(store_id.as_uuid())
@@ -247,7 +250,7 @@ impl PostgresStripeRepository {
         )?;
         let id = refund.id();
         sqlx::query(
-            "INSERT INTO commerce.refunds \
+            "INSERT INTO commerce.order_refunds \
              (id, store_id, order_id, currency, status, amount_minor, \
               payment_provider_account_id) \
              VALUES ($1, $2, $3, $4, 'pending', $5, $6)",
@@ -428,9 +431,9 @@ impl PostgresStripeRepository {
                 "SELECT refund.amount_minor, refund.currency::text, \
                         account.id, account.credential_secret_reference, \
                         sales_order.payment_provider_reference_id, \
-                        sales_order.shopper_id, sales_order.sales_channel_id, \
+                        sales_order.shopper_id, sales_order.channel_id, \
                         sales_order.order_number, sales_order.id, refund.id \
-                 FROM commerce.refunds AS refund \
+                 FROM commerce.order_refunds AS refund \
                  INNER JOIN commerce.orders AS sales_order \
                    ON sales_order.store_id = refund.store_id AND sales_order.id = refund.order_id \
                  INNER JOIN integration.provider_accounts AS account \
@@ -455,7 +458,7 @@ impl PostgresStripeRepository {
                 "SELECT sales_order.subtotal_amount_minor, sales_order.currency::text, \
                         account.id, account.credential_secret_reference, \
                         sales_order.payment_provider_reference_id, \
-                        sales_order.shopper_id, sales_order.sales_channel_id, \
+                        sales_order.shopper_id, sales_order.channel_id, \
                         sales_order.order_number, sales_order.id, NULL::uuid \
                  FROM commerce.orders AS sales_order \
                  INNER JOIN integration.provider_accounts AS account \
@@ -616,7 +619,7 @@ impl PostgresStripeRepository {
             order_context: OrderMetadataContext {
                 store_id: job.store_id,
                 shopper_id: row.5,
-                sales_channel_id: row.6,
+                channel_id: row.6,
                 order_number: row.7,
             },
         })
@@ -647,7 +650,7 @@ impl PostgresStripeRepository {
         let mut transaction = self.begin_context(None, job.store_id).await?;
         let rows = if internal_event_type == "refund.create_requested" {
             sqlx::query(
-                "UPDATE commerce.refunds \
+                "UPDATE commerce.order_refunds \
                  SET payment_provider_reference_id = COALESCE(payment_provider_reference_id, $3), \
                      updated_at = CASE WHEN payment_provider_reference_id IS NULL THEN $4 ELSE updated_at END \
                  WHERE store_id = $1 AND id = $2 \

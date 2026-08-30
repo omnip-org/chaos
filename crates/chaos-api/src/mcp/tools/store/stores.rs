@@ -24,10 +24,9 @@ use crate::mcp::{
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreateStoreParams {
-    pub code: String,
     pub name: String,
-    /// Absolute HTTP(S) origin for the default web Sales Channel.
-    pub storefront_origin: String,
+    /// Absolute HTTP(S) origin for the initial web channel.
+    pub origin: String,
     #[serde(default = "region")]
     pub region: String,
     #[serde(default = "currency")]
@@ -93,15 +92,11 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateStoreParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let principal = match crate::mcp::auth::authenticate_principal(
-            &self.state.access_key_authentication,
-            &parts,
-        )
-        .await
-        {
-            Ok(principal) => principal,
-            Err(result) => return Ok(result),
-        };
+        let principal =
+            match crate::mcp::auth::authenticate_principal(&self.state.mcp_oauth, &parts).await {
+                Ok(principal) => principal,
+                Err(result) => return Ok(result),
+            };
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
@@ -110,12 +105,11 @@ impl ChaosMcp {
             .create_store
             .execute(CreateStoreInput {
                 user_id: principal.user_id,
-                code: params.code,
                 name: params.name,
                 region: Some(params.region),
                 currency: Some(params.currency),
                 meta: params.meta,
-                storefront_origin: params.storefront_origin,
+                origin: params.origin,
             })
             .await
         {
@@ -133,15 +127,11 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListStoresParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let principal = match crate::mcp::auth::authenticate_principal(
-            &self.state.access_key_authentication,
-            &parts,
-        )
-        .await
-        {
-            Ok(principal) => principal,
-            Err(result) => return Ok(result),
-        };
+        let principal =
+            match crate::mcp::auth::authenticate_principal(&self.state.mcp_oauth, &parts).await {
+                Ok(principal) => principal,
+                Err(result) => return Ok(result),
+            };
         let after = match params.cursor.as_deref().map(uuid::Uuid::parse_str) {
             Some(Ok(id)) => Some(StoreId::from_uuid(id)),
             Some(Err(_)) => {
@@ -293,7 +283,6 @@ impl ChaosMcp {
 fn store_json(item: StoreListItem) -> serde_json::Value {
     json!({
         "id": item.id.as_uuid(),
-        "code": item.code.as_str(),
         "name": item.name,
         "region": item.region.as_str(),
         "currency": item.currency.as_str(),

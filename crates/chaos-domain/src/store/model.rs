@@ -25,33 +25,6 @@ impl Default for StoreId {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct StoreCode(String);
-
-impl StoreCode {
-    pub fn parse(value: impl Into<String>) -> Result<Self, DomainError> {
-        let value = value.into();
-        let bytes = value.as_bytes();
-        let valid = (2..=32).contains(&bytes.len())
-            && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
-            && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
-            && bytes
-                .iter()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-');
-        if !valid {
-            return Err(DomainError::Validation(vec![FieldViolation {
-                field: "code",
-                reason: "must be 2-32 lowercase ASCII letters, digits, or hyphens".into(),
-            }]));
-        }
-        Ok(Self(value))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoreStatus {
     Active,
@@ -78,7 +51,6 @@ impl StoreStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Store {
     id: StoreId,
-    code: StoreCode,
     name: String,
     region: RegionCode,
     currency: CurrencyCode,
@@ -88,7 +60,6 @@ pub struct Store {
 
 impl Store {
     pub fn create(
-        code: StoreCode,
         name: impl Into<String>,
         region: RegionCode,
         currency: CurrencyCode,
@@ -103,7 +74,6 @@ impl Store {
         }
         Ok(Self {
             id: StoreId::new(),
-            code,
             name,
             region,
             currency,
@@ -114,10 +84,6 @@ impl Store {
 
     pub const fn id(&self) -> StoreId {
         self.id
-    }
-
-    pub fn code(&self) -> &StoreCode {
-        &self.code
     }
 
     pub fn name(&self) -> &str {
@@ -140,12 +106,12 @@ impl Store {
         self.meta.as_ref()
     }
 
-    pub fn validate_activation(active_default_channel_exists: bool) -> Result<(), DomainError> {
+    pub fn validate_activation(active_channel_exists: bool) -> Result<(), DomainError> {
         let mut violations = Vec::new();
-        if !active_default_channel_exists {
+        if !active_channel_exists {
             violations.push(FieldViolation {
-                field: "sales_channels",
-                reason: "must contain an active default channel before Store activation".into(),
+                field: "channels",
+                reason: "must contain an active channel before Store activation".into(),
             });
         }
         if violations.is_empty() {
@@ -162,21 +128,14 @@ mod tests {
 
     #[test]
     fn new_store_starts_active() {
-        let store = Store::create(
-            StoreCode::parse("main-store").unwrap(),
-            "Main Store",
-            RegionCode::US,
-            CurrencyCode::USD,
-            None,
-        )
-        .unwrap();
+        let store = Store::create("Main Store", RegionCode::US, CurrencyCode::USD, None).unwrap();
         assert_eq!(store.status(), StoreStatus::Active);
         assert_eq!(store.region(), RegionCode::US);
         assert_eq!(store.currency(), CurrencyCode::USD);
     }
 
     #[test]
-    fn activation_requires_default_channel_readiness() {
+    fn activation_requires_channel_readiness() {
         assert!(Store::validate_activation(true).is_ok());
         let error = Store::validate_activation(false).unwrap_err();
         assert!(matches!(error, DomainError::Validation(violations) if violations.len() == 1));

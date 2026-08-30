@@ -29,7 +29,7 @@ impl StorefrontCatalog {
     pub fn context(actor: &MachineActor) -> Result<StorefrontContext, ApplicationError> {
         Ok(StorefrontContext {
             store_id: actor.store_id,
-            sales_channel_id: actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?,
+            channel_id: actor.channel_id.ok_or(ApplicationError::Forbidden)?,
         })
     }
 
@@ -142,7 +142,7 @@ mod tests {
         MachineActor {
             publishable_key_id: PublishableKeyId::new(),
             store_id: StoreId::new(),
-            sales_channel_id: Some(SalesChannelId::new()),
+            channel_id: Some(SalesChannelId::new()),
         }
     }
 
@@ -151,14 +151,14 @@ mod tests {
         let actor = actor();
         let context = StorefrontCatalog::context(&actor).unwrap();
         assert_eq!(context.store_id, actor.store_id);
-        assert_eq!(Some(context.sales_channel_id), actor.sales_channel_id);
+        assert_eq!(Some(context.channel_id), actor.channel_id);
     }
 
     #[tokio::test]
     async fn publishable_keys_without_a_sales_channel_cannot_enter_storefront_catalog() {
         let catalog = StorefrontCatalog::new(Arc::new(EmptyRepository));
         let mut key = actor();
-        key.sales_channel_id = None;
+        key.channel_id = None;
         let result = catalog
             .list_products(&key, None, None, None, None, 20)
             .await;

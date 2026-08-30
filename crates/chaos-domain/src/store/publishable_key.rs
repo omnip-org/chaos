@@ -31,14 +31,14 @@ impl Default for PublishableKeyId {
 pub struct PublishableKey {
     id: PublishableKeyId,
     store_id: StoreId,
-    sales_channel_id: SalesChannelId,
+    channel_id: SalesChannelId,
     name: String,
 }
 
 impl PublishableKey {
     pub fn issue(
         store_id: StoreId,
-        sales_channel_id: SalesChannelId,
+        channel_id: SalesChannelId,
         name: impl Into<String>,
     ) -> Result<Self, DomainError> {
         let name = name.into();
@@ -51,7 +51,7 @@ impl PublishableKey {
         Ok(Self {
             id: PublishableKeyId::new(),
             store_id,
-            sales_channel_id,
+            channel_id,
             name,
         })
     }
@@ -59,10 +59,10 @@ impl PublishableKey {
     pub fn from_parts(
         id: PublishableKeyId,
         store_id: StoreId,
-        sales_channel_id: SalesChannelId,
+        channel_id: SalesChannelId,
         name: impl Into<String>,
     ) -> Result<Self, DomainError> {
-        let mut key = Self::issue(store_id, sales_channel_id, name)?;
+        let mut key = Self::issue(store_id, channel_id, name)?;
         key.id = id;
         Ok(key)
     }
@@ -75,8 +75,8 @@ impl PublishableKey {
         self.store_id
     }
 
-    pub const fn sales_channel_id(&self) -> SalesChannelId {
-        self.sales_channel_id
+    pub const fn channel_id(&self) -> SalesChannelId {
+        self.channel_id
     }
 
     pub fn name(&self) -> &str {

@@ -33,7 +33,7 @@ Copy `.env.example` to `.env`, set mode `0600`, and replace every `CHANGE_ME_*` 
 
 The repository includes the local self-signed origin certificate used behind Cloudflare at `deploy/nginx/certs/omnip.org.crt` and `deploy/nginx/certs/omnip.org.key`. Replace the certificate paths and `server_name` in the NGINX configuration together if a different origin name is used.
 
-Set `AUTH_JWT_ISSUER` to the public HTTPS API origin, use a deployment-specific `AUTH_JWT_AUDIENCE`, generate `AUTH_JWT_SECRET` with at least 32 random bytes, and configure at least one of `GOOGLE_CLIENT_ID` or `APPLE_CLIENT_ID`.
+Configure at least one of `GOOGLE_CLIENT_ID` or `APPLE_CLIENT_ID` for the MCP OAuth authorization page.
 
 Set `MCP_ALLOWED_HOSTS` to the comma-separated public Host authorities accepted by the MCP endpoint. The MCP transport is stateless, so a color switch does not require sticky sessions.
 Set `MCP_ALLOWED_ORIGINS` to the browser origins that are allowed to send MCP
@@ -46,7 +46,10 @@ Payment, email, shipping, and analytics Provider Key secrets are AES-256-GCM enc
 
 **Back this key up like you would the database itself.** There is no rotation or re-encryption tooling — losing the key makes every previously stored Provider Key permanently unrecoverable, and rotating it requires an owner to re-submit every Provider Key for every Store through MCP.
 
-An owner uploads a Provider Key with the `create_provider_secret` MCP tool. The MCP connection uses the User's private Access Key, and the tool input carries the target Store as `store_id`. Store scope is part of every Store-scoped tool's JSON schema; it is not an HTTP header.
+An owner uploads a Provider Key with the `create_provider_secret` MCP tool. The
+MCP connection uses an OAuth access token, and the tool input carries the target
+Store as `store_id`. Store scope is part of every Store-scoped tool's JSON
+schema; it is not an HTTP header.
 
 The response contains a newly generated `enc://...` reference. The plaintext is not returned again or stored anywhere in plaintext. Use that reference in the existing Provider account create/update request.
 
@@ -126,18 +129,15 @@ is sent as `Authorization: Bearer <mcp-access-token>` and the client refreshes
 it before the 15-minute expiry. OAuth access tokens and refresh tokens are
 stored only as digests and are audience-bound to `/mcp/v1`.
 
-The legacy bootstrap remains available for clients that cannot use OAuth:
-
-1. Exchange a Google or Apple identity token at `POST /identity/v1/auth/external`; retain the returned User ID for explicit Store membership management.
-2. Create a User-owned Access Key at `POST /identity/v1/access-keys` with the JWT. Preserve the plaintext returned once.
-3. Configure the client with `Authorization: Bearer <access-key>`. Pass `store_id: <store-id>` in every Store-scoped MCP tool input. `create_store` and `list_stores` are User-scoped and do not take `store_id`. `create_store` requires the default web Sales Channel's absolute `storefront_origin`.
-4. Create or administer the Store through MCP tools. Membership is checked for every tool call.
-5. Create only public Storefront Keys for storefront or Sales Channel clients. The returned plaintext has the form `pk_<24 Base58 characters>` and must be treated as a client credential.
-6. Upload third-party credentials and configure Providers through MCP tools.
-7. Activate the Store and exercise a non-destructive read or test transaction.
+1. Start the MCP OAuth authorization-code flow from the protected-resource metadata.
+2. Configure the client with `Authorization: Bearer <mcp-access-token>`. Pass `store_id: <store-id>` in every Store-scoped MCP tool input. `create_store` and `list_stores` are User-scoped and do not take `store_id`. `create_store` requires the initial web channel's absolute `origin`.
+3. Create or administer the Store through MCP tools. Membership is checked for every tool call.
+4. Create only public Channel publishable keys for storefront clients. The returned plaintext has the form `pk_<24 Base58 characters>` and must be treated as a client credential.
+5. Upload third-party credentials and configure Providers through MCP tools.
+6. Activate the Store and exercise a non-destructive read or test transaction.
 
 ## Deployment secrets and rotation
 
-The host's `.env` (mode `0600`, git-ignored, never leaves the host) contains platform bootstrap configuration only: database access, token signing, media storage, provider API base URLs, and `CHAOS_PROVIDER_SECRET_KEY`. Identity does not use email delivery. Order-confirmation email delivery runs in the Worker from the Store's `integration.provider_accounts` account and its nested `configuration.brand` values; verified delivery callbacks are retained in `integration.provider_webhook_inbox`, while a separate notification projection is not yet maintained. The file is created once from `.env.example` during host bootstrap and edited by hand thereafter; nothing writes to it automatically. Store-specific Provider Key plaintext is never copied into `.env` or anywhere else — only the encryption key that seals it in PostgreSQL lives there.
+The host's `.env` (mode `0600`, git-ignored, never leaves the host) contains platform bootstrap configuration only: database access, media storage, provider API base URLs, and `CHAOS_PROVIDER_SECRET_KEY`. Identity does not use email delivery. Order-confirmation email delivery runs in the Worker from the Store's `integration.provider_accounts` account and its nested `configuration.brand` values; verified delivery callbacks are retained in `integration.provider_webhook_inbox`, while a separate notification projection is not yet maintained. The file is created once from `.env.example` during host bootstrap and edited by hand thereafter; nothing writes to it automatically. Store-specific Provider Key plaintext is never copied into `.env` or anywhere else — only the encryption key that seals it in PostgreSQL lives there.
 
 Editing `.env` and re-running `./deploy.sh` performs a normal blue/green API rollout and restarts the Worker with the same image. Changing or adding an encrypted Provider secret through MCP does not require a deploy.

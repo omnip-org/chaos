@@ -1,6 +1,6 @@
 # Chaos Commerce
 
-A headless commerce engine where Users create, join, and leave independent Stores. Each Store owns its channels, catalog, variants, publication state, orders, payments, refunds, fulfillment, and public Storefront Keys. Users operate their Stores through AI MCP with OAuth 2.1 + PKCE or legacy User-owned private Access Keys. Chaos is built with Rust, Axum, PostgreSQL 18, and Redis 8.
+A headless commerce engine where Users create, join, and leave independent Stores. Each Store owns its channels, catalog, variants, publication state, orders, payments, refunds, fulfillment, and public Storefront Keys. Users operate their Stores through AI MCP with OAuth 2.1 + PKCE. Chaos is built with Rust, Axum, PostgreSQL 18, and Redis 8.
 
 ## Local development
 
@@ -44,7 +44,7 @@ curl --insecure --header 'Host: chaos.omnip.org' https://localhost/health/live
 curl --insecure --header 'Host: chaos.omnip.org' https://localhost/health/ready
 ```
 
-Users sign in with a configured Google or Apple identity token. Chaos validates the provider token and issues a short-lived JWT; it stores no passwords or human sessions. Identity does not send authentication email. Order-confirmation email is delivered by the Worker through the Store's configured Resend account.
+Users sign in through the MCP OAuth 2.1 authorization-code flow with a configured Google or Apple identity provider. Chaos stores no passwords or human sessions. Identity does not send authentication email. Order-confirmation email is delivered by the Worker through the Store's configured Resend account.
 
 Stop the stack:
 

@@ -519,166 +519,6 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION commerce.capture_product_change ()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-BEGIN
-    INSERT INTO integration.event_outbox (
-        id,
-        store_id,
-        aggregate_type,
-        aggregate_id,
-        internal_event_type,
-        payload
-    ) VALUES (
-        uuidv7(),
-        NEW.store_id,
-        'product',
-        NEW.id,
-        'search.product.changed',
-        jsonb_build_object('product_id', NEW.id)
-    )
-    ON CONFLICT (store_id, aggregate_id, internal_event_type)
-    WHERE internal_event_type = 'search.product.changed'
-      AND processed_at IS NULL
-      AND failed_at IS NULL
-    DO NOTHING;
-    RETURN NEW;
-END;
-$$;
-
-CREATE FUNCTION commerce.capture_variant_change ()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-DECLARE
-    owning_store_id    UUID;
-    changed_product_id UUID;
-BEGIN
-    IF TG_OP = 'DELETE' THEN
-        owning_store_id    := OLD.store_id;
-        changed_product_id := OLD.product_id;
-    ELSE
-        owning_store_id    := NEW.store_id;
-        changed_product_id := NEW.product_id;
-    END IF;
-
-    IF EXISTS (SELECT 1 FROM commerce.stores WHERE id = owning_store_id) THEN
-        INSERT INTO integration.event_outbox (
-            id,
-            store_id,
-            aggregate_type,
-            aggregate_id,
-            internal_event_type,
-            payload
-        ) VALUES (
-            uuidv7(),
-            owning_store_id,
-            'product',
-            changed_product_id,
-            'search.product.changed',
-            jsonb_build_object('product_id', changed_product_id)
-        )
-        ON CONFLICT (store_id, aggregate_id, internal_event_type)
-        WHERE internal_event_type = 'search.product.changed'
-          AND processed_at IS NULL
-          AND failed_at IS NULL
-        DO NOTHING;
-    END IF;
-
-    IF TG_OP = 'DELETE' THEN
-        RETURN OLD;
-    END IF;
-    RETURN NEW;
-END;
-$$;
-
-CREATE FUNCTION commerce.rebuild_store_products (requested_store_id UUID)
-RETURNS BIGINT
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-DECLARE
-    rebuilt    BIGINT := 0;
-BEGIN
-    DELETE FROM commerce.product_documents WHERE store_id = requested_store_id;
-
-    INSERT INTO commerce.product_documents (store_id, product_id, document, indexed_at)
-    SELECT
-        product.store_id,
-        product.id,
-        to_tsvector('simple', concat_ws(
-            ' ',
-            product.handle::text,
-            product.title,
-            product.description,
-            string_agg(concat_ws(' ', variant.title, variant.sku::text), ' ')
-        )),
-        CURRENT_TIMESTAMP
-    FROM commerce.products AS product
-    LEFT JOIN commerce.product_variants AS variant
-        ON variant.store_id = product.store_id
-       AND variant.product_id = product.id
-       AND variant.status = 'active'
-    WHERE product.store_id = requested_store_id
-    GROUP BY product.store_id, product.id;
-
-    GET DIAGNOSTICS rebuilt = ROW_COUNT;
-
-    RETURN rebuilt;
-END;
-$$;
-
-CREATE FUNCTION commerce.process_events (
-    batch_size    INTEGER,
-    max_attempts  INTEGER,
-    finished_at   TIMESTAMPTZ
-)
-RETURNS BIGINT
-LANGUAGE plpgsql
-VOLATILE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-DECLARE
-    event     RECORD;
-    processed BIGINT := 0;
-BEGIN
-    FOR event IN
-        SELECT
-            outbox.id,
-            outbox.store_id,
-            outbox.aggregate_id,
-            outbox.attempts
-        FROM integration.claim_event_outbox(
-            'chaos_search_events', batch_size
-        ) AS outbox
-    LOOP
-        BEGIN
-            PERFORM commerce.refresh_product_document(
-                event.store_id, event.aggregate_id
-            );
-            PERFORM integration.finish_event_outbox(
-                event.id, event.attempts, true, '', max_attempts, finished_at
-            );
-            processed := processed + 1;
-        EXCEPTION WHEN OTHERS THEN
-            PERFORM integration.finish_event_outbox(
-                event.id, event.attempts, false, SQLERRM, max_attempts, finished_at
-            );
-        END;
-    END LOOP;
-
-    RETURN processed;
-END;
-$$;
-
 CREATE FUNCTION integration.cleanup_terminal_rows (batch_size INTEGER)
 RETURNS INTEGER
 LANGUAGE plpgsql
@@ -757,10 +597,6 @@ REVOKE ALL ON FUNCTION integration.enqueue_webhook_event () FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_provider_webhook_inbox (integration.provider_capability, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.finish_provider_webhook (UUID, INTEGER, integration.webhook_processing_status, TEXT, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.cleanup_terminal_rows (INTEGER) FROM PUBLIC;
-REVOKE ALL ON FUNCTION commerce.capture_product_change () FROM PUBLIC;
-REVOKE ALL ON FUNCTION commerce.capture_variant_change () FROM PUBLIC;
-REVOKE ALL ON FUNCTION commerce.rebuild_store_products (UUID) FROM PUBLIC;
-REVOKE ALL ON FUNCTION commerce.process_events (INTEGER, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION integration.finish_event_outbox (UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_event_outbox (TEXT, INTEGER) TO chaos_runtime;
@@ -769,7 +605,6 @@ GRANT EXECUTE ON FUNCTION integration.resolve_webhook_secret_reference (integrat
 GRANT EXECUTE ON FUNCTION integration.claim_provider_webhook_inbox (integration.provider_capability, INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.finish_provider_webhook (UUID, INTEGER, integration.webhook_processing_status, TEXT, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.cleanup_terminal_rows (INTEGER) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION commerce.process_events (INTEGER, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 
 GRANT USAGE ON SCHEMA integration TO chaos_runtime;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA integration TO chaos_runtime;

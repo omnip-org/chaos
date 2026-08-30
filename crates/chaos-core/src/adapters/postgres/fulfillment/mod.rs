@@ -124,7 +124,7 @@ impl PostgresFulfillmentRepository {
             tracking_url,
         )?;
         sqlx::query(
-            "INSERT INTO commerce.fulfillments \
+            "INSERT INTO commerce.order_fulfillments \
              (id, store_id, order_id, shipping_provider_account_id, status, \
               tracking_number, tracking_url) \
              VALUES ($1, $2, $3, $4, 'awaiting_pickup', $5, $6)",
@@ -180,7 +180,7 @@ impl PostgresFulfillmentRepository {
         let transitioned = fulfillment.mark_shipped(tracking_number, tracking_url)?;
         let update_result = if transitioned {
             sqlx::query(
-                "UPDATE commerce.fulfillments \
+                "UPDATE commerce.order_fulfillments \
                     SET status = 'shipped', tracking_number = $3, tracking_url = $4, \
                         shipped_at = $5, updated_at = $5 \
                   WHERE store_id = $1 AND id = $2 AND status = 'awaiting_pickup'",
@@ -198,7 +198,7 @@ impl PostgresFulfillmentRepository {
             // be correcting the tracking number/url, so persist those fields directly rather
             // than silently discarding the update (status/shipped_at are left untouched).
             sqlx::query(
-                "UPDATE commerce.fulfillments \
+                "UPDATE commerce.order_fulfillments \
                     SET tracking_number = $3, tracking_url = $4, updated_at = $5 \
                   WHERE store_id = $1 AND id = $2 AND status = 'shipped'",
             )
@@ -256,7 +256,7 @@ impl PostgresFulfillmentRepository {
         let mut fulfillment = load_domain_fulfillment(&mut transaction, store_id, id).await?;
         fulfillment.mark_delivered()?;
         sqlx::query(
-            "UPDATE commerce.fulfillments \
+            "UPDATE commerce.order_fulfillments \
                 SET status = 'delivered', delivered_at = $3, updated_at = $3 \
               WHERE store_id = $1 AND id = $2 AND status = 'shipped'",
         )
@@ -286,7 +286,7 @@ impl PostgresFulfillmentRepository {
         let mut fulfillment = load_domain_fulfillment(&mut transaction, store_id, id).await?;
         fulfillment.cancel()?;
         sqlx::query(
-            "UPDATE commerce.fulfillments \
+            "UPDATE commerce.order_fulfillments \
                 SET status = 'cancelled', cancelled_at = $3, updated_at = $3 \
               WHERE store_id = $1 AND id = $2 AND status IN ('awaiting_pickup', 'shipped')",
         )
@@ -323,7 +323,7 @@ async fn recompute_order_shipping_status(
     order_id: OrderId,
 ) -> Result<(), ApplicationError> {
     let active_statuses: Vec<String> = sqlx::query_scalar(
-        "SELECT status::text FROM commerce.fulfillments \
+        "SELECT status::text FROM commerce.order_fulfillments \
          WHERE store_id = $1 AND order_id = $2 AND status <> 'cancelled'",
     )
     .bind(store_id.as_uuid())
@@ -364,7 +364,7 @@ async fn load_domain_fulfillment(
     let row = sqlx::query_as::<_, FulfillmentRow>(
         "SELECT id, order_id, shipping_provider_account_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
-         FROM commerce.fulfillments WHERE store_id = $1 AND id = $2 FOR UPDATE",
+         FROM commerce.order_fulfillments WHERE store_id = $1 AND id = $2 FOR UPDATE",
     )
     .bind(store_id.as_uuid())
     .bind(id.as_uuid())
@@ -390,7 +390,7 @@ async fn load_fulfillment(
     sqlx::query_as::<_, FulfillmentRow>(
         "SELECT id, order_id, shipping_provider_account_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
-         FROM commerce.fulfillments WHERE store_id = $1 AND id = $2",
+         FROM commerce.order_fulfillments WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
     .bind(id.as_uuid())

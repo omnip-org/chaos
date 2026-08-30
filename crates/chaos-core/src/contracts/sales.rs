@@ -82,7 +82,7 @@ pub struct OrderPaymentAttemptItem {
 }
 
 /// One Refund against an Order. An Order may have more than one across
-/// partial refunds — see `commerce.refunds`.
+/// partial refunds — see `commerce.order_refunds`.
 pub struct OrderRefundItem {
     pub id: RefundId,
     pub status: RefundStatus,
@@ -95,7 +95,7 @@ pub struct OrderRefundItem {
 
 /// One shipment against an Order. Kept as its own row (rather than flat
 /// columns on `orders`) so the shipping history is a real timeline — see
-/// `commerce.fulfillments`.
+/// `commerce.order_fulfillments`.
 pub struct OrderFulfillmentItem {
     pub id: FulfillmentId,
     pub shipping_provider_account_id: ShippingProviderAccountId,

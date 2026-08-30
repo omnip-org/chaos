@@ -17,7 +17,10 @@ The critical evidence rule carried over from the prior integration this replaces
 
 Storefront submission (`POST /storefront/v1/products/{product_id}/reviews`) requires a Publishable Key and needs no Shopper credential. A submission always lands `pending` and is invisible to `GET /storefront/v1/products/{product_id}/reviews` until an administrator approves it. That read endpoint requires the same Publishable Key as every other Storefront API operation and returns approved top-level reviews newest-first with their approved staff replies nested underneath. ADR 0028 removed the originally introduced Publishable Key scopes.
 
-Review moderation is exposed through MCP tools authenticated with a User-owned Access Key and authorized through current Store membership. Approval and rejection are terminal from `pending` only; a moderation mistake requires a new review, matching other terminal commerce transitions.
+Review moderation is exposed through MCP tools authenticated with OAuth and
+authorized through current Store membership. Approval and rejection are
+terminal from `pending` only; a moderation mistake requires a new review,
+matching other terminal commerce transitions.
 
 ## Consequences
 

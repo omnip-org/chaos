@@ -6,7 +6,7 @@ pub(super) async fn load_order(
     crate::adapters::postgres::sales::order_detail::load(
         transaction,
         actor.store_id,
-        actor.sales_channel_id,
+        actor.channel_id,
         order_id,
     )
     .await

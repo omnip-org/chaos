@@ -172,7 +172,7 @@ async fn load_order_checkout_payment(
     shopper_id: Uuid,
     order_id: OrderId,
 ) -> Result<Option<OrderCheckoutPayment>, ApplicationError> {
-    let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
+    let channel_id = actor.channel_id.ok_or(ApplicationError::Forbidden)?;
     let row = sqlx::query_as::<_, OrderCheckoutPaymentRow>(
         "SELECT sales_order.id AS id, sales_order.cart_id AS cart_id, \
                 sales_order.subtotal_amount_minor AS amount_minor, \
@@ -187,7 +187,7 @@ async fn load_order_checkout_payment(
          INNER JOIN integration.provider_accounts AS account \
            ON account.store_id = sales_order.store_id \
           AND account.id = sales_order.payment_provider_account_id \
-         WHERE sales_order.store_id = $1 AND sales_order.sales_channel_id = $2 \
+         WHERE sales_order.store_id = $1 AND sales_order.channel_id = $2 \
            AND sales_order.shopper_id = $3 AND sales_order.id = $4",
     )
     .bind(actor.store_id.as_uuid())
@@ -426,6 +426,13 @@ fn stripe_currency_mismatch() -> ApplicationError {
     ApplicationError::Conflict {
         code: "stripe_currency_mismatch",
         message: "the Stripe currency does not match the Payment Attempt",
+    }
+}
+
+fn stripe_amount_mismatch() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "stripe_amount_mismatch",
+        message: "the Stripe amount does not match the Checkout breakdown",
     }
 }
 

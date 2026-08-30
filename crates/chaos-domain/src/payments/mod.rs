@@ -35,6 +35,7 @@ pub enum PaymentAttemptStatus {
     Pending,
     Captured,
     Failed,
+    Expired,
 }
 
 impl PaymentAttemptStatus {
@@ -43,6 +44,7 @@ impl PaymentAttemptStatus {
             Self::Pending => "pending",
             Self::Captured => "captured",
             Self::Failed => "failed",
+            Self::Expired => "expired",
         }
     }
 
@@ -51,6 +53,7 @@ impl PaymentAttemptStatus {
             "pending" => Some(Self::Pending),
             "captured" => Some(Self::Captured),
             "failed" => Some(Self::Failed),
+            "expired" => Some(Self::Expired),
             _ => None,
         }
     }

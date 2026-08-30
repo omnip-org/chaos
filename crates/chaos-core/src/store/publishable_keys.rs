@@ -13,7 +13,7 @@ use super::Page;
 pub struct CreatePublishableKeyInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
-    pub sales_channel_id: SalesChannelId,
+    pub channel_id: SalesChannelId,
     pub name: String,
 }
 
@@ -43,8 +43,7 @@ impl PublishableKeyManagement {
         input: CreatePublishableKeyInput,
     ) -> Result<CreatePublishableKeyOutput, ApplicationError> {
         authorize_publishable_key_management(&input.actor)?;
-        let publishable_key =
-            PublishableKey::issue(input.store_id, input.sales_channel_id, input.name)?;
+        let publishable_key = PublishableKey::issue(input.store_id, input.channel_id, input.name)?;
         let material = self.generator.generate();
         let (publishable_key_id, public_key) = self
             .repository
@@ -56,7 +55,7 @@ impl PublishableKeyManagement {
             PublishableKey::from_parts(
                 publishable_key_id,
                 input.store_id,
-                input.sales_channel_id,
+                input.channel_id,
                 publishable_key.name().to_owned(),
             )?
         };
