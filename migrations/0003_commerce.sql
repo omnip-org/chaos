@@ -21,6 +21,30 @@ CREATE TABLE commerce.stores (
     CONSTRAINT stores_meta_is_object_check        CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
 );
 
+CREATE TABLE commerce.store_memberships (
+    store_id   UUID                 NOT NULL,
+    user_id    UUID                 NOT NULL,
+    role       commerce.store_role  NOT NULL,
+    created_at TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT store_memberships_pkey               PRIMARY KEY (store_id, user_id),
+    CONSTRAINT store_memberships_store_id_fkey      FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT store_memberships_user_id_fkey       FOREIGN KEY (user_id) REFERENCES identity.users (id) ON DELETE CASCADE
+);
+
+CREATE TABLE commerce.store_shipping_countries (
+    store_id     UUID         NOT NULL,
+    country_code CHAR(2)      NOT NULL,
+    enabled      BOOLEAN      NOT NULL DEFAULT true,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT store_shipping_countries_pkey                PRIMARY KEY (store_id, country_code),
+    CONSTRAINT store_shipping_countries_store_id_fkey       FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT store_shipping_countries_country_code_check  CHECK (country_code ~ '^[A-Z]{2}$')
+);
+
 CREATE TABLE commerce.shoppers (
     id           UUID          NOT NULL PRIMARY KEY,
     store_id     UUID          NOT NULL,
@@ -33,18 +57,6 @@ CREATE TABLE commerce.shoppers (
     CONSTRAINT shoppers_store_id_fkey         FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
     CONSTRAINT shoppers_meta_size_check       CHECK (meta IS NULL OR pg_column_size(meta) <= 32768),
     CONSTRAINT shoppers_meta_is_object_check  CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
-);
-
-CREATE TABLE commerce.store_memberships (
-    store_id   UUID                 NOT NULL,
-    user_id    UUID                 NOT NULL,
-    role       commerce.store_role  NOT NULL,
-    created_at TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT store_memberships_pkey               PRIMARY KEY (store_id, user_id),
-    CONSTRAINT store_memberships_store_id_fkey      FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT store_memberships_user_id_fkey       FOREIGN KEY (user_id) REFERENCES identity.users (id) ON DELETE CASCADE
 );
 
 CREATE TABLE commerce.channels (
@@ -78,18 +90,6 @@ CREATE TABLE commerce.channel_publishable_keys (
     CONSTRAINT channel_publishable_keys_store_id_channel_fkey FOREIGN KEY (store_id, channel_id) REFERENCES commerce.channels (store_id, id),
     CONSTRAINT channel_publishable_keys_public_key_format     CHECK (public_key ~ '^pk_[1-9A-HJ-NP-Za-km-z]{24}$'),
     CONSTRAINT channel_publishable_keys_name_length           CHECK (length(trim(name)) BETWEEN 1 AND 80)
-);
-
-CREATE TABLE commerce.store_shipping_countries (
-    store_id     UUID         NOT NULL,
-    country_code CHAR(2)      NOT NULL,
-    enabled      BOOLEAN      NOT NULL DEFAULT true,
-    created_at   TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT store_shipping_countries_pkey                PRIMARY KEY (store_id, country_code),
-    CONSTRAINT store_shipping_countries_store_id_fkey       FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT store_shipping_countries_country_code_check  CHECK (country_code ~ '^[A-Z]{2}$')
 );
 
 CREATE INDEX stores_status_idx ON commerce.stores (status);
