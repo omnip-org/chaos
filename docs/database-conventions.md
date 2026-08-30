@@ -83,7 +83,11 @@ The bootstrap uses `0001_platform.sql`, `0002_identity.sql`,
 `0003_commerce.sql`, `0004_integration.sql`,
 `0005_commerce_products.sql`, `0006_commerce_orders.sql`, and
 `0007_integration_analytics.sql`, followed by `0008_identity_oauth.sql`,
-`0009_checkout_lifecycle.sql`, and `0010_checkout_attempts.sql`.
+`0009_checkout_lifecycle.sql`, `0010_checkout_attempts.sql`, and
+`0011_order_centric_checkout.sql`. The last migration contracts the temporary
+Checkout Attempt implementation into an Order-centric checkout: Cart status is
+`active | locked | abandoned`, and the private payment-form handoff lives in
+`commerce.carts.payment_client_action`.
 Catalog media attachments and manual-review provenance are part of
 `0005_commerce_products.sql`. Release-hardening constraints, capability checks,
 and cleanup routines are defined in the migration that creates each dependent
@@ -96,6 +100,12 @@ grants.
 
 Production startup never runs migrations. Releases use a separate migration job and expand/migrate/contract changes when adjacent application versions may overlap. Destructive operations, table rewrites, large backfills, and blocking indexes require an explicit rollout plan.
 
+Migration `0011_order_centric_checkout.sql` is the contract step for the
+temporary Checkout Attempt schema: it drops the old table and status types.
+The deployment must drain the old API before applying it, then start the
+Order-centric API; the old and new checkout implementations must not serve
+traffic against the same database concurrently.
+
 ## SQL style
 
 - Use uppercase SQL keywords and built-in data types.
@@ -104,3 +114,50 @@ Production startup never runs migrations. Releases use a separate migration job 
 - Evaluate an index for every foreign-key access path; PostgreSQL does not create one automatically.
 - Keep transactions short and never perform network calls while holding database locks.
 - Add comments only for non-obvious invariants or operational constraints.
+
+### PostgreSQL enum and status columns
+
+PostgreSQL enum columns are typed boundaries. Application SQL must not rely on
+implicit conversion from `text`, especially when an expression produces a
+status value.
+
+- Cast bound status values at the point of use, using the enum owned by the
+  column:
+  `SET payment_status = $3::commerce.order_payment_status`.
+- Cast the complete result of `CASE`, `COALESCE`, `NULLIF`, `UNION`, or
+  `VALUES` expressions:
+  `(CASE WHEN payment_status = 'paid' THEN 'paid' ELSE 'pending' END)::commerce.order_payment_status`.
+- Use an explicit schema-qualified cast for enum literals in status writes,
+  even when PostgreSQL could infer the target type:
+  `SET status = 'cancelled'::commerce.order_status`.
+- Bound values in enum predicates must use the corresponding cast, for example
+  `WHERE status = $1::commerce.order_status`.
+- Read enum columns as text at the repository boundary (`status::text`) and
+  parse them into the Rust domain enum. Do not make the domain layer depend on
+  SQL types.
+- Keep allowed transitions in the domain/application layer. The PostgreSQL
+  enum and relational constraints remain the storage boundary; a `CHECK`
+  constraint or trigger does not replace explicit expression casts.
+
+Every new enum write path requires a PostgreSQL integration test against the
+migrated schema. Static SQL should use SQLx compile-time query checking where
+the build pipeline provides the migrated database or offline query metadata.
+
+### Checkout lifecycle invariants
+
+- The checkout transaction locks one active Cart, creates one pending Order,
+  snapshots its lines, and reserves inventory. It never calls a Provider and
+  never creates a successor Cart.
+- `(store_id, cart_id)` is unique on Orders. A locked Cart is immutable and
+  cannot start a second checkout; the storefront obtains or creates the next
+  active Cart after the transaction.
+- `commerce.carts.payment_client_action` is private provider-form recovery
+  state. It is allowed only on a locked Cart, is returned only by checkout
+  handoff endpoints, and is cleared by every terminal payment or Order path.
+- A pending Order is the resume identity. If the action exists, resume must
+  return it without a Provider call. If it does not exist, a retry may create
+  the Provider form with the Order-derived idempotency key; the retry must
+  provide a return URL because it is intentionally not persisted.
+- Provider callbacks, not a local timer, decide payment expiry. Callback
+  handling is responsible for clearing the action and releasing inventory on
+  failure or cancellation.

@@ -29,6 +29,7 @@ pub use integrations::{
 };
 pub use inventory::PostgresInventoryRepository;
 pub use maintenance::PostgresMaintenance;
+pub(crate) use payments::OrderCheckoutPayment;
 pub use payments::PostgresStripeRepository;
 pub use pricing::{PostgresPricingManagementRepository, PostgresPricingProvisioningRepository};
 pub use sales::{

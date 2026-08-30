@@ -1,60 +1,35 @@
-// Payment attempt creation, retrieval, provider command handling, and payment state updates.
+// Order-centric checkout handoff and payment state updates.
 
 impl PostgresStripeRepository {
-    pub(crate) async fn get_checkout_attempt_payment(
+    pub(crate) async fn get_order_checkout_payment(
         &self,
         shopper: &ShopperActor,
-        attempt_id: CheckoutAttemptId,
-    ) -> Result<Option<CheckoutAttemptPayment>, ApplicationError> {
+        order_id: OrderId,
+    ) -> Result<Option<OrderCheckoutPayment>, ApplicationError> {
         let mut transaction = self.begin_shopper(shopper).await?;
-        let detail = load_checkout_attempt_payment(
+        let payment = load_order_checkout_payment(
             &mut transaction,
             &shopper.machine,
             shopper.shopper_id.as_uuid(),
-            attempt_id,
+            order_id,
         )
         .await?;
         transaction.commit().await.map_err(database_error)?;
-        Ok(detail)
+        Ok(payment)
     }
 
-    pub(crate) async fn get_checkout_attempt(
+    pub(crate) async fn list_pending_payment_orders(
         &self,
         shopper: &ShopperActor,
-        attempt_id: CheckoutAttemptId,
-    ) -> Result<Option<CheckoutAttemptDetail>, ApplicationError> {
-        Ok(self
-            .get_checkout_attempt_payment(shopper, attempt_id)
-            .await?
-            .map(|attempt| attempt.detail))
-    }
-
-    pub(crate) async fn list_checkout_attempts(
-        &self,
-        shopper: &ShopperActor,
-    ) -> Result<Vec<CheckoutAttemptDetail>, ApplicationError> {
+    ) -> Result<Vec<PendingPaymentOrder>, ApplicationError> {
         let actor = &shopper.machine;
         let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut transaction = self.begin_shopper(shopper).await?;
-        let rows = sqlx::query_as::<
-            _,
-            (
-                Uuid,
-                Uuid,
-                Uuid,
-                Uuid,
-                String,
-                OffsetDateTime,
-                OffsetDateTime,
-                OffsetDateTime,
-            ),
-        >(
-            "SELECT id, order_id, source_cart_id, successor_cart_id, status::text, \
-                    expires_at, created_at, updated_at \
-             FROM commerce.checkout_attempts \
+        let rows = sqlx::query_as::<_, (Uuid, Uuid, String, i64, OffsetDateTime, OffsetDateTime)>(
+            "SELECT id, cart_id, currency::text, subtotal_amount_minor, created_at, updated_at \
+             FROM commerce.orders \
              WHERE store_id = $1 AND sales_channel_id = $2 AND shopper_id = $3 \
-               AND status IN ('creating', 'open') \
-               AND expires_at > CURRENT_TIMESTAMP \
+               AND status = 'pending' AND payment_status = 'pending' \
              ORDER BY created_at DESC, id DESC",
         )
         .bind(actor.store_id.as_uuid())
@@ -63,42 +38,40 @@ impl PostgresStripeRepository {
         .fetch_all(&mut *transaction)
         .await
         .map_err(database_error)?;
-        let attempts = rows
+        let orders = rows
             .into_iter()
             .map(|row| {
-                Ok(CheckoutAttemptDetail {
-                    id: CheckoutAttemptId::from_uuid(row.0),
-                    order_id: OrderId::from_uuid(row.1),
-                    source_cart_id: CartId::from_uuid(row.2),
-                    successor_cart_id: CartId::from_uuid(row.3),
-                    status: CheckoutAttemptStatus::parse(&row.4)
-                        .ok_or_else(corrupt_checkout_state)?,
-                    expires_at: row.5,
-                    created_at: row.6,
-                    updated_at: row.7,
+                Ok(PendingPaymentOrder {
+                    order_id: OrderId::from_uuid(row.0),
+                    source_cart_id: CartId::from_uuid(row.1),
+                    currency: CurrencyCode::parse(&row.2)?,
+                    subtotal_amount_minor: row.3,
+                    created_at: row.4,
+                    updated_at: row.5,
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?;
         transaction.commit().await.map_err(database_error)?;
-        Ok(attempts)
+        Ok(orders)
     }
 
     pub(crate) async fn prepare_checkout_command(
         &self,
         actor: &ShopperActor,
-        attempt: &CheckoutAttemptPayment,
+        payment: &OrderCheckoutPayment,
+        return_url: &str,
     ) -> Result<PaymentCommand, ApplicationError> {
-        let return_url = checkout_return_url(&attempt.return_url, attempt.detail.order_id)?;
-        let job = direct_checkout_job(actor, attempt, &return_url);
+        let return_url = checkout_return_url(return_url, payment.order_id)?;
+        let job = direct_checkout_job(actor, payment, &return_url);
         let mut command = self.prepare_payment_command(&job).await?;
-        command.idempotency_key = attempt.provider_idempotency_key.to_string();
+        command.idempotency_key = checkout_provider_idempotency_key(payment.order_id);
         Ok(command)
     }
 
     pub(crate) async fn record_checkout_result(
         &self,
         shopper: &ShopperActor,
-        attempt_id: CheckoutAttemptId,
+        order_id: OrderId,
         result: &PaymentCommandResult,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
@@ -119,139 +92,109 @@ impl PostgresStripeRepository {
         let actor = &shopper.machine;
         let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut transaction = self.begin_shopper(shopper).await?;
-        let existing = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
-            "SELECT provider_session_id, provider_public_key, provider_client_secret \
-             FROM commerce.checkout_attempts \
-             WHERE store_id = $1 AND sales_channel_id = $2 AND shopper_id = $3 AND id = $4 \
-             FOR UPDATE",
+        let existing = sqlx::query_as::<_, (Uuid, String, String, Option<Value>)>(
+            "SELECT sales_order.cart_id, sales_order.status::text, \
+                    sales_order.payment_status::text, source_cart.payment_client_action \
+             FROM commerce.orders AS sales_order \
+             INNER JOIN commerce.carts AS source_cart \
+               ON source_cart.store_id = sales_order.store_id AND source_cart.id = sales_order.cart_id \
+             WHERE sales_order.store_id = $1 AND sales_order.sales_channel_id = $2 \
+               AND sales_order.shopper_id = $3 AND sales_order.id = $4 \
+             FOR UPDATE OF sales_order, source_cart",
         )
         .bind(actor.store_id.as_uuid())
         .bind(channel_id.as_uuid())
         .bind(shopper.shopper_id.as_uuid())
-        .bind(attempt_id.as_uuid())
+        .bind(order_id.as_uuid())
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?
-        .ok_or_else(|| checkout_attempt_not_found(attempt_id))?;
-        if existing.0.as_deref().is_some_and(|value| value != result.provider_object_id)
-            || existing
-                .1
-                .as_deref()
-                .is_some_and(|value| value != client_action.public_key.expose_secret())
-            || existing
-                .2
-                .as_deref()
-                .is_some_and(|value| value != client_action.client_token.expose_secret())
-        {
-            return Err(stripe_object_mismatch());
+        .ok_or_else(|| order_not_found(order_id))?;
+        if let Some(existing_action) = existing.3 {
+            let existing_action = parse_payment_client_action(existing_action)?
+                .ok_or_else(checkout_client_action_missing)?;
+            if !same_client_action(&existing_action, client_action) {
+                return Err(stripe_object_mismatch());
+            }
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(());
         }
+        if existing.1 != "pending" || existing.2 != "pending" {
+            // A payment webhook won the race. Never resurrect a terminal
+            // Order with a client action that can no longer be used.
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(());
+        }
+        let action = payment_client_action_json(client_action);
         let rows = sqlx::query(
-            "UPDATE commerce.checkout_attempts \
-             SET provider_session_id = $5, provider_public_key = $6, \
-                 provider_client_secret = $7, \
-                 status = CASE WHEN status = 'paid' THEN 'paid' ELSE 'open' END, \
-                 updated_at = $8 \
-             WHERE store_id = $1 AND sales_channel_id = $2 AND shopper_id = $3 AND id = $4 \
-               AND status IN ('creating', 'open', 'paid')",
+            "UPDATE commerce.carts SET payment_client_action = $3, updated_at = $4 \
+             WHERE store_id = $1 AND id = $2 AND status = 'locked'",
         )
         .bind(actor.store_id.as_uuid())
-        .bind(channel_id.as_uuid())
-        .bind(shopper.shopper_id.as_uuid())
-        .bind(attempt_id.as_uuid())
-        .bind(&result.provider_object_id)
-        .bind(client_action.public_key.expose_secret())
-        .bind(client_action.client_token.expose_secret())
+        .bind(existing.0)
+        .bind(action)
         .bind(now)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?
         .rows_affected();
         if rows != 1 {
-            return Err(checkout_attempt_not_open());
+            return Err(corrupt_checkout_state());
         }
         transaction.commit().await.map_err(database_error)?;
         Ok(())
     }
 
-    pub(crate) async fn fail_checkout_attempt(
+    pub(crate) async fn fail_checkout_order(
         &self,
         shopper: &ShopperActor,
-        attempt_id: CheckoutAttemptId,
+        order_id: OrderId,
         failure_code: &str,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let actor = &shopper.machine;
-        let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut transaction = self.begin_shopper(shopper).await?;
-        let row = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
-            "SELECT attempt.order_id, attempt.source_cart_id, attempt.status::text, \
-                    sales_order.status::text \
-             FROM commerce.checkout_attempts AS attempt \
-             INNER JOIN commerce.orders AS sales_order \
-               ON sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
-             WHERE attempt.store_id = $1 AND attempt.sales_channel_id = $2 \
-               AND attempt.shopper_id = $3 AND attempt.id = $4 \
-             FOR UPDATE OF attempt, sales_order",
+        let row = sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT cart_id, status::text FROM commerce.orders \
+             WHERE store_id = $1 AND sales_channel_id = $2 AND shopper_id = $3 AND id = $4 \
+             FOR UPDATE",
         )
         .bind(actor.store_id.as_uuid())
-        .bind(channel_id.as_uuid())
+        .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
         .bind(shopper.shopper_id.as_uuid())
-        .bind(attempt_id.as_uuid())
+        .bind(order_id.as_uuid())
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?
-        .ok_or_else(|| checkout_attempt_not_found(attempt_id))?;
-        let attempt_status = CheckoutAttemptStatus::parse(&row.2).ok_or_else(corrupt_checkout_state)?;
-        if !matches!(attempt_status, CheckoutAttemptStatus::Creating | CheckoutAttemptStatus::Open) {
+        .ok_or_else(|| order_not_found(order_id))?;
+        if row.1 != "pending" {
             transaction.commit().await.map_err(database_error)?;
             return Ok(());
         }
-        let order_status = OrderStatus::parse(&row.3).ok_or_else(corrupt_payment_state)?;
-        let rows = sqlx::query(
-            "UPDATE commerce.checkout_attempts SET status = 'failed', updated_at = $5 \
-             WHERE store_id = $1 AND sales_channel_id = $2 AND shopper_id = $3 AND id = $4 \
-               AND status IN ('creating', 'open')",
+        release_order_inventory(&mut transaction, actor.store_id.as_uuid(), order_id.as_uuid())
+            .await?;
+        sqlx::query(
+            "UPDATE commerce.orders SET status = 'cancelled', payment_status = 'failed', \
+                    payment_failure_code = $3, updated_at = $4 \
+             WHERE store_id = $1 AND id = $2 AND status = 'pending'",
         )
         .bind(actor.store_id.as_uuid())
-        .bind(channel_id.as_uuid())
-        .bind(shopper.shopper_id.as_uuid())
-        .bind(attempt_id.as_uuid())
+        .bind(order_id.as_uuid())
+        .bind(normalize_failure_code(failure_code))
         .bind(now)
         .execute(&mut *transaction)
         .await
-        .map_err(database_error)?
-        .rows_affected();
-        if rows == 1 && order_status == OrderStatus::Pending {
-            release_order_inventory(
-                &mut transaction,
-                actor.store_id.as_uuid(),
-                row.0,
-            )
-            .await?;
-            sqlx::query(
-                "UPDATE commerce.orders SET status = 'cancelled', payment_status = 'failed', \
-                        payment_failure_code = $3, updated_at = $4 \
-                 WHERE store_id = $1 AND id = $2 AND status = 'pending'",
-            )
-            .bind(actor.store_id.as_uuid())
-            .bind(row.0)
-            .bind(normalize_failure_code(failure_code))
-            .bind(now)
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
-            sqlx::query(
-                "UPDATE commerce.carts SET status = 'abandoned', version = version + 1, \
-                        updated_at = $3 \
-                 WHERE store_id = $1 AND id = $2 AND status = 'checkout_pending'",
-            )
-            .bind(actor.store_id.as_uuid())
-            .bind(row.1)
-            .bind(now)
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
-        }
+        .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE commerce.carts SET payment_client_action = NULL, updated_at = $3 \
+             WHERE store_id = $1 AND id = $2",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(row.0)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
         transaction.commit().await.map_err(database_error)?;
         Ok(())
     }
@@ -623,23 +566,19 @@ impl PostgresStripeRepository {
                     })
                 })
                 .collect::<Result<Vec<_>, ApplicationError>>()?;
-            // Checkout policy is snapshotted when the Checkout Attempt is
-            // created. A later admin edit must affect new carts only; it must
-            // never change the provider command for an existing attempt.
-            let shipping_countries_value: Value = sqlx::query_scalar(
-                "SELECT shipping_countries_snapshot FROM commerce.checkout_attempts \
-                 WHERE store_id = $1 AND order_id = $2",
+            // Shipping policy is read only while creating a provider session.
+            // A resumed checkout with a stored client action never reaches
+            // this path, so editing the Store policy cannot invalidate it.
+            let shipping_countries: Vec<String> = sqlx::query_scalar(
+                "SELECT country_code::text FROM commerce.store_shipping_countries \
+                 WHERE store_id = $1 AND enabled ORDER BY country_code",
             )
             .bind(job.store_id)
-            .bind(order_id)
-            .fetch_optional(&mut *transaction)
+            .fetch_all(&mut *transaction)
             .await
-            .map_err(database_error)?
-            .ok_or_else(corrupt_state)?;
-            let shipping_countries: Vec<String> =
-                serde_json::from_value(shipping_countries_value).map_err(|_| corrupt_state())?;
+            .map_err(database_error)?;
             if shipping_countries.is_empty() {
-                return Err(corrupt_state());
+                return Err(shipping_countries_unavailable());
             }
             // Shipping rates and destination rules belong to Stripe Checkout.
             // Chaos only stores the address and the provider's final shipping amount.
@@ -735,26 +674,26 @@ impl PostgresStripeRepository {
 
 fn direct_checkout_job(
     actor: &ShopperActor,
-    attempt: &CheckoutAttemptPayment,
+    payment: &OrderCheckoutPayment,
     return_url: &str,
 ) -> QueueJob {
     QueueJob {
-        id: attempt.detail.id.as_uuid(),
+        id: payment.order_id.as_uuid(),
         store_id: actor.machine.store_id.as_uuid(),
         queue_name: "chaos_payment_commands".into(),
         internal_event_type: Some("payment.checkout_session".into()),
         provider_event_type: None,
         normalized_event_type: None,
         payload: json!({
-            "aggregate_id": attempt.detail.order_id.as_uuid(),
-            "amount_minor": attempt.amount_minor,
-            "currency": attempt.currency.as_str(),
+            "aggregate_id": payment.order_id.as_uuid(),
+            "amount_minor": payment.amount_minor,
+            "currency": payment.currency.as_str(),
             "return_url": return_url,
         }),
         attempts: 1,
         provider_account_id: None,
         capability: Some("payment".into()),
-        provider: Some(attempt.provider.clone()),
+        provider: Some(payment.provider.clone()),
     }
 }
 
@@ -770,22 +709,15 @@ fn checkout_return_url(
 
 fn checkout_client_action_missing() -> ApplicationError {
     ApplicationError::Unavailable {
-        service: "stripe_checkout_client_secret",
-        source: anyhow::anyhow!("Stripe Checkout Session client secret is missing"),
+        service: "payment_client_action",
+        source: anyhow::anyhow!("the Payment provider returned no client action"),
     }
 }
 
-fn checkout_attempt_not_found(attempt_id: CheckoutAttemptId) -> ApplicationError {
-    ApplicationError::NotFound {
-        resource: "checkout_attempt",
-        id: attempt_id.as_uuid().to_string(),
-    }
-}
-
-fn checkout_attempt_not_open() -> ApplicationError {
+fn shipping_countries_unavailable() -> ApplicationError {
     ApplicationError::Conflict {
-        code: "checkout_attempt_not_open",
-        message: "the Checkout Attempt is no longer available for payment",
+        code: "shipping_countries_unavailable",
+        message: "the Store has no enabled shipping destinations",
     }
 }
 

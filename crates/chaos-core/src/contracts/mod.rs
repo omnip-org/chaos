@@ -70,9 +70,8 @@ pub use provider_secret::{IntegrationSecretResolver, ProviderSecretKind, Provide
 pub use publishable_key::{GeneratedPublishableKey, MachineActor, PublishableKeyListItem};
 pub use review::{CreateManualReviewRecord, ReviewMediaSummary, ReviewSummary, SubmitReviewRecord};
 pub use sales::{
-    CartDetail, CartLineItem, CheckoutAttemptDetail, OrderDetail, OrderFulfillmentItem,
-    OrderLineItem, OrderListFilter, OrderPage, OrderPaymentAttemptItem, OrderRefundItem,
-    StripeCheckoutDraft,
+    CartDetail, CartLineItem, CheckoutDraft, OrderDetail, OrderFulfillmentItem, OrderLineItem,
+    OrderListFilter, OrderPage, OrderPaymentAttemptItem, OrderRefundItem, PendingPaymentOrder,
 };
 pub use shipping::{ShippingCommand, ShippingOperation, ShippingProvider, ShippingResult};
 pub use store::{

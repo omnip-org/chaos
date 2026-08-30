@@ -57,16 +57,16 @@ const gallery = resolveProductMedia(product, selectedVariant);
 // first shopper-scoped call, then reused for every subsequent Cart/Checkout call.
 const { data: cart } = await chaos.cart.create();
 await chaos.cart.addLine(cart.id, product.variants[0].id);
-// If a persisted cart has already completed checkout, getOrCreate returns a
-// fresh active cart without changing the shopper identity.
+// If a persisted cart has already been locked by checkout, getOrCreate returns
+// an active cart without changing the shopper identity.
 const { data: activeCart } = await chaos.cart.getOrCreate(cart.id);
 // Cart mutations use the response version as an If-Match precondition. The
 // SDK reads and sends it automatically; direct HTTP callers must send the
 // current Cart version in the If-Match header.
 
-// Stripe Embedded Checkout — Chaos reserves inventory, freezes this Cart, and
-// creates the provisional Checkout Attempt/Order before Stripe collects the
-// remaining details. The response's cart is the new active successor Cart.
+// Stripe Embedded Checkout — Chaos reserves inventory, locks this Cart, and
+// creates the pending Order before Stripe collects the remaining details. The
+// response's cart is a separate active Cart for later shopping.
 // The return URL must be HTTPS outside local loopback development.
 const { data: creation } = await chaos.payments.createEmbeddedCheckoutWithCart(cart.id, {
   email: "shopper@example.com",
@@ -74,17 +74,16 @@ const { data: creation } = await chaos.payments.createEmbeddedCheckoutWithCart(c
 });
 const session = creation.checkout;
 // Keep using creation.cart for any later shopping; the original Cart is now
-// checkout_pending and must not be edited or checked out again.
-// session.checkout_attempt_id is the durable payment identity. Store it if the
-// visitor needs a separate "waiting for payment" entry. Calling resume with
-// that ID returns the same provider client secret and does not create another
+// locked and must not be edited or checked out again.
+// The Order is the durable "waiting for payment" identity. Calling resume with
+// that ID returns the same provider client action and does not create another
 // Stripe Session.
-const pending = await chaos.payments.listCheckoutAttempts();
+const pending = await chaos.payments.listPendingPaymentOrders();
 const resumed = await chaos.payments.resumeEmbeddedCheckout(
-  pending.data[0]!.id,
+  pending.data[0]!.order_id,
 );
 // The SDK derives and sends a stable client idempotency key from the Cart
-// snapshot. The server stores a separate provider idempotency key for retries.
+// snapshot. Chaos derives the provider idempotency key from the Order ID.
 const action = session.client_action;
 // A storefront can use the SDK's provider adapter from the optional subpath:
 const mounted = await mountEmbeddedCheckout(action, document.querySelector("#checkout")!);
@@ -126,12 +125,12 @@ const server = createServerStorefrontClient({
 const storefront = createStorefrontBrowserClient({ baseUrl: "/api", analytics: chaos.analytics });
 await storefront.cart.addLine(variantId, 1);
 await storefront.checkout.createEmbeddedCheckout(returnUrl);
-await storefront.checkout.resumeEmbeddedCheckout(checkoutAttemptId);
+await storefront.checkout.resumeEmbeddedCheckout(orderId);
 storefront.orders.recordPurchase(purchase);
 ```
 
 The server helpers `addCartLineFromRequest()`, `updateCartLineFromRequest()`,
-`createEmbeddedCheckoutFromRequest()`, `listCheckoutAttemptsFromRequest()`,
+`createEmbeddedCheckoutFromRequest()`, `listPendingPaymentOrdersFromRequest()`,
 `resumeEmbeddedCheckoutFromRequest()`, `getTrackedOrderFromRequest()`, and
 `createProductReviewFromRequest()` own request parsing, validation, session
 cookies, and the corresponding Chaos operation. Framework routes only adapt

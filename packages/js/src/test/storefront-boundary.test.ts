@@ -111,12 +111,8 @@ test("browser checkout bridge forwards shared checkout options", async () => {
   const recorded: string[] = [];
 	const creation = {
 		checkout: {
-			checkout_attempt_id: "00000000-0000-4000-8000-000000000040",
 			order_id: "00000000-0000-4000-8000-000000000041",
 			source_cart_id: "00000000-0000-4000-8000-000000000042",
-			successor_cart_id: "00000000-0000-4000-8000-000000000043",
-			status: "open" as const,
-			expires_at: "2026-08-29T12:00:00Z",
       client_action: {
         type: "mount_embedded_checkout" as const,
         public_key: "pk_test_store",
@@ -164,16 +160,12 @@ test("browser checkout bridge forwards shared checkout options", async () => {
   assert.deepEqual(recorded, ["checkout", "purchase"]);
 });
 
-test("browser checkout bridge resumes a persisted attempt without creating another one", async () => {
+test("browser checkout bridge resumes an Order without creating another payment session", async () => {
   const requests: Array<{ url: string; init: RequestInit }> = [];
   const creation = {
     checkout: {
-      checkout_attempt_id: "00000000-0000-4000-8000-000000000050",
       order_id: "00000000-0000-4000-8000-000000000051",
       source_cart_id: "00000000-0000-4000-8000-000000000052",
-      successor_cart_id: "00000000-0000-4000-8000-000000000053",
-      status: "open" as const,
-      expires_at: "2026-08-29T12:00:00Z",
       client_action: {
         type: "mount_embedded_checkout" as const,
         public_key: "pk_test_store",
@@ -182,14 +174,12 @@ test("browser checkout bridge resumes a persisted attempt without creating anoth
     },
     cart: cart([]),
   };
-  const attempts = [
+  const pendingOrders = [
     {
-      id: creation.checkout.checkout_attempt_id,
       order_id: creation.checkout.order_id,
       source_cart_id: creation.checkout.source_cart_id,
-      successor_cart_id: creation.checkout.successor_cart_id,
-      status: "open" as const,
-      expires_at: creation.checkout.expires_at,
+      currency: "USD" as const,
+      subtotal_amount_minor: 9900,
       created_at: "2026-08-29T11:30:00Z",
       updated_at: "2026-08-29T11:31:00Z",
     },
@@ -198,22 +188,22 @@ test("browser checkout bridge resumes a persisted attempt without creating anoth
     fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = { url: String(input), init: init ?? {} };
       requests.push(request);
-      if (request.url === "/api/checkout-attempts") {
-        return new Response(JSON.stringify({ data: attempts }), { status: 200 });
+      if (request.url === "/api/pending-payment-orders") {
+        return new Response(JSON.stringify({ data: pendingOrders }), { status: 200 });
       }
       assert.equal(request.url, "/api/checkout/resume");
       assert.equal(request.init.method, "POST");
       assert.deepEqual(JSON.parse(String(request.init.body)), {
-        checkoutAttemptId: creation.checkout.checkout_attempt_id,
+        orderId: creation.checkout.order_id,
       });
       return new Response(JSON.stringify({ data: creation }), { status: 200 });
     }) as typeof fetch,
   });
 
-  assert.deepEqual(await browser.checkout.listCheckoutAttempts(), attempts);
+  assert.deepEqual(await browser.checkout.listPendingPaymentOrders(), pendingOrders);
   assert.deepEqual(
     await browser.checkout.resumeEmbeddedCheckout(
-      creation.checkout.checkout_attempt_id,
+      creation.checkout.order_id,
     ),
     creation,
   );
@@ -221,7 +211,7 @@ test("browser checkout bridge resumes a persisted attempt without creating anoth
   assert.equal(requests[1]?.init.credentials, "same-origin");
 });
 
-test("server checkout bridge keeps a pending source cart addressable after a lost response", async () => {
+test("server checkout bridge rotates away from a locked source cart", async () => {
   const writes = new Map<string, string>();
   const cookies: StorefrontCookieJar = {
     get: (name) => {
@@ -235,34 +225,28 @@ test("server checkout bridge keeps a pending source cart addressable after a los
   const response = {
     data: {
       checkout: {
-        checkout_attempt_id: "00000000-0000-4000-8000-000000000060",
         order_id: "00000000-0000-4000-8000-000000000061",
         source_cart_id: "source-cart",
-        successor_cart_id: "successor-cart",
-        status: "open" as const,
-        expires_at: "2026-08-29T12:00:00Z",
         client_action: {
           type: "mount_embedded_checkout" as const,
           public_key: "pk_test_store",
           client_token: "cs_test_token",
         },
       },
-      cart: { ...cart([]), id: "successor-cart" },
+      cart: { ...cart([]), id: "active-cart" },
     },
   };
   const client = {
     cart: {
-      get: async () => ({
-        data: { ...cart([]), id: "source-cart", status: "checkout_pending" },
-      }),
-      getOrCreate: async () => {
+      getOrCreate: async (cartId?: string) => {
+        assert.equal(cartId, "source-cart");
         usedCreate = true;
-        return { data: cart([]) };
+        return { data: { ...cart([]), id: "active-cart" } };
       },
     },
     payments: {
       createEmbeddedCheckoutWithCart: async (cartId: string) => {
-        assert.equal(cartId, "source-cart");
+        assert.equal(cartId, "active-cart");
         return response;
       },
     },
@@ -280,9 +264,9 @@ test("server checkout bridge keeps a pending source cart addressable after a los
     }),
   );
 
-  assert.equal(usedCreate, false);
+  assert.equal(usedCreate, true);
   assert.deepEqual(result, response);
-  assert.equal(writes.get("chaos_cart_id"), "successor-cart");
+  assert.equal(writes.get("chaos_cart_id"), "active-cart");
 });
 
 test("server review and cart adapters own form parsing and cookie persistence", async () => {

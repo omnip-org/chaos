@@ -8,7 +8,7 @@ use crate::{
     },
     error::database_error,
     contracts::{
-        AdminActor, CheckoutAttemptDetail, MachineActor, OrderMetadataContext,
+        AdminActor, MachineActor, OrderMetadataContext, PendingPaymentOrder,
         PaymentCheckoutDetails, PaymentClientAction, PaymentLineItem,
         StripeAccountConfiguration,
         StripeAccountDetail, StripeAccountPage,
@@ -21,13 +21,12 @@ use crate::{
 use chaos_domain::{
     CurrencyCode,
     payments::{
-        CheckoutAttemptId, CheckoutAttemptStatus, PaymentAttemptStatus, Refund, RefundId,
-        RefundStatus,
+        PaymentAttemptStatus, Refund, RefundId, RefundStatus,
     },
     pricing::Money,
     sales::{CartId, Order, OrderId, OrderStatus},
     stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
-    store::StoreId,
+    store::{SalesChannelId, StoreId},
 };
 use serde_json::{Value, json};
 use secrecy::{ExposeSecret, SecretString};
@@ -65,50 +64,46 @@ pub struct PostgresStripeRepository {
     pool: PgPool,
 }
 
-pub(crate) struct CheckoutAttemptPayment {
-    pub detail: CheckoutAttemptDetail,
+pub(crate) struct OrderCheckoutPayment {
+    pub order_id: OrderId,
+    pub source_cart_id: CartId,
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub provider: String,
-    pub provider_idempotency_key: Uuid,
-    pub provider_public_key: Option<String>,
-    pub provider_client_secret: Option<String>,
-    pub return_url: String,
+    pub order_status: String,
+    pub payment_status: String,
+    pub client_action: Option<PaymentClientAction>,
 }
 
 #[derive(sqlx::FromRow)]
-struct CheckoutAttemptPaymentRow {
+struct OrderCheckoutPaymentRow {
     id: Uuid,
-    order_id: Uuid,
-    source_cart_id: Uuid,
-    successor_cart_id: Uuid,
+    cart_id: Uuid,
     amount_minor: i64,
     currency: String,
-    status: String,
-    expires_at: OffsetDateTime,
-    created_at: OffsetDateTime,
-    updated_at: OffsetDateTime,
+    order_status: String,
+    payment_status: String,
     provider: String,
-    provider_idempotency_key: Uuid,
-    provider_public_key: Option<String>,
-    provider_client_secret: Option<String>,
-    return_url: String,
+    client_action: Option<Value>,
 }
 
-impl CheckoutAttemptPayment {
-    pub(crate) fn client_action(&self) -> Result<Option<PaymentClientAction>, ApplicationError> {
-        match (
-            self.provider_public_key.as_deref(),
-            self.provider_client_secret.as_deref(),
-        ) {
-            (Some(public_key), Some(client_token)) => Ok(Some(PaymentClientAction {
-                kind: "mount_embedded_checkout",
-                public_key: SecretString::from(public_key.to_owned()),
-                client_token: SecretString::from(client_token.to_owned()),
-            })),
-            (None, None) => Ok(None),
-            _ => Err(stripe_invalid_response()),
-        }
+impl OrderCheckoutPaymentRow {
+    fn into_payment(self) -> Result<OrderCheckoutPayment, ApplicationError> {
+        let client_action = self
+            .client_action
+            .map(parse_payment_client_action)
+            .transpose()?
+            .flatten();
+        Ok(OrderCheckoutPayment {
+            order_id: OrderId::from_uuid(self.id),
+            source_cart_id: CartId::from_uuid(self.cart_id),
+            amount_minor: self.amount_minor,
+            currency: CurrencyCode::parse(&self.currency)?,
+            provider: self.provider,
+            order_status: self.order_status,
+            payment_status: self.payment_status,
+            client_action,
+        })
     }
 }
 
@@ -171,62 +166,79 @@ impl PostgresStripeRepository {
     }
 }
 
-async fn load_checkout_attempt_payment(
+async fn load_order_checkout_payment(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     shopper_id: Uuid,
-    attempt_id: CheckoutAttemptId,
-) -> Result<Option<CheckoutAttemptPayment>, ApplicationError> {
+    order_id: OrderId,
+) -> Result<Option<OrderCheckoutPayment>, ApplicationError> {
     let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
-    let row = sqlx::query_as::<_, CheckoutAttemptPaymentRow>(
-        "SELECT attempt.id AS id, attempt.order_id AS order_id, \
-                attempt.source_cart_id AS source_cart_id, attempt.successor_cart_id AS successor_cart_id, \
-                sales_order.subtotal_amount_minor AS amount_minor, sales_order.currency::text AS currency, \
-                attempt.status::text AS status, attempt.expires_at AS expires_at, \
-                attempt.created_at AS created_at, attempt.updated_at AS updated_at, \
-                account.provider::text AS provider, \
-                attempt.provider_idempotency_key AS provider_idempotency_key, \
-                attempt.provider_public_key AS provider_public_key, \
-                attempt.provider_client_secret AS provider_client_secret, attempt.return_url AS return_url \
-         FROM commerce.checkout_attempts AS attempt \
-         INNER JOIN commerce.orders AS sales_order \
-           ON sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
+    let row = sqlx::query_as::<_, OrderCheckoutPaymentRow>(
+        "SELECT sales_order.id, sales_order.cart_id, \
+                sales_order.subtotal_amount_minor, sales_order.currency::text, \
+                sales_order.status::text, sales_order.payment_status::text, \
+                account.provider::text, source_cart.payment_client_action \
+         FROM commerce.orders AS sales_order \
+         INNER JOIN commerce.carts AS source_cart \
+           ON source_cart.store_id = sales_order.store_id AND source_cart.id = sales_order.cart_id \
          INNER JOIN integration.provider_accounts AS account \
-           ON account.store_id = attempt.store_id \
-          AND account.id = attempt.payment_provider_account_id \
-         WHERE attempt.store_id = $1 AND attempt.sales_channel_id = $2 \
-           AND attempt.shopper_id = $3 AND attempt.id = $4",
+           ON account.store_id = sales_order.store_id \
+          AND account.id = sales_order.payment_provider_account_id \
+         WHERE sales_order.store_id = $1 AND sales_order.sales_channel_id = $2 \
+           AND sales_order.shopper_id = $3 AND sales_order.id = $4",
     )
     .bind(actor.store_id.as_uuid())
     .bind(channel_id.as_uuid())
     .bind(shopper_id)
-    .bind(attempt_id.as_uuid())
+    .bind(order_id.as_uuid())
     .fetch_optional(&mut **transaction)
     .await
     .map_err(database_error)?;
-    row.map(|row| {
-        let status = CheckoutAttemptStatus::parse(&row.status).ok_or_else(corrupt_checkout_state)?;
-        Ok(CheckoutAttemptPayment {
-            detail: CheckoutAttemptDetail {
-                id: CheckoutAttemptId::from_uuid(row.id),
-                order_id: OrderId::from_uuid(row.order_id),
-                source_cart_id: CartId::from_uuid(row.source_cart_id),
-                successor_cart_id: CartId::from_uuid(row.successor_cart_id),
-                status,
-                expires_at: row.expires_at,
-                created_at: row.created_at,
-                updated_at: row.updated_at,
-            },
-            amount_minor: row.amount_minor,
-            currency: CurrencyCode::parse(&row.currency)?,
-            provider: row.provider,
-            provider_idempotency_key: row.provider_idempotency_key,
-            provider_public_key: row.provider_public_key,
-            provider_client_secret: row.provider_client_secret,
-            return_url: row.return_url,
-        })
+    row.map(OrderCheckoutPaymentRow::into_payment).transpose()
+}
+
+fn parse_payment_client_action(value: Value) -> Result<Option<PaymentClientAction>, ApplicationError> {
+    let Some(object) = value.as_object() else {
+        return Err(corrupt_checkout_state());
+    };
+    let Some(kind) = object.get("type").and_then(Value::as_str) else {
+        return Err(corrupt_checkout_state());
+    };
+    if kind != "mount_embedded_checkout" {
+        return Err(corrupt_checkout_state());
+    }
+    let Some(public_key) = object.get("public_key").and_then(Value::as_str) else {
+        return Err(corrupt_checkout_state());
+    };
+    let Some(client_token) = object.get("client_token").and_then(Value::as_str) else {
+        return Err(corrupt_checkout_state());
+    };
+    if public_key.trim().is_empty() || client_token.trim().is_empty() {
+        return Err(corrupt_checkout_state());
+    }
+    Ok(Some(PaymentClientAction {
+        kind: "mount_embedded_checkout",
+        public_key: SecretString::from(public_key.to_owned()),
+        client_token: SecretString::from(client_token.to_owned()),
+    }))
+}
+
+fn payment_client_action_json(action: &PaymentClientAction) -> Value {
+    json!({
+        "type": action.kind,
+        "public_key": action.public_key.expose_secret(),
+        "client_token": action.client_token.expose_secret(),
     })
-    .transpose()
+}
+
+fn same_client_action(left: &PaymentClientAction, right: &PaymentClientAction) -> bool {
+    left.kind == right.kind
+        && left.public_key.expose_secret() == right.public_key.expose_secret()
+        && left.client_token.expose_secret() == right.client_token.expose_secret()
+}
+
+pub(crate) fn checkout_provider_idempotency_key(order_id: OrderId) -> String {
+    format!("checkout:{}", order_id.as_uuid())
 }
 
 async fn load_order_analytics_items(
@@ -389,7 +401,7 @@ fn corrupt_state() -> ApplicationError {
 
 fn corrupt_checkout_state() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!(
-        "database contains invalid Checkout Attempt state"
+        "database contains invalid payment client action state"
     ))
 }
 

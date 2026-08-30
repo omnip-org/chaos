@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    payments::{CheckoutAttemptId, CheckoutAttemptStatus},
     sales::OrderId,
     store::{StoreId, StoreRole},
     stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
@@ -13,28 +12,31 @@ use crate::{
     ApplicationError,
     adapters::postgres::PostgresStripeRepository,
     contracts::{
-        AdminActor, CheckoutAttemptDetail, IntegrationQueue, MachineActor, PaymentClientAction,
-        PaymentProviderRegistry, PaymentWebhookVerifierRegistry, QueueJob, RefundDetail,
-        ShopperActor, StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage,
-        VerifiedWebhookEvent, WebhookInbox, WebhookProcessingResult,
+        AdminActor, IntegrationQueue, MachineActor, PaymentClientAction, PaymentProviderRegistry,
+        PaymentWebhookVerifierRegistry, PendingPaymentOrder, QueueJob, RefundDetail, ShopperActor,
+        StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage, VerifiedWebhookEvent,
+        WebhookInbox, WebhookProcessingResult,
     },
     store::StoreActor,
 };
 
-pub struct CreatePaymentAttemptInput {
+pub struct CreateEmbeddedCheckoutInput {
     pub actor: ShopperActor,
-    pub checkout_attempt_id: CheckoutAttemptId,
+    pub order_id: OrderId,
+    pub return_url: String,
     pub now: OffsetDateTime,
 }
 
-pub struct ResumePaymentAttemptInput {
+pub struct ResumeEmbeddedCheckoutInput {
     pub actor: ShopperActor,
-    pub checkout_attempt_id: CheckoutAttemptId,
+    pub order_id: OrderId,
+    pub return_url: Option<String>,
     pub now: OffsetDateTime,
 }
 
 pub struct EmbeddedCheckoutResult {
-    pub attempt: CheckoutAttemptDetail,
+    pub order_id: OrderId,
+    pub source_cart_id: chaos_domain::sales::CartId,
     pub client_action: PaymentClientAction,
 }
 
@@ -182,94 +184,91 @@ impl PaymentService {
 
     pub async fn create_embedded_checkout(
         &self,
-        input: CreatePaymentAttemptInput,
+        input: CreateEmbeddedCheckoutInput,
     ) -> Result<EmbeddedCheckoutResult, ApplicationError> {
         require_checkout_key(&input.actor.machine)?;
-        self.open_embedded_checkout(input.actor, input.checkout_attempt_id, input.now)
-            .await
+        self.open_embedded_checkout(
+            input.actor,
+            input.order_id,
+            Some(input.return_url),
+            input.now,
+        )
+        .await
     }
 
     pub async fn resume_embedded_checkout(
         &self,
-        input: ResumePaymentAttemptInput,
+        input: ResumeEmbeddedCheckoutInput,
     ) -> Result<EmbeddedCheckoutResult, ApplicationError> {
         require_checkout_key(&input.actor.machine)?;
-        self.open_embedded_checkout(input.actor, input.checkout_attempt_id, input.now)
+        self.open_embedded_checkout(input.actor, input.order_id, input.return_url, input.now)
             .await
     }
 
-    pub async fn get_checkout_attempt(
+    pub async fn list_pending_payment_orders(
         &self,
         actor: &ShopperActor,
-        attempt_id: CheckoutAttemptId,
-    ) -> Result<CheckoutAttemptDetail, ApplicationError> {
+    ) -> Result<Vec<PendingPaymentOrder>, ApplicationError> {
         require_checkout_key(&actor.machine)?;
-        self.repository
-            .get_checkout_attempt(actor, attempt_id)
-            .await?
-            .ok_or_else(|| checkout_attempt_not_found(attempt_id))
-    }
-
-    pub async fn list_checkout_attempts(
-        &self,
-        actor: &ShopperActor,
-    ) -> Result<Vec<CheckoutAttemptDetail>, ApplicationError> {
-        require_checkout_key(&actor.machine)?;
-        self.repository.list_checkout_attempts(actor).await
+        self.repository.list_pending_payment_orders(actor).await
     }
 
     async fn open_embedded_checkout(
         &self,
         actor: ShopperActor,
-        checkout_attempt_id: CheckoutAttemptId,
+        order_id: OrderId,
+        return_url: Option<String>,
         now: OffsetDateTime,
     ) -> Result<EmbeddedCheckoutResult, ApplicationError> {
-        let attempt = self
+        let payment = self
             .repository
-            .get_checkout_attempt_payment(&actor, checkout_attempt_id)
+            .get_order_checkout_payment(&actor, order_id)
             .await?
-            .ok_or_else(|| checkout_attempt_not_found(checkout_attempt_id))?;
-        ensure_checkout_attempt_open(&attempt.detail, now)?;
-        if let Some(client_action) = attempt.client_action()? {
+            .ok_or_else(|| order_not_found(order_id))?;
+        ensure_order_payment_open(&payment)?;
+        if let Some(client_action) = payment.client_action {
             return Ok(EmbeddedCheckoutResult {
-                attempt: attempt.detail,
+                order_id: payment.order_id,
+                source_cart_id: payment.source_cart_id,
                 client_action,
             });
         }
+        let return_url = return_url.ok_or_else(checkout_return_url_required)?;
 
         let provider = self
             .payment_providers
-            .get(&attempt.provider)
+            .get(&payment.provider)
             .ok_or_else(payment_provider_not_supported)?;
         let command = self
             .repository
-            .prepare_checkout_command(&actor, &attempt)
+            .prepare_checkout_command(&actor, &payment, &return_url)
             .await?;
         let result = provider.execute(command).await?;
         if result.client_action.is_none() {
             self.repository
-                .fail_checkout_attempt(
-                    &actor,
-                    checkout_attempt_id,
-                    "checkout_client_action_missing",
-                    now,
-                )
+                .fail_checkout_order(&actor, order_id, "checkout_client_action_missing", now)
                 .await?;
             return Err(checkout_client_action_missing());
         }
         self.repository
-            .record_checkout_result(&actor, checkout_attempt_id, &result, now)
+            .record_checkout_result(&actor, order_id, &result, now)
             .await?;
-        let attempt = self
+        let payment = self
             .repository
-            .get_checkout_attempt_payment(&actor, checkout_attempt_id)
+            .get_order_checkout_payment(&actor, order_id)
             .await?
-            .ok_or_else(|| checkout_attempt_not_found(checkout_attempt_id))?;
-        let client_action = attempt
-            .client_action()?
-            .ok_or_else(checkout_client_action_missing)?;
+            .ok_or_else(|| order_not_found(order_id))?;
+        let Some(client_action) = payment.client_action else {
+            // A verified webhook can win the race between provider execution
+            // and this reload. In that case the action was intentionally
+            // cleared because the Order is terminal; report that state rather
+            // than hiding it behind a misleading missing-secret error.
+            ensure_order_payment_open(&payment)?;
+            return Err(checkout_client_action_missing());
+        };
         Ok(EmbeddedCheckoutResult {
-            attempt: attempt.detail,
+            order_id: payment.order_id,
+            source_cart_id: payment.source_cart_id,
             client_action,
         })
     }
@@ -507,40 +506,36 @@ fn payment_provider_not_supported() -> ApplicationError {
     }
 }
 
-fn ensure_checkout_attempt_open(
-    attempt: &CheckoutAttemptDetail,
-    now: OffsetDateTime,
+fn ensure_order_payment_open(
+    payment: &crate::adapters::postgres::OrderCheckoutPayment,
 ) -> Result<(), ApplicationError> {
-    if attempt.expires_at <= now {
-        return Err(ApplicationError::Conflict {
-            code: "checkout_attempt_expired",
-            message: "the Checkout Attempt has expired; start a new checkout from the active Cart",
-        });
+    if payment.order_status == "pending" && payment.payment_status == "pending" {
+        return Ok(());
     }
-    if matches!(
-        attempt.status,
-        CheckoutAttemptStatus::Creating | CheckoutAttemptStatus::Open
-    ) {
-        Ok(())
-    } else {
-        Err(ApplicationError::Conflict {
-            code: "checkout_attempt_not_open",
-            message: "the Checkout Attempt is no longer available for payment",
-        })
+    Err(ApplicationError::Conflict {
+        code: "order_not_pending",
+        message: "the Order is no longer waiting for payment",
+    })
+}
+
+fn order_not_found(order_id: OrderId) -> ApplicationError {
+    ApplicationError::NotFound {
+        resource: "order",
+        id: order_id.as_uuid().to_string(),
     }
 }
 
-fn checkout_attempt_not_found(attempt_id: CheckoutAttemptId) -> ApplicationError {
-    ApplicationError::NotFound {
-        resource: "checkout_attempt",
-        id: attempt_id.as_uuid().to_string(),
+fn checkout_return_url_required() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "checkout_return_url_required",
+        message: "return_url is required when the payment handoff has not been created yet",
     }
 }
 
 fn checkout_client_action_missing() -> ApplicationError {
     ApplicationError::Unavailable {
-        service: "stripe_checkout_client_secret",
-        source: anyhow::anyhow!("Stripe Checkout Session client secret is missing"),
+        service: "payment_client_action",
+        source: anyhow::anyhow!("the Payment provider returned no client action"),
     }
 }
 

@@ -5,19 +5,24 @@ use axum::{
 };
 use chaos_core::contracts::{
     OrderDetail, OrderFulfillmentItem, OrderLineItem, OrderPaymentAttemptItem, OrderRefundItem,
+    PaymentClientAction, PendingPaymentOrder,
 };
+use chaos_core::payments::ResumeEmbeddedCheckoutInput;
 use chaos_domain::sales::OrderId;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::http::{
     ApiDateTime, ApiJson, ApiPath, ApiResponse, ApiState, CartShopper, OrderLookupMachine,
+    PaymentShopper,
 };
 
 #[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
+        .route("/orders/pending-payment", get(list_pending_payment_orders))
+        .route("/orders/{order_id}/checkout", post(resume_embedded_checkout))
         .route("/orders/{order_id}", get(get_order))
         .route("/orders/tracking", post(get_tracked_order))
 }
@@ -31,6 +36,37 @@ struct TrackingTokenBody {
 #[derive(Deserialize)]
 struct OrderPath {
     order_id: Uuid,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResumeCheckoutBody {
+    #[serde(default)]
+    return_url: Option<String>,
+}
+
+#[derive(Serialize)]
+struct EmbeddedCheckoutData {
+    order_id: Uuid,
+    source_cart_id: Uuid,
+    client_action: PaymentClientActionData,
+}
+
+#[derive(Serialize)]
+struct PaymentClientActionData {
+    r#type: &'static str,
+    public_key: String,
+    client_token: String,
+}
+
+#[derive(Serialize)]
+struct PendingPaymentOrderData {
+    order_id: Uuid,
+    source_cart_id: Uuid,
+    currency: String,
+    subtotal_amount_minor: i64,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 #[derive(Serialize)]
@@ -205,6 +241,69 @@ async fn get_order(
         .get_order(&actor, OrderId::from_uuid(path.order_id))
         .await?;
     Ok(ApiResponse::ok(order_data(order)?))
+}
+
+async fn list_pending_payment_orders(
+    State(state): State<ApiState>,
+    PaymentShopper(actor): PaymentShopper,
+) -> Result<ApiResponse<Vec<PendingPaymentOrderData>>, crate::http::ApiError> {
+    let orders = state
+        .payment_service
+        .list_pending_payment_orders(&actor)
+        .await?;
+    Ok(ApiResponse::ok(
+        orders.into_iter().map(pending_payment_order_data).collect(),
+    ))
+}
+
+async fn resume_embedded_checkout(
+    State(state): State<ApiState>,
+    PaymentShopper(actor): PaymentShopper,
+    ApiPath(path): ApiPath<OrderPath>,
+    ApiJson(body): ApiJson<ResumeCheckoutBody>,
+) -> Result<ApiResponse<EmbeddedCheckoutData>, crate::http::ApiError> {
+    if let Some(return_url) = body.return_url.as_deref() {
+        super::carts::validate_return_url(return_url)?;
+    }
+    let checkout = state
+        .payment_service
+        .resume_embedded_checkout(ResumeEmbeddedCheckoutInput {
+            actor,
+            order_id: OrderId::from_uuid(path.order_id),
+            return_url: body.return_url,
+            now: state.clock.now(),
+        })
+        .await?;
+    Ok(ApiResponse::ok(embedded_checkout_data(checkout)))
+}
+
+fn embedded_checkout_data(
+    checkout: chaos_core::payments::EmbeddedCheckoutResult,
+) -> EmbeddedCheckoutData {
+    EmbeddedCheckoutData {
+        order_id: checkout.order_id.as_uuid(),
+        source_cart_id: checkout.source_cart_id.as_uuid(),
+        client_action: client_action_data(checkout.client_action),
+    }
+}
+
+fn client_action_data(value: PaymentClientAction) -> PaymentClientActionData {
+    PaymentClientActionData {
+        r#type: value.kind,
+        public_key: value.public_key.expose_secret().to_owned(),
+        client_token: value.client_token.expose_secret().to_owned(),
+    }
+}
+
+fn pending_payment_order_data(order: PendingPaymentOrder) -> PendingPaymentOrderData {
+    PendingPaymentOrderData {
+        order_id: order.order_id.as_uuid(),
+        source_cart_id: order.source_cart_id.as_uuid(),
+        currency: order.currency.as_str().to_owned(),
+        subtotal_amount_minor: order.subtotal_amount_minor,
+        created_at: order.created_at.into(),
+        updated_at: order.updated_at.into(),
+    }
 }
 
 async fn get_tracked_order(

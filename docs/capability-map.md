@@ -142,7 +142,7 @@ when adding a route, tool, service, or worker:
 | Worker dependency construction | `crates/chaos-worker/src/runtime.rs` |
 | Worker polling and dispatch | `crates/chaos-worker/src/workers.rs` |
 | Repository public exports | `crates/chaos-core/src/adapters/postgres/mod.rs` |
-| Database ownership | `migrations/0001_platform.sql` through `migrations/0010_checkout_attempts.sql`; Store, catalog, sales, payments, checkout lifecycle, and fulfillment business objects use `commerce`, while identity/OAuth state uses `identity`, and Provider accounts, webhook inboxes, and event routing use `integration` |
+| Database ownership | `migrations/0001_platform.sql` through `migrations/0011_order_centric_checkout.sql`; Store, catalog, sales, payments, checkout lifecycle, and fulfillment business objects use `commerce`, while identity/OAuth state uses `identity`, and Provider accounts, webhook inboxes, and event routing use `integration` |
 
 If a new file is added but one of these registration points is not updated,
 the code may compile while the route, MCP tool, or Worker remains unreachable.

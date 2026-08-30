@@ -338,7 +338,7 @@ test("can require an explicitly seeded shopper token", async () => {
   assert.equal(requestCount, 0);
 });
 
-test("creates a fresh cart when the stored cart has completed checkout", async () => {
+test("creates a fresh cart when the stored cart is locked", async () => {
   const requests: Array<{ url: string; token: string | null }> = [];
   const client = createStorefrontClient({
     publishableKey: "public_test",
@@ -348,9 +348,9 @@ test("creates a fresh cart when the stored cart has completed checkout", async (
     fetch: (async (url: string, init: RequestInit) => {
       const token = new Headers(init.headers).get("x-chaos-shopper-token");
       requests.push({ url, token });
-      if (url.endsWith("/carts/completed-cart")) {
+      if (url.endsWith("/carts/locked-cart")) {
         return jsonResponse(200, {
-          data: { id: "completed-cart", status: "completed", lines: [] },
+          data: { id: "locked-cart", status: "locked", lines: [] },
         });
       }
       return jsonResponse(201, {
@@ -360,14 +360,14 @@ test("creates a fresh cart when the stored cart has completed checkout", async (
   });
   client.setShopperToken("stable-shopper-token");
 
-  const response = await client.cart.getOrCreate("completed-cart");
+  const response = await client.cart.getOrCreate("locked-cart");
 
   assert.equal(response.data.id, "fresh-cart");
   assert.deepEqual(
     requests.map((request) => [request.url, request.token]),
     [
       [
-        "https://shop.example.com/storefront/v1/carts/completed-cart",
+        "https://shop.example.com/storefront/v1/carts/locked-cart",
         "stable-shopper-token",
       ],
       ["https://shop.example.com/storefront/v1/carts", "stable-shopper-token"],
@@ -824,6 +824,7 @@ test("checkout records InitiateCheckout after the session is created", async () 
           id: "cart-1",
           version: 4,
           currency: "USD",
+          status: "active",
           subtotal_amount_minor: 2_000,
           lines: [
             {

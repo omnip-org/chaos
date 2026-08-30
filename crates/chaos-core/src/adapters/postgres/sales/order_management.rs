@@ -146,6 +146,21 @@ impl PostgresOrderManagementRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
+        // A manual terminal transition also closes the provider-form
+        // handoff. The handoff is Cart-owned operational state, not an Order
+        // field, so every terminal Order path must clear it explicitly.
+        sqlx::query(
+            "UPDATE commerce.carts AS cart SET payment_client_action = NULL, updated_at = $3 \
+             FROM commerce.orders AS sales_order \
+             WHERE sales_order.store_id = $1 AND sales_order.id = $2 \
+               AND cart.store_id = sales_order.store_id AND cart.id = sales_order.cart_id",
+        )
+        .bind(store_id.as_uuid())
+        .bind(order_id.as_uuid())
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
         if target_status == OrderStatus::Confirmed {
             let tracking_capability = generate_order_tracking_capability();
             sqlx::query(

@@ -81,7 +81,7 @@ not in application use cases.
 ## Contracts and operations
 
 - `packages/js/` is the typed Storefront JavaScript client and public HTTP contract.
-- `migrations/0001_platform.sql` through `0010_checkout_attempts.sql` are the
+- `migrations/0001_platform.sql` through `0011_order_centric_checkout.sql` are the
   fresh bootstrap schema. Catalog media attachments and manual-review
   provenance are defined in `0005_commerce_products.sql`. `0004_integration.sql`
   owns the shared Integration account, webhook inbox, and queue infrastructure;

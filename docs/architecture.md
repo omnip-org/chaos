@@ -93,7 +93,7 @@ PostgreSQL is the source of truth for catalogs, inventory, orders, payments, ref
 Money uses integer minor units plus an ISO currency. Orders snapshot the product, price, address, and Provider evidence required to preserve history. Stripe owns checkout tax and promotion calculation; its verified webhook writes subtotal, discount, tax, shipping, and total as Order facts. External Provider calls occur outside database transactions. Inbox and outbox records make webhook and Worker processing retryable and idempotent.
 
 Orders use an internal UUID for joins and a client-supplied idempotency key for checkout
-deduplication within a Checkout Attempt, plus a random shopper-facing
+deduplication on the source Cart, plus a random shopper-facing
 `W-YYYYMMDD-XXXXXXXX` order number for receipts, support, and MCP lookup. Guest order
 tracking uses the Order's Sales Channel storefront origin with a fragment capability,
 valid for 180 days from order confirmation. Only its digest is stored in the tracking
@@ -119,28 +119,28 @@ references, the canonical webhook inbox, and provider-independent queue
 leasing live in the `integration` schema. The migrations
 are organized into Store foundation, Catalog and Pricing, Integration core,
 Provider accounts, Sales, Payments, Analytics, and Fulfillment. Checkout
-request deduplication is owned by the Checkout Attempt and its source Cart in
-`commerce`. The Attempt stores both the client idempotency key and a separate
-durable provider idempotency key; database uniqueness constraints prevent one
-source Cart or client key from creating a second Order.
+request deduplication is owned by the Order idempotency key and the source Cart
+in `commerce`. A unique `(store_id, cart_id)` constraint prevents one source
+Cart from creating a second Order; the provider idempotency key is derived from
+that Order ID and is not another database field.
 
 Cart and Order have separate responsibilities. The Checkout API transaction
-creates a pending Order snapshot, reserves tracked inventory, marks the source
-Cart `checkout_pending`, and creates a durable Checkout Attempt. It also creates
-a new empty active successor Cart and returns that Cart to the storefront. The
-source Cart is never edited or reused for another checkout. Stripe owns the
-checkout UI, address, shipping, tax, and payment collection; Chaos snapshots the
-shipping policy and provider session/client secret on the Checkout Attempt and
-stores the final provider facts on the Order after a verified webhook.
+creates a pending Order snapshot, reserves tracked inventory, and marks the
+source Cart `locked`. It does not create a successor Cart inside the checkout
+transaction. The storefront obtains or creates a new active Cart after the
+transaction, while the source Cart remains an immutable commercial input.
+Stripe owns the checkout UI, address, shipping, tax, and payment collection;
+Chaos stores only the provider-neutral `payment_client_action` needed to resume
+the form and stores final provider facts on the Order after a verified webhook.
 
 The browser may lose the response, unmount Stripe, or return from Stripe without
-paying. All of those paths resume the same open Checkout Attempt with the same
-provider idempotency key and stored client secret. A successful payment confirms
-the Order and completes the source Cart; expiry or failure cancels the Order,
-releases the reservation, and abandons the source Cart while the successor Cart
-remains the shopper's active working set. A maintenance worker expires stale
-Attempts. New products added to the successor Cart always create a new Attempt
-and a new Order.
+paying. All of those paths resume the same pending Order and stored client
+action. A successful payment confirms the Order and clears the action; a
+provider failure or expiry cancels the Order, releases the reservation, and
+clears the action. The source Cart remains `locked` in every payment outcome.
+There is no local checkout expiry job: the provider callback is the source of
+truth. New products are added only to a separate active Cart and a later
+checkout creates a new Order.
 
 Analytics uses one append-only, Store-scoped behavior event ledger. The common
 envelope contains `store_id`, `shopper_id`, `event_id`, `event_name`, normalized

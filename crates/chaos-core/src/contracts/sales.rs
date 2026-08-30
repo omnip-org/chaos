@@ -3,9 +3,7 @@ use chaos_domain::{
     catalog::{ProductId, ProductVariantId},
     fulfillment::{FulfillmentId, FulfillmentStatus, ShippingProviderAccountId},
     integration::{PaymentProvider, ShippingProvider},
-    payments::{
-        CheckoutAttemptId, CheckoutAttemptStatus, PaymentAttemptStatus, RefundId, RefundStatus,
-    },
+    payments::{PaymentAttemptStatus, RefundId, RefundStatus},
     pricing::PriceListId,
     sales::{
         CartId, CartStatus, OrderId, OrderIdentity, OrderPaymentStatus, OrderShippingStatus,
@@ -43,23 +41,18 @@ pub struct CartDetail {
     pub updated_at: OffsetDateTime,
 }
 
-pub struct StripeCheckoutDraft {
-    pub checkout_attempt_id: CheckoutAttemptId,
+pub struct CheckoutDraft {
     pub order_id: OrderId,
     pub source_cart_id: CartId,
-    pub successor_cart_id: CartId,
     pub currency: CurrencyCode,
     pub subtotal_amount_minor: i64,
-    pub expires_at: OffsetDateTime,
 }
 
-pub struct CheckoutAttemptDetail {
-    pub id: CheckoutAttemptId,
+pub struct PendingPaymentOrder {
     pub order_id: OrderId,
     pub source_cart_id: CartId,
-    pub successor_cart_id: CartId,
-    pub status: CheckoutAttemptStatus,
-    pub expires_at: OffsetDateTime,
+    pub currency: CurrencyCode,
+    pub subtotal_amount_minor: i64,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -76,9 +69,9 @@ pub struct OrderLineItem {
     pub subtotal_amount_minor: i64,
 }
 
-/// The Order's payment state, if checkout has started. Checkout lifecycle
-/// identity and provider session state live in `CheckoutAttemptDetail`; this
-/// is the payment summary projected onto the Order detail.
+/// The Order's payment state, if checkout has started. The client handoff is
+/// deliberately not part of the Order detail; it is a private field on the
+/// source Cart and is returned only from the checkout handoff endpoints.
 pub struct OrderPaymentAttemptItem {
     pub status: PaymentAttemptStatus,
     pub amount_minor: i64,

@@ -304,17 +304,6 @@ async fn apply_payment_event(
                     .await?;
         }
         confirm_paid_order(transaction, store_id, order_id, &order_status, now).await?;
-        sqlx::query(
-            "UPDATE commerce.checkout_attempts \
-             SET status = 'paid', updated_at = $3 \
-             WHERE store_id = $1 AND order_id = $2 AND status IN ('creating', 'open')",
-        )
-        .bind(store_id.as_uuid())
-        .bind(order_id.as_uuid())
-        .bind(now)
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?;
         let items = load_order_analytics_items(
             transaction,
             store_id.as_uuid(),
@@ -393,20 +382,7 @@ async fn apply_payment_event(
         if !applied {
             return Ok(order_id);
         }
-        let checkout_status = if event_type == "payment.cancelled" {
-            "cancelled"
-        } else {
-            "failed"
-        };
-        cancel_pending_order(
-            transaction,
-            store_id,
-            order_id,
-            &order_status,
-            checkout_status,
-            now,
-        )
-        .await?;
+        cancel_pending_order(transaction, store_id, order_id, &order_status, now).await?;
     }
     Ok(order_id)
 }
@@ -718,7 +694,6 @@ async fn cancel_pending_order(
     store_id: StoreId,
     order_id: OrderId,
     status: &str,
-    checkout_status: &str,
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     let status = OrderStatus::parse(status).ok_or_else(corrupt_payment_state)?;
@@ -739,23 +714,11 @@ async fn cancel_pending_order(
     .map_err(database_error)?;
     release_order_inventory(transaction, store_id.as_uuid(), order_id.as_uuid()).await?;
     sqlx::query(
-        "UPDATE commerce.checkout_attempts \
-         SET status = $3::commerce.checkout_attempt_status, updated_at = $4 \
-         WHERE store_id = $1 AND order_id = $2 AND status IN ('creating', 'open')",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .bind(checkout_status)
-    .bind(now)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    sqlx::query(
-        "UPDATE commerce.carts AS cart SET status = 'abandoned', version = version + 1, updated_at = $3 \
+        "UPDATE commerce.carts AS cart SET payment_client_action = NULL, updated_at = $3 \
          FROM commerce.orders AS sales_order \
          WHERE sales_order.store_id = $1 AND sales_order.id = $2 \
            AND cart.store_id = sales_order.store_id AND cart.id = sales_order.cart_id \
-           AND cart.status = 'checkout_pending'",
+           AND cart.status = 'locked'",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
@@ -823,8 +786,8 @@ async fn confirm_paid_order(
     .map_err(database_error)?;
     if let Some(cart_id) = cart_id {
         sqlx::query(
-            "UPDATE commerce.carts SET status = 'completed', version = version + 1, updated_at = $3 \
-             WHERE store_id = $1 AND id = $2 AND status IN ('active', 'checkout_pending')",
+            "UPDATE commerce.carts SET payment_client_action = NULL, updated_at = $3 \
+             WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
         .bind(cart_id)

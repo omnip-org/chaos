@@ -9,14 +9,13 @@ use crate::{
         CartDetail, CartLineItem, MachineActor, OrderDetail, ShopperActor,
         StorefrontMediaAsset, StorefrontMediaScope, StorefrontSelectedOption,
         resolve_storefront_media,
-        StripeCheckoutDraft,
+        CheckoutDraft,
     },
     sales::StripeCheckoutRequest,
 };
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductOptionId, ProductOptionValueId, ProductVariantId},
-    payments::{CheckoutAttemptId, CheckoutAttemptStatus},
     pricing::{Money, PriceListId},
     sales::{
         Cart, CartId, CartLine, CartStatus, OrderId, OrderNumber, ShopperId,
@@ -196,19 +195,17 @@ fn fingerprint_part(hasher: &mut Sha256, value: &[u8]) {
     hasher.update(value);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn checkout_request_fingerprint(
     actor: &MachineActor,
-    cart_id: CartId,
-    cart_version: i64,
     email: Option<&str>,
     request: &StripeCheckoutRequest,
-    cart: &Cart,
-    shipping_policy_version: i64,
-    shipping_countries: &[String],
 ) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"chaos-checkout-request-v2");
+    // This fingerprint covers only the immutable request contract. Cart
+    // contents are already snapshotted into the Order, and the return URL is
+    // intentionally not persisted anywhere else, so changing any of these
+    // inputs while reusing the client idempotency key must be rejected.
+    hasher.update(b"chaos-checkout-request-v3");
     fingerprint_part(&mut hasher, actor.store_id.as_uuid().as_bytes());
     fingerprint_part(
         &mut hasher,
@@ -218,23 +215,9 @@ fn checkout_request_fingerprint(
             .unwrap_or(Uuid::nil())
             .as_bytes(),
     );
-    fingerprint_part(&mut hasher, cart_id.as_uuid().as_bytes());
-    fingerprint_part(&mut hasher, &cart_version.to_be_bytes());
-    fingerprint_part(&mut hasher, cart.price_list_id().as_uuid().as_bytes());
-    fingerprint_part(&mut hasher, cart.currency().as_str().as_bytes());
     fingerprint_part(&mut hasher, request.payment_provider.as_str().as_bytes());
     fingerprint_part(&mut hasher, request.return_url.as_bytes());
     fingerprint_part(&mut hasher, email.unwrap_or_default().as_bytes());
-    fingerprint_part(&mut hasher, &shipping_policy_version.to_be_bytes());
-    for country in shipping_countries {
-        fingerprint_part(&mut hasher, country.as_bytes());
-    }
-    for line in cart.lines() {
-        fingerprint_part(&mut hasher, line.product_id().as_uuid().as_bytes());
-        fingerprint_part(&mut hasher, line.product_variant_id().as_uuid().as_bytes());
-        fingerprint_part(&mut hasher, &line.quantity().to_be_bytes());
-        fingerprint_part(&mut hasher, &line.unit_price().amount_minor().to_be_bytes());
-    }
     hasher.finalize().into()
 }
 
@@ -250,10 +233,10 @@ fn checkout_insert_error(error: sqlx::Error) -> ApplicationError {
         _ => None,
     };
     match constraint {
-        Some("orders_store_id_sales_channel_id_shopper_id_idempotency_key_key")
-        | Some("checkout_attempts_store_channel_shopper_idempotency_key") => {
+        Some("orders_store_id_sales_channel_id_shopper_id_idempotency_key_key") => {
             idempotency_key_reused()
         }
+        Some("orders_one_order_per_cart_key") => checkout_cart_already_started(),
         _ => database_error(error),
     }
 }
@@ -282,21 +265,7 @@ fn cart_not_active() -> ApplicationError {
 fn checkout_cart_already_started() -> ApplicationError {
     ApplicationError::Conflict {
         code: "checkout_cart_already_started",
-        message: "the Cart already has a checkout in progress; resume that checkout or use the active successor Cart",
-    }
-}
-
-fn checkout_attempt_not_open() -> ApplicationError {
-    ApplicationError::Conflict {
-        code: "checkout_attempt_not_open",
-        message: "the Checkout Attempt is no longer available for payment",
-    }
-}
-
-fn shipping_countries_unavailable() -> ApplicationError {
-    ApplicationError::Conflict {
-        code: "shipping_countries_unavailable",
-        message: "the Store has no enabled shipping destinations",
+        message: "the Cart is locked to an existing Order; resume that Order or use a new active Cart",
     }
 }
 

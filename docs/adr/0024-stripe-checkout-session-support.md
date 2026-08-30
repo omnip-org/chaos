@@ -13,20 +13,21 @@ webhook event families before the product needed them.
 Stripe Checkout creates a Checkout Session with a `cs_` identifier. The browser
 receives its client secret through the provider-neutral `PaymentClientAction`
 contract and passes it to Stripe's Embedded Checkout component. Chaos persists
-the client secret and provider session ID on the Checkout Attempt so it can resume
-the same payment after a browser back, remount, or lost response; it never
-creates a second Session for that Attempt.
+the client handoff as a provider-neutral JSON action on the source Cart so it
+can resume the same payment after a browser back, remount, or lost response; it
+never creates a second Session for that Order.
 
 Checkout creation is a synchronous API operation: Chaos commits the pending
-Order, freezes the source Cart, creates the Checkout Attempt, and creates the
-Stripe Session outside the database transaction. The response includes the
-Attempt identity and a new active successor Cart. The Attempt's provider session
-ID, client secret, shipping-policy snapshot, and durable provider idempotency key
-are persisted. A retry resumes the same Attempt and Session; the Order's `pi_`
+Order, locks the source Cart, and creates the Stripe Session outside the
+database transaction. The response includes the Order identity and the
+provider-neutral client action. The Cart stores only that action; the provider
+session ID, shipping-policy snapshot, return URL, expiry, and provider
+idempotency key are not duplicated in Chaos. A retry resumes the same Order and
+Session; the Order's `pi_`
 PaymentIntent reference is still filled from the verified payment webhook and
 remains the durable refund lookup key. Chaos deduplicates the client request
-through the Attempt/Order constraints and never creates another Order for the
-same source Cart.
+through the Order idempotency key and the one-Order-per-Cart constraint and
+never creates another Order for the same source Cart.
 
 Payment webhooks are Store-scoped payment input. A Stripe event for a
 direct Stripe account does not carry a Chaos Store identifier, and Stripe
@@ -94,6 +95,14 @@ Stripe webhook requests are verified against the exact raw request bytes,
 with the standard `Stripe-Signature` header and a five-minute timestamp
 tolerance. A Connect-style event envelope containing `account` is rejected.
 
+When an Order is still pending but its Cart has no client action (for example,
+the API process stopped after the Order commit or a Provider call failed), a
+resume request may retry Session creation with the same Order-derived Provider
+idempotency key. Because the return URL is not persisted, that recovery path
+requires a new validated return URL. A Provider error leaves the Order pending
+for another retry; a successful Provider response without a client action is a
+terminal local failure that cancels the Order and releases its reservation.
+
 Checkout Session customer fields are sourced from the provisional Order rather
 than from payment-attempt request parameters. Stripe-collected address,
 shipping, tax, promotion discounts, and final totals are written back to that same Order only after
@@ -127,10 +136,10 @@ becomes the authoritative business snapshot after webhook reconciliation.
 - Stripe account health verification is intentionally deferred; account
   configuration currently exposes only whether the required secret references
   are present.
-- Chaos owns one business Order and one Checkout Attempt per source Cart
-  checkout. The source Cart is frozen and a successor Cart is created for later
-  shopping; the Attempt stores provider-session recovery state without
-  duplicating the Order's line/address snapshots.
+- Chaos owns one business Order per source Cart checkout. The source Cart is
+  locked and the SDK obtains a separate active Cart for later shopping. The
+  source Cart stores only provider-form recovery state without duplicating the
+  Order's line/address snapshots.
 - Stripe Dashboard refunds and API-created refunds are reconciled through the
   verified `charge.refunded`, `refund.created`, `refund.updated`, and
   `refund.failed` events. The `reconcile_refunds` admin tool can replay the

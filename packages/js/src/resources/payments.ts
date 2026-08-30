@@ -2,10 +2,10 @@ import type { ChaosStorefrontClient } from "../client.js";
 import type {
   Cart,
   DataEnvelope,
-  CheckoutAttempt,
   EmbeddedCheckoutOptions,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutSession,
+  PendingPaymentOrder,
 } from "../types.js";
 
 interface EmbeddedCheckoutRequest {
@@ -31,47 +31,35 @@ export class PaymentsResource {
   ): Promise<DataEnvelope<EmbeddedCheckoutCreation>> {
     const cart = await this.client.cart.get(cartId);
     const checkout = await this.createEmbeddedCheckoutForCart(cart.data, options);
-    const successorCart = await this.client.cart.get(
-      checkout.data.successor_cart_id,
-    );
+    const nextCart = await this.client.cart.getOrCreate();
     return {
       data: {
         checkout: checkout.data,
-        cart: successorCart.data,
+        cart: nextCart.data,
       },
     };
   }
 
   async resumeEmbeddedCheckout(
-    checkoutAttemptId: string,
+    orderId: string,
+    options: Pick<EmbeddedCheckoutOptions, "returnUrl"> | undefined = undefined,
   ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
-    if (!checkoutAttemptId.trim()) {
-      throw new TypeError("checkoutAttemptId is required");
+    if (!orderId.trim()) {
+      throw new TypeError("orderId is required");
     }
     return this.client.request<DataEnvelope<EmbeddedCheckoutSession>>(
-      `/checkout-attempts/${encodeURIComponent(checkoutAttemptId)}/resume`,
+      `/orders/${encodeURIComponent(orderId)}/checkout`,
       {
         method: "POST",
+        body: options?.returnUrl ? { return_url: options.returnUrl } : {},
         requiresShopperToken: true,
       },
     );
   }
 
-  listCheckoutAttempts(): Promise<DataEnvelope<CheckoutAttempt[]>> {
-    return this.client.request<DataEnvelope<CheckoutAttempt[]>>(
-      "/checkout-attempts",
-      { method: "GET", requiresShopperToken: true },
-    );
-  }
-
-  getCheckoutAttempt(
-    checkoutAttemptId: string,
-  ): Promise<DataEnvelope<CheckoutAttempt>> {
-    if (!checkoutAttemptId.trim()) {
-      throw new TypeError("checkoutAttemptId is required");
-    }
-    return this.client.request<DataEnvelope<CheckoutAttempt>>(
-      `/checkout-attempts/${encodeURIComponent(checkoutAttemptId)}`,
+  listPendingPaymentOrders(): Promise<DataEnvelope<PendingPaymentOrder[]>> {
+    return this.client.request<DataEnvelope<PendingPaymentOrder[]>>(
+      "/orders/pending-payment",
       { method: "GET", requiresShopperToken: true },
     );
   }
@@ -90,21 +78,23 @@ export class PaymentsResource {
       idempotencyKey: checkoutIdempotencyKey(cart, body),
     });
 
-    try {
-      this.client.analytics?.recordInitiateCheckout({
-        cartId: cart.id,
-        orderId: response.data.order_id,
-        valueMinor: cart.subtotal_amount_minor,
-        currency: cart.currency,
-        items: cart.lines.map((line) => ({
-          productId: line.product_id,
-          productVariantId: line.product_variant_id,
-          quantity: line.quantity,
-          priceMinor: line.unit_price_amount_minor,
-        })),
-      });
-    } catch {
-      // The checkout session already exists; analytics is best-effort.
+    if (cart.status === "active") {
+      try {
+        this.client.analytics?.recordInitiateCheckout({
+          cartId: cart.id,
+          orderId: response.data.order_id,
+          valueMinor: cart.subtotal_amount_minor,
+          currency: cart.currency,
+          items: cart.lines.map((line) => ({
+            productId: line.product_id,
+            productVariantId: line.product_variant_id,
+            quantity: line.quantity,
+            priceMinor: line.unit_price_amount_minor,
+          })),
+        });
+      } catch {
+        // The checkout session already exists; analytics is best-effort.
+      }
     }
     return response;
   }

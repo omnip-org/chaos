@@ -63,8 +63,7 @@ sales_id!(ShopperId);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CartStatus {
     Active,
-    CheckoutPending,
-    Completed,
+    Locked,
     Abandoned,
 }
 
@@ -72,8 +71,7 @@ impl CartStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
-            Self::CheckoutPending => "checkout_pending",
-            Self::Completed => "completed",
+            Self::Locked => "locked",
             Self::Abandoned => "abandoned",
         }
     }
@@ -81,8 +79,7 @@ impl CartStatus {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "active" => Some(Self::Active),
-            "checkout_pending" => Some(Self::CheckoutPending),
-            "completed" => Some(Self::Completed),
+            "locked" => Some(Self::Locked),
             "abandoned" => Some(Self::Abandoned),
             _ => None,
         }
@@ -313,26 +310,12 @@ impl Cart {
             })
     }
 
-    pub fn complete(&mut self) -> Result<(), DomainError> {
-        if !matches!(
-            self.status,
-            CartStatus::Active | CartStatus::CheckoutPending
-        ) {
-            return Err(validation("cart", "is no longer available for completion"));
-        }
-        if self.lines.is_empty() {
-            return Err(validation("lines", "Cart must contain at least one line"));
-        }
-        self.status = CartStatus::Completed;
-        Ok(())
-    }
-
     pub fn begin_checkout(&mut self) -> Result<(), DomainError> {
         self.require_active()?;
         if self.lines.is_empty() {
             return Err(validation("lines", "Cart must contain at least one line"));
         }
-        self.status = CartStatus::CheckoutPending;
+        self.status = CartStatus::Locked;
         Ok(())
     }
 
@@ -384,25 +367,23 @@ mod tests {
     }
 
     #[test]
-    fn completed_cart_rejects_later_mutations() {
+    fn locked_cart_rejects_later_mutations() {
         let variant_id = ProductVariantId::new();
         let mut cart = cart();
         cart.upsert_line(line(variant_id, 1, 100)).unwrap();
-        cart.complete().unwrap();
+        cart.begin_checkout().unwrap();
         assert!(cart.upsert_line(line(variant_id, 2, 100)).is_err());
         assert!(cart.remove_line(variant_id).is_err());
     }
 
     #[test]
-    fn checkout_pending_cart_rejects_later_mutations_but_can_complete() {
+    fn checkout_locks_cart_before_payment() {
         let variant_id = ProductVariantId::new();
         let mut cart = cart();
         cart.upsert_line(line(variant_id, 1, 100)).unwrap();
         cart.begin_checkout().unwrap();
-        assert_eq!(cart.status(), CartStatus::CheckoutPending);
+        assert_eq!(cart.status(), CartStatus::Locked);
         assert!(cart.upsert_line(line(variant_id, 2, 100)).is_err());
         assert!(cart.remove_line(variant_id).is_err());
-        cart.complete().unwrap();
-        assert_eq!(cart.status(), CartStatus::Completed);
     }
 }

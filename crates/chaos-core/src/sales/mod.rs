@@ -6,12 +6,12 @@ use chaos_domain::{
     integration::PaymentProvider,
     sales::{CartId, OrderContact, OrderId},
 };
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
     adapters::postgres::PostgresStorefrontSalesRepository,
-    contracts::{CartDetail, MachineActor, ShopperActor, StripeCheckoutDraft},
+    contracts::{CartDetail, CheckoutDraft, MachineActor, ShopperActor},
 };
 
 mod order_management;
@@ -52,7 +52,6 @@ pub struct CreateStripeCheckoutInput {
 pub(crate) struct StripeCheckoutRequest {
     pub payment_provider: PaymentProvider,
     pub now: OffsetDateTime,
-    pub expires_at: OffsetDateTime,
     pub idempotency_key: uuid::Uuid,
     pub return_url: String,
 }
@@ -131,7 +130,7 @@ impl StorefrontSales {
     pub async fn create_stripe_checkout(
         &self,
         input: CreateStripeCheckoutInput,
-    ) -> Result<StripeCheckoutDraft, ApplicationError> {
+    ) -> Result<CheckoutDraft, ApplicationError> {
         input.actor.machine.require_sales_channel()?;
         let contact = OrderContact::new(input.email, None)?;
         self.repository
@@ -142,7 +141,6 @@ impl StorefrontSales {
                 StripeCheckoutRequest {
                     payment_provider: input.payment_provider,
                     now: input.now,
-                    expires_at: input.now + Duration::minutes(30),
                     idempotency_key: input.idempotency_key,
                     return_url: input.return_url,
                 },

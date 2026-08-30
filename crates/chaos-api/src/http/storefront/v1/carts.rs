@@ -7,17 +7,13 @@ use axum::{
 use chaos_core::{
     ApplicationError,
     contracts::{
-        CartDetail, CartLineItem, CheckoutAttemptDetail, PaymentClientAction, StorefrontMediaAsset,
-        StorefrontMediaScope,
+        CartDetail, CartLineItem, PaymentClientAction, StorefrontMediaAsset, StorefrontMediaScope,
     },
-    payments::{CreatePaymentAttemptInput, ResumePaymentAttemptInput},
+    payments::CreateEmbeddedCheckoutInput,
     sales::CreateStripeCheckoutInput,
     sales::{CreateCartInput, RemoveCartLineInput, SetCartLineInput},
 };
-use chaos_domain::{
-    catalog::ProductVariantId, integration::PaymentProvider, payments::CheckoutAttemptId,
-    sales::CartId,
-};
+use chaos_domain::{catalog::ProductVariantId, integration::PaymentProvider, sales::CartId};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -33,9 +29,6 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/carts/{cart_id}", get(get_cart))
         .route("/carts/{cart_id}/lines/{product_variant_id}", put(set_cart_line).delete(remove_cart_line))
         .route("/carts/{cart_id}/checkout", post(create_embedded_checkout))
-        .route("/checkout-attempts", get(list_checkout_attempts))
-        .route("/checkout-attempts/{attempt_id}", get(get_checkout_attempt))
-        .route("/checkout-attempts/{attempt_id}/resume", post(resume_embedded_checkout))
 }
 
 #[derive(Deserialize, Serialize)]
@@ -57,11 +50,6 @@ struct CartPath {
 struct CartLinePath {
     cart_id: Uuid,
     product_variant_id: Uuid,
-}
-
-#[derive(Deserialize)]
-struct CheckoutAttemptPath {
-    attempt_id: Uuid,
 }
 
 #[derive(Serialize)]
@@ -245,25 +233,9 @@ struct CreateEmbeddedCheckoutBody {
 
 #[derive(Serialize)]
 struct EmbeddedCheckoutData {
-    checkout_attempt_id: Uuid,
     order_id: Uuid,
     source_cart_id: Uuid,
-    successor_cart_id: Uuid,
-    status: &'static str,
-    expires_at: ApiDateTime,
     client_action: PaymentClientActionData,
-}
-
-#[derive(Serialize)]
-struct CheckoutAttemptData {
-    id: Uuid,
-    order_id: Uuid,
-    source_cart_id: Uuid,
-    successor_cart_id: Uuid,
-    status: &'static str,
-    expires_at: ApiDateTime,
-    created_at: ApiDateTime,
-    updated_at: ApiDateTime,
 }
 
 #[derive(Serialize)]
@@ -307,81 +279,27 @@ async fn create_embedded_checkout(
         .await?;
     let checkout = state
         .payment_service
-        .create_embedded_checkout(CreatePaymentAttemptInput {
+        .create_embedded_checkout(CreateEmbeddedCheckoutInput {
             actor: actor.clone(),
-            checkout_attempt_id: draft.checkout_attempt_id,
+            order_id: draft.order_id,
+            return_url: body.return_url,
             now: state.clock.now(),
         })
         .await?;
     Ok(ApiResponse::created(embedded_checkout_data(checkout)?))
 }
 
-async fn list_checkout_attempts(
-    State(state): State<ApiState>,
-    PaymentShopper(actor): PaymentShopper,
-) -> Result<ApiResponse<Vec<CheckoutAttemptData>>, ApiError> {
-    let attempts = state.payment_service.list_checkout_attempts(&actor).await?;
-    Ok(ApiResponse::ok(
-        attempts.into_iter().map(checkout_attempt_data).collect(),
-    ))
-}
-
-async fn get_checkout_attempt(
-    State(state): State<ApiState>,
-    PaymentShopper(actor): PaymentShopper,
-    ApiPath(path): ApiPath<CheckoutAttemptPath>,
-) -> Result<ApiResponse<CheckoutAttemptData>, ApiError> {
-    let attempt = state
-        .payment_service
-        .get_checkout_attempt(&actor, CheckoutAttemptId::from_uuid(path.attempt_id))
-        .await?;
-    Ok(ApiResponse::ok(checkout_attempt_data(attempt)))
-}
-
-async fn resume_embedded_checkout(
-    State(state): State<ApiState>,
-    PaymentShopper(actor): PaymentShopper,
-    ApiPath(path): ApiPath<CheckoutAttemptPath>,
-) -> Result<ApiResponse<EmbeddedCheckoutData>, ApiError> {
-    let checkout = state
-        .payment_service
-        .resume_embedded_checkout(ResumePaymentAttemptInput {
-            actor,
-            checkout_attempt_id: CheckoutAttemptId::from_uuid(path.attempt_id),
-            now: state.clock.now(),
-        })
-        .await?;
-    Ok(ApiResponse::ok(embedded_checkout_data(checkout)?))
-}
-
 fn embedded_checkout_data(
     checkout: chaos_core::payments::EmbeddedCheckoutResult,
 ) -> Result<EmbeddedCheckoutData, ApplicationError> {
     Ok(EmbeddedCheckoutData {
-        checkout_attempt_id: checkout.attempt.id.as_uuid(),
-        order_id: checkout.attempt.order_id.as_uuid(),
-        source_cart_id: checkout.attempt.source_cart_id.as_uuid(),
-        successor_cart_id: checkout.attempt.successor_cart_id.as_uuid(),
-        status: checkout.attempt.status.as_str(),
-        expires_at: checkout.attempt.expires_at.into(),
+        order_id: checkout.order_id.as_uuid(),
+        source_cart_id: checkout.source_cart_id.as_uuid(),
         client_action: client_action_data(checkout.client_action),
     })
 }
 
-fn checkout_attempt_data(attempt: CheckoutAttemptDetail) -> CheckoutAttemptData {
-    CheckoutAttemptData {
-        id: attempt.id.as_uuid(),
-        order_id: attempt.order_id.as_uuid(),
-        source_cart_id: attempt.source_cart_id.as_uuid(),
-        successor_cart_id: attempt.successor_cart_id.as_uuid(),
-        status: attempt.status.as_str(),
-        expires_at: attempt.expires_at.into(),
-        created_at: attempt.created_at.into(),
-        updated_at: attempt.updated_at.into(),
-    }
-}
-
-fn validate_return_url(value: &str) -> Result<(), ApiError> {
+pub(crate) fn validate_return_url(value: &str) -> Result<(), ApiError> {
     let url = url::Url::parse(value)
         .map_err(|_| invalid_value("return_url", "must be an absolute URL"))?;
     let secure = url.scheme() == "https";

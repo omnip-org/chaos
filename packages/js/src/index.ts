@@ -66,7 +66,7 @@ export {
   getTrackedOrderFromRequest,
   peekCartSession,
   persistCartSession,
-  listCheckoutAttemptsFromRequest,
+  listPendingPaymentOrdersFromRequest,
   resumeEmbeddedCheckoutFromRequest,
   updateCartLine,
   updateCartLineFromRequest,

@@ -28,7 +28,7 @@ export class CartResource {
   }
 
   /**
-   * Reads a cart only when it is still active. A missing, completed, or
+   * Reads a cart only when it is still active. A missing, locked, or
    * abandoned cart returns null without creating a replacement.
    *
    * Invalid shopper credentials are cleared from the configured token
@@ -55,7 +55,7 @@ export class CartResource {
 
   /**
    * Returns an active cart for the current shopper, creating one when the
-   * supplied cart id is stale or belongs to a completed checkout. Shopper
+   * supplied cart id is stale or belongs to a locked checkout. Shopper
    * identity recovery is explicit and persists through the client's configured
    * token storage.
    */

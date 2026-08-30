@@ -150,7 +150,7 @@ export interface Cart {
   id: UUID;
   price_list_id: UUID;
   currency: CurrencyCode;
-  status: "active" | "checkout_pending" | "completed" | "abandoned";
+  status: "active" | "locked" | "abandoned";
   version: number;
   lines: CartLine[];
   subtotal_amount_minor: number;
@@ -308,11 +308,7 @@ export interface TrackedOrder {
   updated_at: string;
 }
 
-/**
- * Storefront-facing options for an embedded checkout. The SDK maps these
- * values to the provider-specific API request and owns the request's
- * idempotency boundary.
- */
+/** Storefront-facing options for creating an embedded checkout. */
 export interface EmbeddedCheckoutOptions {
   /**
    * Optional: omit to let Stripe Embedded Checkout collect the shopper's
@@ -325,40 +321,29 @@ export interface EmbeddedCheckoutOptions {
 }
 
 export interface EmbeddedCheckoutSession {
-  checkout_attempt_id: UUID;
   order_id: UUID;
   source_cart_id: UUID;
-  successor_cart_id: UUID;
-  status: CheckoutAttemptStatus;
-  expires_at: string;
   client_action: PaymentClientAction;
 }
 
-export type CheckoutAttemptStatus =
-  | "creating"
-  | "open"
-  | "paid"
-  | "failed"
-  | "cancelled"
-  | "expired";
-
-export interface CheckoutAttempt {
-  id: UUID;
+/** An Order that is still waiting for a provider payment callback. */
+export interface PendingPaymentOrder {
   order_id: UUID;
   source_cart_id: UUID;
-  successor_cart_id: UUID;
-  status: CheckoutAttemptStatus;
-  expires_at: string;
+  currency: CurrencyCode;
+  subtotal_amount_minor: number;
   created_at: string;
   updated_at: string;
 }
 
-/** Browser-facing result of creating a checkout from a cookie-backed cart. */
+/** Browser-facing result of creating or resuming a checkout. */
 export interface EmbeddedCheckoutCreation {
   checkout: EmbeddedCheckoutSession;
+  /** The newly obtained active Cart for subsequent shopping. */
   cart: Cart;
 }
 
+/** The provider-neutral client handoff needed to mount the payment form. */
 export interface PaymentClientAction {
   /**
    * client_token is an Embedded Checkout Session client secret. Pass it to
