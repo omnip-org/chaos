@@ -2,8 +2,8 @@ CREATE TYPE commerce.cart_status AS ENUM ('active', 'locked', 'completed', 'aban
 CREATE TYPE commerce.order_status AS ENUM ('pending', 'confirmed', 'cancelled');
 CREATE TYPE commerce.order_payment_status AS ENUM ('pending', 'paid', 'failed', 'expired', 'partially_refunded', 'refunded');
 CREATE TYPE commerce.order_shipping_status AS ENUM ('pending', 'awaiting_pickup', 'shipped', 'delivered', 'cancelled');
-CREATE TYPE commerce.refund_status AS ENUM ('pending', 'succeeded', 'failed');
-CREATE TYPE commerce.fulfillment_status AS ENUM ('awaiting_pickup', 'shipped', 'delivered', 'cancelled');
+CREATE TYPE commerce.order_refund_status AS ENUM ('pending', 'succeeded', 'failed');
+CREATE TYPE commerce.order_fulfillment_status AS ENUM ('awaiting_pickup', 'shipped', 'delivered', 'cancelled');
 
 CREATE TABLE commerce.carts (
     id                    UUID                    NOT NULL PRIMARY KEY,
@@ -148,41 +148,41 @@ CREATE TABLE commerce.order_lines (
 );
 
 CREATE TABLE commerce.order_refunds (
-    id                            UUID                   NOT NULL PRIMARY KEY,
-    store_id                      UUID                   NOT NULL,
-    order_id                      UUID                   NOT NULL,
-    currency                      CHAR(3)                NOT NULL,
-    status                        commerce.refund_status NOT NULL DEFAULT 'pending',
-    amount_minor                  BIGINT                 NOT NULL,
-    payment_provider_account_id   UUID                   NOT NULL,
+    id                            UUID                         NOT NULL PRIMARY KEY,
+    store_id                      UUID                         NOT NULL,
+    order_id                      UUID                         NOT NULL,
+    currency                      CHAR(3)                      NOT NULL,
+    status                        commerce.order_refund_status NOT NULL DEFAULT 'pending',
+    amount_minor                  BIGINT                       NOT NULL,
+    payment_provider_account_id   UUID                         NOT NULL,
     payment_provider_reference_id TEXT,
     failure_code                  TEXT,
-    created_at                    TIMESTAMPTZ            NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                    TIMESTAMPTZ            NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at                    TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                    TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT refunds_store_id_id_key                        UNIQUE (store_id, id),
-    CONSTRAINT refunds_store_id_order_currency_fkey           FOREIGN KEY (store_id, order_id, currency) REFERENCES commerce.orders (store_id, id, currency),
-    CONSTRAINT refunds_store_id_payment_provider_account_fkey FOREIGN KEY (store_id, payment_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
-    CONSTRAINT refunds_amount_positive_check                  CHECK (amount_minor > 0),
-    CONSTRAINT refunds_currency_format_check                  CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT refunds_payment_provider_reference_check       CHECK (payment_provider_reference_id IS NULL OR length(trim(payment_provider_reference_id)) BETWEEN 1 AND 255),
-    CONSTRAINT refunds_failure_code_check                     CHECK (failure_code IS NULL OR length(trim(failure_code)) BETWEEN 1 AND 2000),
-    CONSTRAINT refunds_failure_code_shape_check               CHECK (status = 'failed' OR failure_code IS NULL)
+    CONSTRAINT refunds_store_id_id_key                         UNIQUE (store_id, id),
+    CONSTRAINT refunds_store_id_order_currency_fkey            FOREIGN KEY (store_id, order_id, currency) REFERENCES commerce.orders (store_id, id, currency),
+    CONSTRAINT refunds_store_id_payment_provider_account_fkey  FOREIGN KEY (store_id, payment_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
+    CONSTRAINT refunds_amount_positive_check                   CHECK (amount_minor > 0),
+    CONSTRAINT refunds_currency_format_check                   CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT refunds_payment_provider_reference_check        CHECK (payment_provider_reference_id IS NULL OR length(trim(payment_provider_reference_id)) BETWEEN 1 AND 255),
+    CONSTRAINT refunds_failure_code_check                      CHECK (failure_code IS NULL OR length(trim(failure_code)) BETWEEN 1 AND 2000),
+    CONSTRAINT refunds_failure_code_shape_check                CHECK (status = 'failed' OR failure_code IS NULL)
 );
 
 CREATE TABLE commerce.order_fulfillments (
-    id                           UUID                        NOT NULL PRIMARY KEY,
-    store_id                     UUID                        NOT NULL,
-    order_id                     UUID                        NOT NULL,
-    shipping_provider_account_id UUID                        NOT NULL,
-    status                       commerce.fulfillment_status NOT NULL DEFAULT 'awaiting_pickup',
+    id                           UUID                               NOT NULL PRIMARY KEY,
+    store_id                     UUID                               NOT NULL,
+    order_id                     UUID                               NOT NULL,
+    shipping_provider_account_id UUID                               NOT NULL,
+    status                       commerce.order_fulfillment_status  NOT NULL DEFAULT 'awaiting_pickup',
     tracking_number              TEXT,
     tracking_url                 TEXT,
     shipped_at                   TIMESTAMPTZ,
     delivered_at                 TIMESTAMPTZ,
     cancelled_at                 TIMESTAMPTZ,
-    created_at                   TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                   TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at                   TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                   TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT fulfillments_store_id_id_key                         UNIQUE (store_id, id),
     CONSTRAINT fulfillments_store_id_order_fkey                     FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders (store_id, id),
