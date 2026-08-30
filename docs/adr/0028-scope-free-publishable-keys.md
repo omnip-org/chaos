@@ -18,14 +18,15 @@ plus current Store membership authorize MCP administration.
 
 ## Decision
 
-A Publishable Key identifies one Store and resolves one active Sales Channel. Every
-active key may enter the complete Store API. Storefront operations continue to
+A Publishable Key identifies one Store and is bound to one active Sales Channel
+when it is created. Every active key may enter the complete Store API. Storefront operations continue to
 enforce resource ownership, Shopper or tracking credentials, idempotency, business
 state, validation, and rate limits where applicable.
 
 Publishable Keys have no scope enum, scope collection, or configurable scope input.
 The Storefront SDK exposes the API-key authentication model without OAuth-style
-scope values.
+scope values. Sales Channel binding is a tenant/resource selection, not an
+endpoint scope.
 
 ## Consequences
 

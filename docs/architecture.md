@@ -24,7 +24,9 @@ Users create private Access Keys in the Identity control plane. An Access Key id
 
 The MCP HTTP transport is stateless. Protocol context and authentication are supplied on each request, allowing any API replica to handle it without local session affinity.
 
-Stores issue public Storefront Keys for Sales Channels. These keys carry storefront capabilities and may select a Sales Channel; they cannot invoke trusted-client or administration use cases.
+Stores issue public Storefront Keys for Sales Channels. Each key is bound to one
+active Sales Channel at creation; it cannot invoke trusted-client or
+administration use cases.
 
 Commerce administration is exposed through MCP rather than an Admin HTTP API. HTTP remains for identity bootstrap, storefront and channel traffic, provider webhooks, and health checks.
 
@@ -80,7 +82,7 @@ Credential resolution is intentionally asymmetric:
 
 - a User JWT yields `user_id`, followed by a Store membership check;
 - a User Access Key yields `access_key_id` and `user_id`, followed by a fresh Store membership check;
-- a Publishable Store Key yields `store_id` and a resolved `sales_channel_id`;
+- a Publishable Store Key yields `store_id` and its bound `sales_channel_id`;
 - a webhook yields `store_id` only after signature verification and Provider mapping;
 - a Worker carries `store_id` in its durable job and establishes a fresh transaction context.
 

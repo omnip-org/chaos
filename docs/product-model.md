@@ -87,4 +87,4 @@ The authenticated operation chain is `Access Key -> User -> Store Membership -> 
 
 ## Publishable Key
 
-A Store-scoped public credential for storefront or Sales Channel clients. It resolves an active Sales Channel and can enter the complete Store API. Operation-specific Shopper credentials, tracking capabilities, resource ownership, and business rules protect non-public data and mutations. It cannot authenticate trusted administration clients or invoke Store administration. Its plaintext format is `pk_<24 Base58 characters>`.
+A Store-scoped public credential for storefront or Sales Channel clients. It is bound to one active Sales Channel when created and can enter the complete Store API. Operation-specific Shopper credentials, tracking capabilities, resource ownership, and business rules protect non-public data and mutations. It cannot authenticate trusted administration clients or invoke Store administration. Its plaintext format is `pk_<24 Base58 characters>`.

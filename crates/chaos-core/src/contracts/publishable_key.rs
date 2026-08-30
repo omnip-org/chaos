@@ -7,6 +7,7 @@ pub struct GeneratedPublishableKey {
 
 pub struct PublishableKeyListItem {
     pub id: PublishableKeyId,
+    pub sales_channel_id: SalesChannelId,
     pub name: String,
     pub public_key: String,
     pub created_at: OffsetDateTime,

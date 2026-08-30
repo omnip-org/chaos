@@ -440,16 +440,21 @@ mod tests {
 
     use super::*;
 
-    async fn insert_publishable_key(pool: &PgPool, store_id: StoreId) -> GeneratedPublishableKey {
+    async fn insert_publishable_key(
+        pool: &PgPool,
+        store_id: StoreId,
+        sales_channel_id: SalesChannelId,
+    ) -> GeneratedPublishableKey {
         let material = DefaultPublishableKeyGenerator.generate();
         let key_id = PublishableKeyId::new();
         sqlx::query(
             "INSERT INTO commerce.store_publishable_keys \
-             (id, store_id, public_key, name) \
-             VALUES ($1, $2, $3, 'Storefront HTTP')",
+             (id, store_id, sales_channel_id, public_key, name) \
+             VALUES ($1, $2, $3, $4, 'Storefront HTTP')",
         )
         .bind(key_id.as_uuid())
         .bind(store_id.as_uuid())
+        .bind(sales_channel_id.as_uuid())
         .bind(&material.public_key)
         .execute(pool)
         .await
@@ -557,7 +562,7 @@ mod tests {
         .execute(&owner_pool)
         .await
         .unwrap();
-        let material = insert_publishable_key(&owner_pool, store_id).await;
+        let material = insert_publishable_key(&owner_pool, store_id, channel_id).await;
         let state = test_state(&database_url, user_id);
         assert!(
             chaos_core::adapters::postgres::PostgresSearchIndexer::new(

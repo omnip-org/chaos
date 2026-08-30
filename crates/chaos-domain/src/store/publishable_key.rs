@@ -2,7 +2,7 @@ use uuid::Uuid;
 
 use crate::{DomainError, FieldViolation};
 
-use super::StoreId;
+use super::{SalesChannelId, StoreId};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PublishableKeyId(Uuid);
@@ -31,11 +31,16 @@ impl Default for PublishableKeyId {
 pub struct PublishableKey {
     id: PublishableKeyId,
     store_id: StoreId,
+    sales_channel_id: SalesChannelId,
     name: String,
 }
 
 impl PublishableKey {
-    pub fn issue(store_id: StoreId, name: impl Into<String>) -> Result<Self, DomainError> {
+    pub fn issue(
+        store_id: StoreId,
+        sales_channel_id: SalesChannelId,
+        name: impl Into<String>,
+    ) -> Result<Self, DomainError> {
         let name = name.into();
         if name.trim().is_empty() || name.chars().count() > 80 {
             return Err(DomainError::Validation(vec![FieldViolation {
@@ -46,6 +51,7 @@ impl PublishableKey {
         Ok(Self {
             id: PublishableKeyId::new(),
             store_id,
+            sales_channel_id,
             name,
         })
     }
@@ -53,9 +59,10 @@ impl PublishableKey {
     pub fn from_parts(
         id: PublishableKeyId,
         store_id: StoreId,
+        sales_channel_id: SalesChannelId,
         name: impl Into<String>,
     ) -> Result<Self, DomainError> {
-        let mut key = Self::issue(store_id, name)?;
+        let mut key = Self::issue(store_id, sales_channel_id, name)?;
         key.id = id;
         Ok(key)
     }
@@ -66,6 +73,10 @@ impl PublishableKey {
 
     pub const fn store_id(&self) -> StoreId {
         self.store_id
+    }
+
+    pub const fn sales_channel_id(&self) -> SalesChannelId {
+        self.sales_channel_id
     }
 
     pub fn name(&self) -> &str {
@@ -79,7 +90,7 @@ mod tests {
 
     #[test]
     fn publishable_key_accepts_a_bounded_name() {
-        let key = PublishableKey::issue(StoreId::new(), "Browser").unwrap();
+        let key = PublishableKey::issue(StoreId::new(), SalesChannelId::new(), "Browser").unwrap();
         assert_eq!(key.name(), "Browser");
     }
 }

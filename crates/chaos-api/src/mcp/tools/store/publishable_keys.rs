@@ -1,5 +1,5 @@
 use chaos_core::store::CreatePublishableKeyInput;
-use chaos_domain::store::PublishableKeyId;
+use chaos_domain::store::{PublishableKeyId, SalesChannelId};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -21,6 +21,8 @@ use crate::mcp::{
 pub struct CreatePublishableKeyParams {
     /// The Store UUID to modify.
     pub store_id: String,
+    /// The active Sales Channel UUID to bind to the key.
+    pub sales_channel_id: String,
     pub name: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
@@ -52,8 +54,9 @@ pub struct RevokePublishableKeyParams {
 #[tool_router(router = publishable_keys_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(
-        description = "Create a public Storefront Key in the selected Store. The key is safe \
-                        to use in frontend code. Requires confirm: true."
+        description = "Create a public Storefront Key in the selected Store and bind it to an \
+                        active Sales Channel. The key is safe to use in frontend code. Requires \
+                        confirm: true."
     )]
     async fn create_publishable_key(
         &self,
@@ -75,18 +78,25 @@ impl ChaosMcp {
             return Ok(result);
         }
         let store_id = actor.store_id();
+        let sales_channel_id = match parse_uuid_field(&params.sales_channel_id, "sales_channel_id")
+        {
+            Ok(id) => SalesChannelId::from_uuid(id),
+            Err(result) => return Ok(result),
+        };
         match self
             .state
             .publishable_key_management
             .create(CreatePublishableKeyInput {
                 actor,
                 store_id,
+                sales_channel_id,
                 name: params.name,
             })
             .await
         {
             Ok(output) => Ok(text_result(json!({
                 "id": output.publishable_key.id().as_uuid(),
+                "sales_channel_id": output.publishable_key.sales_channel_id().as_uuid(),
                 "name": output.publishable_key.name(),
                 "public_key": output.public_key,
             }))),
@@ -200,6 +210,7 @@ fn publishable_key_summary(
 ) -> serde_json::Value {
     json!({
         "id": item.id.as_uuid(),
+        "sales_channel_id": item.sales_channel_id.as_uuid(),
         "name": item.name,
         "public_key": item.public_key,
         "created_at": format_time(item.created_at),

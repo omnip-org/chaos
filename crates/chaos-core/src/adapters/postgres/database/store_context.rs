@@ -99,17 +99,18 @@ mod tests {
             .await
             .unwrap();
         }
-        for (key_id, store_id, public_key) in [
-            (key_a, store_a, "pk_123456789ABCDEFGHJKLMNPQ"),
-            (key_b, store_b, "pk_23456789ABCDEFGHJKLMNPQR"),
+        for (key_id, store_id, sales_channel_id, public_key) in [
+            (key_a, store_a, channel_a, "pk_123456789ABCDEFGHJKLMNPQ"),
+            (key_b, store_b, channel_b, "pk_23456789ABCDEFGHJKLMNPQR"),
         ] {
             sqlx::query(
                 "INSERT INTO commerce.store_publishable_keys \
-                 (id, store_id, public_key, name) \
-                 VALUES ($1, $2, $3, 'RLS test key')",
+                 (id, store_id, sales_channel_id, public_key, name) \
+                 VALUES ($1, $2, $3, $4, 'RLS test key')",
             )
             .bind(key_id)
             .bind(store_id)
+            .bind(sales_channel_id)
             .bind(public_key)
             .execute(&pool)
             .await

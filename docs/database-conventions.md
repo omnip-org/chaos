@@ -83,8 +83,11 @@ The bootstrap uses `0001_platform.sql`, `0002_identity.sql`,
 `0003_commerce.sql`, `0004_integration.sql`,
 `0005_commerce_products.sql`, `0006_commerce_orders.sql`, and
 `0007_integration_analytics.sql`, followed by `0008_identity_oauth.sql`,
-`0009_checkout_lifecycle.sql`, `0010_checkout_attempts.sql`, and
-`0011_order_centric_checkout.sql`. The last migration contracts the temporary
+`0009_checkout_lifecycle.sql`, `0010_checkout_attempts.sql`,
+`0011_order_centric_checkout.sql`, and `0012_publishable_key_channel_binding.sql`.
+The last migration binds legacy Publishable Keys to each Store's active default
+Sales Channel, makes the binding required, and contracts authentication to the
+bound active channel. Migration `0011` contracts the temporary
 Checkout Attempt implementation into an Order-centric checkout: Cart status is
 `active | locked | abandoned`, and the private payment-form handoff lives in
 `commerce.carts.payment_client_action`.
@@ -105,6 +108,11 @@ temporary Checkout Attempt schema: it drops the old table and status types.
 The deployment must drain the old API before applying it, then start the
 Order-centric API; the old and new checkout implementations must not serve
 traffic against the same database concurrently.
+
+Migration `0012_publishable_key_channel_binding.sql` is a fix-forward data
+contract. It must complete the legacy NULL backfill before setting
+`commerce.store_publishable_keys.sales_channel_id` to `NOT NULL`; a key without
+an active default channel intentionally blocks the migration for operator repair.
 
 ## SQL style
 
