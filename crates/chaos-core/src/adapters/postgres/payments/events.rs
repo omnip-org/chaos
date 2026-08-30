@@ -1175,7 +1175,7 @@ async fn upsert_refund_observation(
                 _ => None,
             };
             sqlx::query(
-                "UPDATE commerce.order_refunds SET status = $4::commerce.refund_status, \
+                "UPDATE commerce.order_refunds SET status = $4::commerce.order_refund_status, \
                         payment_provider_reference_id = $3, failure_code = $5, updated_at = $6 \
                  WHERE store_id = $1 AND id = $2",
             )
@@ -1195,7 +1195,7 @@ async fn upsert_refund_observation(
                 "INSERT INTO commerce.order_refunds \
                  (id, store_id, order_id, currency, status, amount_minor, \
                   payment_provider_account_id, payment_provider_reference_id, failure_code, updated_at) \
-                 VALUES ($1, $2, $3, $4, $5::commerce.refund_status, $6, $7, $8, $9, $10)",
+                 VALUES ($1, $2, $3, $4, $5::commerce.order_refund_status, $6, $7, $8, $9, $10)",
             )
             .bind(Uuid::now_v7())
             .bind(context.store_id.as_uuid())
