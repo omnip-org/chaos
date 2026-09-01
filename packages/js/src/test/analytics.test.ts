@@ -291,9 +291,10 @@ test("sends generic events to GA4 once and requires the commerce envelope", () =
   );
 
   const events = (
-    environment.window as unknown as { dataLayer: unknown[][] }
+    environment.window as unknown as { dataLayer: ArrayLike<unknown>[] }
   ).dataLayer.filter((call) => call[0] === "event");
   assert.equal(events.length, 1);
+  assert.equal(Object.prototype.toString.call(events[0]), "[object Arguments]");
   assert.equal(events[0]?.[1], "store_defined_event");
 });
 

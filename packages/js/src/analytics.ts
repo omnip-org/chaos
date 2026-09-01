@@ -925,6 +925,7 @@ export class ChaosStorefrontAnalytics {
 }
 
 type ProviderOptions = AnalyticsOptions["providers"];
+type GtagDataLayerEntry = unknown[] | IArguments;
 type ProviderFunction = ((...args: unknown[]) => void) & {
   callMethod?: (...args: unknown[]) => void;
   queue?: unknown[][];
@@ -933,7 +934,7 @@ type ProviderFunction = ((...args: unknown[]) => void) & {
 };
 type ProviderWindow = Window &
   typeof globalThis & {
-    dataLayer?: unknown[][];
+    dataLayer?: GtagDataLayerEntry[];
     gtag?: (...args: unknown[]) => void;
     fbq?: ProviderFunction;
     _fbq?: ProviderFunction;
@@ -1004,9 +1005,10 @@ class BrowserProviderAdapters {
   private startGa4(): void {
     if (this.ga4Started || !this.options?.ga4) return;
     this.ga4Started = true;
-    this.windowRef.dataLayer ??= [];
-    this.windowRef.gtag ??= (...args: unknown[]) =>
-      this.windowRef.dataLayer?.push(args);
+    const dataLayer = (this.windowRef.dataLayer ??= []);
+    this.windowRef.gtag ??= function gtag() {
+      dataLayer.push(arguments);
+    };
     this.windowRef.gtag("js", new Date());
     this.windowRef.gtag("config", this.options.ga4.measurementId, {
       send_page_view: false,
