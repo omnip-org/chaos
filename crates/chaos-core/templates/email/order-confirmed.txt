@@ -5,6 +5,12 @@ Your order {{order_number}} has been confirmed.
 Items:
 {{line_items_text}}
 
+{{shipping_address_text}}
+
+Subtotal: {{subtotal_amount}} {{currency}}
+{{discount_text}}
+Shipping: {{shipping_amount}} {{currency}}
+Tax: {{tax_amount}} {{currency}}
 Total: {{total_amount}} {{currency}}
 
 Track your order: {{tracking_url}}

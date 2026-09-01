@@ -62,9 +62,10 @@ headers. `update_email_account` rotates the references and sender configuration
 without exposing either secret.
 
 Transactional Email uses one platform-owned template per notification type.
-The order-confirmation template always renders the order snapshot, product
-lines, totals, currency, and tracking URL in server code; Stores cannot replace
-that HTML and accidentally omit business logic. Store-specific brand tokens
+The order-confirmation template always renders the order snapshot, optional
+shipping address, product lines, amount breakdown, currency, and tracking URL
+in server code; Stores cannot replace that HTML and accidentally omit business
+logic. Store-specific brand tokens
 are persisted under the `brand` key in the Email account's
 `integration.provider_accounts.configuration` JSONB. Use `get_email_brand` to
 inspect them, `configure_email_brand` to save a Store name, public HTTPS logo,

@@ -1,4 +1,5 @@
 use crate::contracts::{EmailBrandConfiguration, EmailOrderLineItem};
+use chaos_domain::sales::PostalAddress;
 
 const ORDER_CONFIRMED_SUBJECT: &str =
     include_str!("../templates/email/order-confirmed.subject.txt");
@@ -25,11 +26,16 @@ pub(crate) fn default_order_confirmation_template() -> EmailTemplateContent {
 
 pub(crate) struct OrderConfirmationTemplateData<'a> {
     pub order_number: &'a str,
+    pub subtotal_amount_minor: i64,
+    pub discount_amount_minor: i64,
+    pub tax_amount_minor: i64,
+    pub shipping_amount_minor: i64,
     pub total_amount_minor: i64,
     pub currency: &'a str,
     pub tracking_url: &'a str,
     pub brand: &'a EmailBrandConfiguration,
     pub line_items: &'a [EmailOrderLineItem],
+    pub shipping_address: Option<&'a PostalAddress>,
 }
 
 pub(crate) struct RenderedEmailTemplate {
@@ -44,14 +50,24 @@ pub(crate) fn render_order_confirmation(
 ) -> RenderedEmailTemplate {
     let order_number = data.order_number.to_owned();
     let currency = data.currency.to_owned();
+    let subtotal_amount = format_money(data.subtotal_amount_minor, &currency);
+    let discount_amount = format_money(data.discount_amount_minor, &currency);
+    let tax_amount = format_money(data.tax_amount_minor, &currency);
+    let shipping_amount = format_money(data.shipping_amount_minor, &currency);
     let total_amount = format_money(data.total_amount_minor, &currency);
     let tracking_url = data.tracking_url.to_owned();
     let line_items_text = render_line_items_text(data.line_items, &currency);
+    let shipping_address_text = render_shipping_address_text(data.shipping_address);
+    let discount_text =
+        render_discount_text(data.discount_amount_minor, &discount_amount, &currency);
     let support_text = render_support_text(data.brand);
 
     let html_order_number = escape_html(&order_number);
+    let html_subtotal_amount = escape_html(&subtotal_amount);
     let html_total_amount = escape_html(&total_amount);
     let html_currency = escape_html(&currency);
+    let html_shipping_amount = escape_html(&shipping_amount);
+    let html_tax_amount = escape_html(&tax_amount);
     let html_tracking_url = escape_html(&tracking_url);
     let html_brand_name = escape_html(&data.brand.brand_name);
     let html_primary_color = escape_html(&data.brand.primary_color);
@@ -62,6 +78,13 @@ pub(crate) fn render_order_confirmation(
     let html_muted_text_color = escape_html(&data.brand.muted_text_color);
     let brand_header_html = render_brand_header_html(data.brand);
     let line_items_html = render_line_items_html(data.line_items, &currency, data.brand);
+    let shipping_address_html = render_shipping_address_html(data.shipping_address, data.brand);
+    let discount_row_html = render_discount_row_html(
+        data.discount_amount_minor,
+        &discount_amount,
+        &currency,
+        data.brand,
+    );
     let support_html = render_support_html(data.brand);
 
     let subject = render_template(
@@ -81,10 +104,15 @@ pub(crate) fn render_order_confirmation(
         &[
             ("brand_name", data.brand.brand_name.as_str()),
             ("order_number", order_number.as_str()),
+            ("subtotal_amount", subtotal_amount.as_str()),
+            ("discount_text", discount_text.as_str()),
+            ("shipping_amount", shipping_amount.as_str()),
+            ("tax_amount", tax_amount.as_str()),
             ("total_amount", total_amount.as_str()),
             ("currency", currency.as_str()),
             ("tracking_url", tracking_url.as_str()),
             ("line_items_text", line_items_text.as_str()),
+            ("shipping_address_text", shipping_address_text.as_str()),
             ("support_text", support_text.as_str()),
         ],
     );
@@ -100,10 +128,15 @@ pub(crate) fn render_order_confirmation(
             ("text_color", html_text_color.as_str()),
             ("muted_text_color", html_muted_text_color.as_str()),
             ("order_number", html_order_number.as_str()),
+            ("subtotal_amount", html_subtotal_amount.as_str()),
+            ("discount_row_html", discount_row_html.as_str()),
+            ("shipping_amount", html_shipping_amount.as_str()),
+            ("tax_amount", html_tax_amount.as_str()),
             ("total_amount", html_total_amount.as_str()),
             ("currency", html_currency.as_str()),
             ("tracking_url", html_tracking_url.as_str()),
             ("line_items_html", line_items_html.as_str()),
+            ("shipping_address_html", shipping_address_html.as_str()),
             ("support_html", support_html.as_str()),
         ],
     );
@@ -226,6 +259,84 @@ fn render_line_items_text(items: &[EmailOrderLineItem], currency: &str) -> Strin
         .join("\n")
 }
 
+fn render_shipping_address_text(address: Option<&PostalAddress>) -> String {
+    let Some(address) = address else {
+        return String::new();
+    };
+    let mut lines = vec![
+        address.full_name().to_owned(),
+        address.address_line1().to_owned(),
+    ];
+    if let Some(line2) = address.address_line2() {
+        lines.push(line2.to_owned());
+    }
+    lines.push(address_locality_line(address));
+    lines.push(address.country_code().to_owned());
+    format!("Shipping address:\n{}", lines.join("\n"))
+}
+
+fn render_discount_text(amount_minor: i64, amount: &str, currency: &str) -> String {
+    if amount_minor > 0 {
+        format!("Discount: -{amount} {currency}")
+    } else {
+        String::new()
+    }
+}
+
+fn render_discount_row_html(
+    amount_minor: i64,
+    amount: &str,
+    currency: &str,
+    brand: &EmailBrandConfiguration,
+) -> String {
+    if amount_minor <= 0 {
+        return String::new();
+    }
+    let muted_text_color = escape_html(&brand.muted_text_color);
+    let text_color = escape_html(&brand.text_color);
+    let amount = escape_html(&format!("-{amount}"));
+    let currency = escape_html(currency);
+    format!(
+        "<tr><td style=\"padding:8px 16px;color:{muted_text_color}\">Discount</td><td align=\"right\" style=\"padding:8px 16px;color:{text_color}\">{amount} {currency}</td></tr>"
+    )
+}
+
+fn render_shipping_address_html(
+    address: Option<&PostalAddress>,
+    brand: &EmailBrandConfiguration,
+) -> String {
+    let Some(address) = address else {
+        return String::new();
+    };
+    let border_color = escape_html(&brand.accent_color);
+    let muted_text_color = escape_html(&brand.muted_text_color);
+    let text_color = escape_html(&brand.text_color);
+    let mut lines = vec![
+        format!("<strong>{}</strong>", escape_html(address.full_name())),
+        escape_html(address.address_line1()),
+    ];
+    if let Some(line2) = address.address_line2() {
+        lines.push(escape_html(line2));
+    }
+    lines.push(escape_html(&address_locality_line(address)));
+    lines.push(escape_html(address.country_code()));
+    format!(
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:0 0 24px;border:1px solid {border_color};border-radius:8px\"><tr><td style=\"padding:12px 16px;color:{muted_text_color};border-bottom:1px solid {border_color};font-weight:600\">Shipping address</td></tr><tr><td style=\"padding:12px 16px;color:{text_color};font-size:14px;\">{}</td></tr></table>",
+        lines.join("<br />")
+    )
+}
+
+fn address_locality_line(address: &PostalAddress) -> String {
+    match (address.administrative_area(), address.postal_code()) {
+        (Some(area), Some(postal_code)) => {
+            format!("{}, {} {}", address.locality(), area, postal_code)
+        }
+        (Some(area), None) => format!("{}, {}", address.locality(), area),
+        (None, Some(postal_code)) => format!("{}, {}", address.locality(), postal_code),
+        (None, None) => address.locality().to_owned(),
+    }
+}
+
 fn render_support_html(brand: &EmailBrandConfiguration) -> String {
     let mut links = Vec::new();
     if let Some(email) = brand.support_email.as_deref() {
@@ -302,6 +413,7 @@ fn currency_exponent(currency: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use crate::contracts::{EmailBrandConfiguration, EmailOrderLineItem};
+    use chaos_domain::sales::PostalAddress;
 
     use super::{
         OrderConfirmationTemplateData, default_order_confirmation_template,
@@ -310,11 +422,25 @@ mod tests {
 
     #[test]
     fn renders_brand_and_order_snapshot_in_text_and_html() {
+        let shipping_address = PostalAddress::new(
+            "Buyer & Co.",
+            "1 Market <Street>",
+            Some("Suite 42".into()),
+            "San Francisco",
+            Some("CA".into()),
+            Some("94105".into()),
+            "US",
+        )
+        .unwrap();
         let rendered = render_order_confirmation(
             &default_order_confirmation_template(),
             &OrderConfirmationTemplateData {
                 order_number: "ORD-<42>",
-                total_amount_minor: 1299,
+                subtotal_amount_minor: 1300,
+                discount_amount_minor: 100,
+                tax_amount_minor: 50,
+                shipping_amount_minor: 99,
+                total_amount_minor: 1349,
                 currency: "USD",
                 tracking_url: "https://shop.example/orders/track#token=a&b",
                 brand: &EmailBrandConfiguration {
@@ -330,16 +456,31 @@ mod tests {
                     unit_price_amount_minor: 650,
                     subtotal_amount_minor: 1300,
                 }],
+                shipping_address: Some(&shipping_address),
             },
         );
 
         assert_eq!(rendered.subject, "A <Store> · Order ORD-<42> confirmed");
         assert!(rendered.text.contains("T-shirt <classic> / Blue / M"));
         assert!(rendered.text.contains("13.00 USD"));
-        assert!(rendered.text.contains("Total: 12.99 USD"));
+        assert!(rendered.text.contains("Subtotal: 13.00 USD"));
+        assert!(rendered.text.contains("Discount: -1.00 USD"));
+        assert!(rendered.text.contains("Shipping: 0.99 USD"));
+        assert!(rendered.text.contains("Tax: 0.50 USD"));
+        assert!(rendered.text.contains("Total: 13.49 USD"));
+        assert!(rendered.text.contains(
+            "Shipping address:\nBuyer & Co.\n1 Market <Street>\nSuite 42\nSan Francisco, CA 94105\nUS"
+        ));
         assert!(rendered.html.contains("A &lt;Store&gt;"));
         assert!(rendered.html.contains("T-shirt &lt;classic&gt;"));
-        assert!(rendered.html.contains("12.99 USD"));
+        assert!(rendered.html.contains("13.49 USD"));
+        assert!(rendered.html.contains("Subtotal"));
+        assert!(rendered.html.contains("Discount"));
+        assert!(rendered.html.contains("0.99 USD"));
+        assert!(rendered.html.contains("0.50 USD"));
+        assert!(rendered.html.contains("Shipping address"));
+        assert!(rendered.html.contains("Buyer &amp; Co."));
+        assert!(rendered.html.contains("1 Market &lt;Street&gt;"));
         assert!(
             rendered
                 .html
@@ -359,11 +500,16 @@ mod tests {
             &default_order_confirmation_template(),
             &OrderConfirmationTemplateData {
                 order_number: "ORD-42",
+                subtotal_amount_minor: 1299,
+                discount_amount_minor: 0,
+                tax_amount_minor: 0,
+                shipping_amount_minor: 0,
                 total_amount_minor: 1299,
                 currency: "USD",
                 tracking_url: "https://shop.example/track",
                 brand: &EmailBrandConfiguration::defaults("Example Store".into()),
                 line_items: &[],
+                shipping_address: None,
             },
         );
 
@@ -374,6 +520,10 @@ mod tests {
                 .contains("Reply to this email if you need help.")
         );
         assert!(rendered.html.contains("No item details available."));
+        assert!(!rendered.text.contains("Shipping address:"));
+        assert!(!rendered.html.contains("Shipping address"));
+        assert!(!rendered.text.contains("Discount:"));
+        assert!(!rendered.html.contains(">Discount</td>"));
     }
 
     #[test]
@@ -382,6 +532,10 @@ mod tests {
             &default_order_confirmation_template(),
             &OrderConfirmationTemplateData {
                 order_number: "ORD-43",
+                subtotal_amount_minor: 1234,
+                discount_amount_minor: 0,
+                tax_amount_minor: 0,
+                shipping_amount_minor: 0,
                 total_amount_minor: 1234,
                 currency: "JPY",
                 tracking_url: "https://shop.example/track",
@@ -394,6 +548,7 @@ mod tests {
                     unit_price_amount_minor: 1234,
                     subtotal_amount_minor: 1234,
                 }],
+                shipping_address: None,
             },
         );
         assert!(rendered.text.contains("Total: 1234 JPY"));
@@ -403,11 +558,16 @@ mod tests {
             &default_order_confirmation_template(),
             &OrderConfirmationTemplateData {
                 order_number: "ORD-44",
+                subtotal_amount_minor: 1234,
+                discount_amount_minor: 0,
+                tax_amount_minor: 0,
+                shipping_amount_minor: 0,
                 total_amount_minor: 1234,
                 currency: "KWD",
                 tracking_url: "https://shop.example/track",
                 brand: &EmailBrandConfiguration::defaults("Example Store".into()),
                 line_items: &[],
+                shipping_address: None,
             },
         );
         assert!(rendered.text.contains("Total: 1.234 KWD"));

@@ -13,6 +13,7 @@ use crate::{
 };
 use chaos_domain::{
     identity::Email,
+    sales::PostalAddress,
     store::{StoreId, StorefrontOrigin},
 };
 use serde_json::{Value, json};
@@ -275,10 +276,25 @@ impl PostgresEmailRepository {
             .await
             .map_err(database_error)?;
         let row = sqlx::query_as::<_, EmailOrderConfirmationRow>(
-            "SELECT order_row.contact_email::text, order_row.order_number, \
-                    order_row.total_amount_minor, order_row.currency::text, \
-                    channel.origin, \
-                    account.provider, account.credential_secret_reference, account.configuration \
+            "SELECT order_row.contact_email::text AS contact_email, \
+                    order_row.order_number AS order_number, \
+                    order_row.subtotal_amount_minor AS subtotal_amount_minor, \
+                    order_row.discount_amount_minor AS discount_amount_minor, \
+                    order_row.tax_amount_minor AS tax_amount_minor, \
+                    order_row.shipping_amount_minor AS shipping_amount_minor, \
+                    order_row.total_amount_minor AS total_amount_minor, \
+                    order_row.currency::text AS currency, \
+                    order_row.shipping_full_name AS shipping_full_name, \
+                    order_row.shipping_address_line1 AS shipping_address_line1, \
+                    order_row.shipping_address_line2 AS shipping_address_line2, \
+                    order_row.shipping_locality AS shipping_locality, \
+                    order_row.shipping_administrative_area AS shipping_administrative_area, \
+                    order_row.shipping_postal_code AS shipping_postal_code, \
+                    order_row.shipping_country_code::text AS shipping_country_code, \
+                    channel.origin AS origin, \
+                    account.provider AS provider, \
+                    account.credential_secret_reference AS credential_secret_reference, \
+                    account.configuration AS account_configuration \
              FROM commerce.orders AS order_row \
              INNER JOIN commerce.channels AS channel \
                ON channel.store_id = order_row.store_id \
@@ -298,20 +314,40 @@ impl PostgresEmailRepository {
         .await
         .map_err(database_error)?
         .ok_or_else(email_provider_unavailable)?;
-        let (
+        let EmailOrderConfirmationRow {
             contact_email,
             order_number,
+            subtotal_amount_minor,
+            discount_amount_minor,
+            tax_amount_minor,
+            shipping_amount_minor,
             total_amount_minor,
             currency,
+            shipping_full_name,
+            shipping_address_line1,
+            shipping_address_line2,
+            shipping_locality,
+            shipping_administrative_area,
+            shipping_postal_code,
+            shipping_country_code,
             origin,
             provider,
             credential_secret_reference,
             account_configuration,
-        ) = row;
+        } = row;
         let Some(contact_email) = contact_email else {
             transaction.commit().await.map_err(database_error)?;
             return Ok(None);
         };
+        let shipping_address = optional_shipping_address(
+            shipping_full_name,
+            shipping_address_line1,
+            shipping_address_line2,
+            shipping_locality,
+            shipping_administrative_area,
+            shipping_postal_code,
+            shipping_country_code,
+        )?;
         let sender = parse_email_account_configuration(account_configuration)?.sender();
         let tracking_url = order_tracking_url(&origin, tracking_token)?;
         let brand = load_email_brand(&mut transaction, StoreId::from_uuid(job.store_id))
@@ -339,11 +375,16 @@ impl PostgresEmailRepository {
             &default_order_confirmation_template(),
             &OrderConfirmationTemplateData {
                 order_number: &order_number,
+                subtotal_amount_minor,
+                discount_amount_minor,
+                tax_amount_minor,
+                shipping_amount_minor,
                 total_amount_minor,
                 currency: &currency,
                 tracking_url: tracking_url.as_str(),
                 brand: &brand,
                 line_items: &line_items,
+                shipping_address: shipping_address.as_ref(),
             },
         );
         Ok(Some((
@@ -373,16 +414,28 @@ type EmailProviderAccountRow = (
     time::OffsetDateTime,
 );
 
-type EmailOrderConfirmationRow = (
-    Option<String>,
-    String,
-    i64,
-    String,
-    String,
-    String,
-    String,
-    Value,
-);
+#[derive(sqlx::FromRow)]
+struct EmailOrderConfirmationRow {
+    contact_email: Option<String>,
+    order_number: String,
+    subtotal_amount_minor: i64,
+    discount_amount_minor: i64,
+    tax_amount_minor: i64,
+    shipping_amount_minor: i64,
+    total_amount_minor: i64,
+    currency: String,
+    shipping_full_name: Option<String>,
+    shipping_address_line1: Option<String>,
+    shipping_address_line2: Option<String>,
+    shipping_locality: Option<String>,
+    shipping_administrative_area: Option<String>,
+    shipping_postal_code: Option<String>,
+    shipping_country_code: Option<String>,
+    origin: String,
+    provider: String,
+    credential_secret_reference: String,
+    account_configuration: Value,
+}
 
 type EmailOrderLineRow = (String, String, Option<String>, i32, i64, i64);
 
@@ -657,6 +710,60 @@ fn email_provider_account_not_found_for_brand() -> ApplicationError {
 fn email_brand_corrupt_state() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!(
         "database contains invalid Email brand state"
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn optional_shipping_address(
+    full_name: Option<String>,
+    address_line1: Option<String>,
+    address_line2: Option<String>,
+    locality: Option<String>,
+    administrative_area: Option<String>,
+    postal_code: Option<String>,
+    country_code: Option<String>,
+) -> Result<Option<PostalAddress>, ApplicationError> {
+    let full_name = normalize_optional_text(full_name);
+    let address_line1 = normalize_optional_text(address_line1);
+    let address_line2 = normalize_optional_text(address_line2);
+    let locality = normalize_optional_text(locality);
+    let administrative_area = normalize_optional_text(administrative_area);
+    let postal_code = normalize_optional_text(postal_code);
+    let country_code = normalize_optional_text(country_code);
+    let any = full_name.is_some()
+        || address_line1.is_some()
+        || address_line2.is_some()
+        || locality.is_some()
+        || administrative_area.is_some()
+        || postal_code.is_some()
+        || country_code.is_some();
+    match (full_name, address_line1, locality, country_code) {
+        (None, None, None, None) if !any => Ok(None),
+        (Some(full_name), Some(address_line1), Some(locality), Some(country_code)) => {
+            Ok(Some(PostalAddress::new(
+                full_name,
+                address_line1,
+                address_line2,
+                locality,
+                administrative_area,
+                postal_code,
+                country_code,
+            )?))
+        }
+        _ => Err(email_order_corrupt_state()),
+    }
+}
+
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    })
+}
+
+fn email_order_corrupt_state() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "database contains invalid Order shipping address"
     ))
 }
 
