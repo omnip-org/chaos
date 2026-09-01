@@ -300,7 +300,9 @@ async fn apply_payment_event(
         .fetch_one(&mut **transaction)
         .await
         .map_err(database_error)?;
-        if let Some(snapshot) = StripeCheckoutSnapshot::from_payload(provider_payload)? {
+        if let Some(snapshot) =
+            StripeCheckoutSnapshot::from_payload(provider_payload, store_id, order_id)?
+        {
             event_amount =
                 apply_stripe_checkout_snapshot(transaction, store_id, order_id, &snapshot, now)
                     .await?;
@@ -428,7 +430,11 @@ struct StripeAddressSnapshot {
 }
 
 impl StripeCheckoutSnapshot {
-    fn from_payload(payload: &Value) -> Result<Option<Self>, ApplicationError> {
+    fn from_payload(
+        payload: &Value,
+        store_id: StoreId,
+        order_id: OrderId,
+    ) -> Result<Option<Self>, ApplicationError> {
         let Some(object) = payload
             .get("stripe_event")
             .and_then(|event| event.get("data"))
@@ -502,11 +508,33 @@ impl StripeCheckoutSnapshot {
             .and_then(|value| value.get("email"))
             .and_then(Value::as_str)
             .and_then(non_empty_text);
-        let phone = customer_details
+        let raw_phone = customer_details
             .and_then(|value| value.get("phone"))
             .and_then(Value::as_str)
-            .filter(|value| valid_e164(value))
-            .map(str::to_owned);
+            .and_then(non_empty_text);
+        let phone_country = customer_details
+            .and_then(|value| value.get("address"))
+            .and_then(|address| address.get("country"))
+            .and_then(Value::as_str)
+            .or_else(|| {
+                shipping_details
+                    .and_then(|value| value.get("address"))
+                    .and_then(|address| address.get("country"))
+                    .and_then(Value::as_str)
+            });
+        let phone = raw_phone.as_deref().and_then(|raw| {
+            let normalized = normalize_phone(raw);
+            if normalized.is_none() {
+                tracing::warn!(
+                    order_id = %order_id.as_uuid(),
+                    store_id = %store_id.as_uuid(),
+                    country = phone_country.unwrap_or("unknown"),
+                    "Stripe checkout.session.completed carried a phone number that could not be \
+                     normalized to E.164; contact_phone was left unset for this order"
+                );
+            }
+            normalized
+        });
         let billing_address = customer_details
             .and_then(|value| value.get("address"))
             .and_then(|address| {
@@ -600,6 +628,23 @@ fn valid_e164(value: &str) -> bool {
         && bytes.first() == Some(&b'+')
         && bytes.get(1).is_some_and(|byte| *byte != b'0')
         && bytes[1..].iter().all(u8::is_ascii_digit)
+}
+
+/// Stripe's `phone_number_collection` does not require shoppers to enter an
+/// international prefix, so `customer_details.phone` sometimes arrives as a
+/// bare national number missing its leading `+` (e.g. `8525200521` instead
+/// of `+8525200521`). When the value is otherwise digits-only, add the `+`
+/// back and re-validate as E.164.
+fn normalize_phone(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if valid_e164(trimmed) {
+        return Some(trimmed.to_owned());
+    }
+    if trimmed.contains('+') || trimmed.is_empty() || !trimmed.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let candidate = format!("+{trimmed}");
+    valid_e164(&candidate).then_some(candidate)
 }
 
 async fn apply_stripe_checkout_snapshot(
@@ -1346,5 +1391,34 @@ mod refund_reconciliation_tests {
     fn blank_optional_stripe_text_is_stored_as_absent() {
         assert_eq!(non_empty_text("  "), None);
         assert_eq!(non_empty_text(" Suite 100 "), Some("Suite 100".into()));
+    }
+}
+
+#[cfg(test)]
+mod stripe_phone_normalization_tests {
+    use super::normalize_phone;
+
+    #[test]
+    fn already_e164_phone_is_kept_as_is() {
+        assert_eq!(
+            normalize_phone("+14155552671"),
+            Some("+14155552671".into())
+        );
+    }
+
+    #[test]
+    fn digits_only_phone_missing_the_leading_plus_is_recovered() {
+        assert_eq!(
+            normalize_phone("8525200521"),
+            Some("+8525200521".into())
+        );
+    }
+
+    #[test]
+    fn malformed_phone_is_rejected() {
+        assert_eq!(normalize_phone("not-a-number"), None);
+        assert_eq!(normalize_phone(""), None);
+        assert_eq!(normalize_phone("+0123456789"), None);
+        assert_eq!(normalize_phone("12"), None);
     }
 }
