@@ -29,6 +29,12 @@ const MAX_GA4_EVENT_NAME_BYTES = 40;
 const MAX_META_BROWSER_ID_LENGTH = 2_048;
 const META_FBC_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
 const MAX_UTM_VALUE_LENGTH = 2_048;
+// In-app browsers (notably Meta's iOS/Android WebView) intermittently reset
+// sessionStorage on an in-flow navigation such as PDP -> cart, which would
+// otherwise drop session-level UTM attribution mid-visit. A short-lived
+// localStorage fallback survives that reset without turning "session"
+// attribution into a long-lived, cross-visit identity like first-touch.
+const SESSION_TOUCH_FALLBACK_MAX_AGE_MS = 30 * 60 * 1_000;
 const COMMERCE_EVENT_NAMES = new Set([
   "add_to_cart",
   "initiate_checkout",
@@ -118,6 +124,7 @@ export class ChaosStorefrontAnalytics {
   private readonly firstTouchStorageKey: string;
   private readonly lastNonDirectStorageKey: string;
   private readonly sessionTouchStorageKey: string;
+  private readonly sessionTouchFallbackStorageKey: string;
   private readonly metaFbcStorageKey: string;
   private readonly providerEventStoragePrefix: string;
   private traffic: TrafficAttribution | undefined;
@@ -126,6 +133,7 @@ export class ChaosStorefrontAnalytics {
   private running = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private currentPageViewEventId: string | null = null;
+  private currentPagePath: string | null = null;
   private activeStartedAt: number | null = null;
   private accumulatedActiveMs = 0;
   private readonly onActivityChange = () => this.updateActivityState();
@@ -193,6 +201,7 @@ export class ChaosStorefrontAnalytics {
     this.firstTouchStorageKey = `chaos.analytics.${storageNamespace}.traffic.first.v1`;
     this.lastNonDirectStorageKey = `chaos.analytics.${storageNamespace}.traffic.last_non_direct.v1`;
     this.sessionTouchStorageKey = `chaos.analytics.${storageNamespace}.traffic.session.v1`;
+    this.sessionTouchFallbackStorageKey = `chaos.analytics.${storageNamespace}.traffic.session_fallback.v1`;
     this.metaFbcStorageKey = `chaos.analytics.${storageNamespace}.meta.fbc.v2`;
     this.providerEventStoragePrefix = `chaos.analytics.${storageNamespace}.provider_event.v1.`;
     this.sessionId = this.randomUUID();
@@ -263,6 +272,7 @@ export class ChaosStorefrontAnalytics {
     );
     this.accumulatedActiveMs = 0;
     this.currentPageViewEventId = eventId;
+    this.currentPagePath = resolvedPath;
     this.activeStartedAt =
       this.isActive() && eventId ? this.monotonicNow() : null;
     return eventId;
@@ -631,10 +641,11 @@ export class ChaosStorefrontAnalytics {
       );
       this.enqueue(
         "view_duration",
-        {
+        compact({
           page_view_event_id: this.currentPageViewEventId,
+          path: this.currentPagePath ?? undefined,
           active_milliseconds: activeMilliseconds,
-        },
+        }),
         { sendToMeta: false },
       );
       this.accumulatedActiveMs -= activeMilliseconds;
@@ -821,18 +832,41 @@ export class ChaosStorefrontAnalytics {
       this.sessionStorageRef,
       this.sessionTouchStorageKey,
     );
+    // sessionStorage is the source of truth for "session" attribution. It is
+    // only missing here because this really is a new tab session, or because
+    // an in-app browser reset storage mid-visit; the two are indistinguishable
+    // from sessionStorage alone. A same-visit fallback only applies when the
+    // current URL supplies no UTM/click-id parameters of its own (an
+    // in-flow, same-origin referrer does not count as one, since it names
+    // this site, not an external campaign), and only when this navigation's
+    // referrer is same-origin: that is the one signal that reliably tells an
+    // in-flow navigation (PDP -> cart) apart from an unrelated tab opened
+    // directly, which must never inherit another tab's attribution. A
+    // genuine new landing with fresh UTM parameters always wins regardless.
+    const fallbackSession =
+      !storedSession &&
+      !hasUtmOrClickId(captured) &&
+      this.isSameOriginReferrer()
+        ? this.readSessionTouchFallback()
+        : undefined;
     const session = storedSession
       ? (compact({
           ...storedSession,
           fbclid: captured.fbclid,
           gclid: captured.gclid,
         }) as TrafficTouchpoint)
-      : captured;
+      : (fallbackSession ?? captured);
     writeStoredJson(
       this.sessionStorageRef,
       this.sessionTouchStorageKey,
       session,
     );
+    if (isNonDirectTouchpoint(session)) {
+      writeStoredJson(this.storage, this.sessionTouchFallbackStorageKey, {
+        touchpoint: session,
+        capturedAt: this.now(),
+      });
+    }
     const first =
       readTrafficTouchpoint(this.storage, this.firstTouchStorageKey) ?? session;
     writeStoredJson(this.storage, this.firstTouchStorageKey, first);
@@ -854,6 +888,40 @@ export class ChaosStorefrontAnalytics {
       session,
       ...(lastNonDirect ? { last_non_direct: lastNonDirect } : {}),
     };
+  }
+
+  /**
+   * True only when this navigation's referrer is this same site, which is
+   * the signal that distinguishes an in-flow navigation (eligible for the
+   * localStorage fallback) from an unrelated tab opened directly.
+   */
+  private isSameOriginReferrer(): boolean {
+    const referrer = this.documentRef.referrer;
+    const currentHref = this.documentRef.location?.href;
+    if (!referrer || !currentHref) return false;
+    try {
+      return new URL(referrer).origin === new URL(currentHref).origin;
+    } catch {
+      return false;
+    }
+  }
+
+  private readSessionTouchFallback(): TrafficTouchpoint | undefined {
+    const stored = readStoredJson(this.storage, this.sessionTouchFallbackStorageKey);
+    if (!isRecord(stored)) return undefined;
+    const capturedAt = stored.capturedAt;
+    if (typeof capturedAt !== "number") return undefined;
+    if (this.now() - capturedAt > SESSION_TOUCH_FALLBACK_MAX_AGE_MS)
+      return undefined;
+    if (!isRecord(stored.touchpoint)) return undefined;
+    const touchpoint = readTrafficTouchpointValue(stored.touchpoint);
+    if (!touchpoint || !isNonDirectTouchpoint(touchpoint)) return undefined;
+    // fbclid/gclid identify a specific ad click observed at a specific time;
+    // reviving them from another tab's fallback would let metaContext() pair
+    // a stale click with today's timestamp (see the resolveFbc warning below
+    // about not doing exactly this from a stale _fbc cookie).
+    const { fbclid: _fbclid, gclid: _gclid, ...rest } = touchpoint;
+    return rest;
   }
 
   private updateActivityState(): void {
@@ -1472,14 +1540,34 @@ function isNonDirectTouchpoint(value: TrafficTouchpoint): boolean {
   );
 }
 
+/** Unlike isNonDirectTouchpoint, ignores referrer_domain: an in-flow,
+ * same-origin referrer names this site, not an external campaign, so it
+ * must not by itself block the session-touch fallback. */
+function hasUtmOrClickId(value: TrafficTouchpoint): boolean {
+  return Boolean(
+    value.source ||
+    value.medium ||
+    value.campaign ||
+    value.campaign_id ||
+    value.term ||
+    value.content ||
+    value.fbclid ||
+    value.gclid,
+  );
+}
+
 function readTrafficTouchpoint(
   storage: Storage | undefined,
   key: string,
 ): TrafficTouchpoint | undefined {
   const value = readStoredJson(storage, key);
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return undefined;
-  const candidate = value as Record<string, unknown>;
+  if (!isRecord(value)) return undefined;
+  return readTrafficTouchpointValue(value);
+}
+
+function readTrafficTouchpointValue(
+  candidate: Record<string, unknown>,
+): TrafficTouchpoint | undefined {
   const result = compact({
     source: storedText(candidate.source, MAX_UTM_VALUE_LENGTH),
     medium: storedText(candidate.medium, MAX_UTM_VALUE_LENGTH),

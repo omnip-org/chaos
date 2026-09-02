@@ -27,6 +27,10 @@ class MemoryStorage {
   setItem(key: string, value: string): void {
     this.values.set(key, value);
   }
+
+  keys(): string[] {
+    return Array.from(this.values.keys());
+  }
 }
 
 function harness(
@@ -347,6 +351,115 @@ test("does not turn a historical last-touch fbclid into a new fbc", async () => 
   await later.analytics.flush();
   const event = JSON.parse(later.requests[0]!.options.body).events[0];
   assert.equal(event.properties._meta.fbc, undefined);
+});
+
+test("falls back to a recent localStorage touchpoint when sessionStorage is reset mid-visit", async () => {
+  const localStorage = new MemoryStorage();
+  const first = harness([{ ok: true, status: 200 }], { localStorage });
+  first.analytics.pageView();
+  await first.analytics.flush();
+
+  // Simulates an in-app browser (e.g. Meta's WebView) resetting sessionStorage
+  // on an in-flow, same-origin navigation such as PDP -> cart: no UTM
+  // parameters on the new page, but the referrer is this same site.
+  const later = harness([{ ok: true, status: 200 }], {
+    localStorage,
+    search: "",
+    referrer: "https://shop.example/products",
+    href: "https://shop.example/cart",
+  });
+  later.analytics.pageView();
+  await later.analytics.flush();
+  const event = JSON.parse(later.requests[0]!.options.body).events[0];
+  assert.equal(event.properties.traffic.session.source, "Newsletter");
+  assert.equal(event.properties.traffic.session.campaign, "Launch");
+});
+
+test("does not use a stale localStorage touchpoint once the fallback window has elapsed", async () => {
+  const localStorage = new MemoryStorage();
+  const first = harness([{ ok: true, status: 200 }], { localStorage });
+  first.analytics.pageView();
+  await first.analytics.flush();
+
+  const staleKey = localStorage
+    .keys()
+    .find((key) => key.endsWith(".traffic.session_fallback.v1"));
+  assert.ok(staleKey);
+  const stale = JSON.parse(localStorage.getItem(staleKey!)!);
+  stale.capturedAt -= 31 * 60 * 1_000;
+  localStorage.setItem(staleKey!, JSON.stringify(stale));
+
+  const later = harness([{ ok: true, status: 200 }], {
+    localStorage,
+    search: "",
+    referrer: "https://shop.example/products",
+    href: "https://shop.example/cart",
+  });
+  later.analytics.pageView();
+  await later.analytics.flush();
+  const event = JSON.parse(later.requests[0]!.options.body).events[0];
+  assert.equal(event.properties.traffic.session.source, undefined);
+});
+
+test("does not use the localStorage fallback for an unrelated tab with no same-origin referrer", async () => {
+  const localStorage = new MemoryStorage();
+  const first = harness([{ ok: true, status: 200 }], { localStorage });
+  first.analytics.pageView();
+  await first.analytics.flush();
+
+  // A different, unrelated tab opened directly (bookmark/typed URL): fresh
+  // sessionStorage, no UTM, and no referrer at all. It must not inherit the
+  // first tab's campaign just because it lands within the fallback window.
+  const later = harness([{ ok: true, status: 200 }], {
+    localStorage,
+    search: "",
+    referrer: "",
+    href: "https://shop.example/",
+  });
+  later.analytics.pageView();
+  await later.analytics.flush();
+  const event = JSON.parse(later.requests[0]!.options.body).events[0];
+  assert.equal(event.properties.traffic.session.source, undefined);
+});
+
+test("does not resurrect a stale fbclid from the localStorage fallback into a new tab's _fbc", async () => {
+  const localStorage = new MemoryStorage();
+  const first = harness([{ ok: true, status: 200 }], { localStorage });
+  first.analytics.pageView();
+  await first.analytics.flush();
+  const firstEvent = JSON.parse(first.requests[0]!.options.body).events[0];
+  assert.equal(firstEvent.properties.traffic.session.fbclid, "fb-secret");
+
+  const later = harness([{ ok: true, status: 200 }], {
+    localStorage,
+    search: "",
+    referrer: "https://shop.example/products",
+    href: "https://shop.example/cart",
+  });
+  later.analytics.pageView();
+  await later.analytics.flush();
+  const event = JSON.parse(later.requests[0]!.options.body).events[0];
+  assert.equal(event.properties.traffic.session.source, "Newsletter");
+  assert.equal(event.properties.traffic.session.fbclid, undefined);
+  assert.equal(event.properties._meta.fbc, undefined);
+});
+
+test("prefers fresh UTM parameters on the current URL over a stored fallback touchpoint", async () => {
+  const localStorage = new MemoryStorage();
+  const first = harness([{ ok: true, status: 200 }], { localStorage });
+  first.analytics.pageView();
+  await first.analytics.flush();
+
+  const later = harness([{ ok: true, status: 200 }], {
+    localStorage,
+    search: "?utm_source=Retargeting&utm_medium=paid_social&utm_campaign=Reengage",
+    href: "https://shop.example/products?utm_source=Retargeting",
+  });
+  later.analytics.pageView();
+  await later.analytics.flush();
+  const event = JSON.parse(later.requests[0]!.options.body).events[0];
+  assert.equal(event.properties.traffic.session.source, "Retargeting");
+  assert.equal(event.properties.traffic.session.campaign, "Reengage");
 });
 
 test("splits active engagement into bounded behavior events", async () => {
