@@ -101,6 +101,7 @@ function loadStripeJs(): Promise<StripeConstructor | null> {
       if (loaded) {
         resolve(loaded);
       } else {
+        stripeJs = null;
         reject(new Error("Stripe.js loaded but window.Stripe is unavailable"));
       }
     });
