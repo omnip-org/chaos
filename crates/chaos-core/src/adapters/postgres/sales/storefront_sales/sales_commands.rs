@@ -513,14 +513,27 @@ async fn insert_order_lines(
     cart: &Cart,
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
+    // Snapshot the presentation image the shopper saw for each line. Resolution
+    // follows the same exact Variant -> Option Value -> Product fallback as the
+    // Cart read; the URL is frozen here because Order lines are immutable history
+    // and the Worker builds the Stripe session from this table alone.
+    let media = load_cart_media(transaction, actor, cart.lines()).await?;
     for (position, line) in cart.lines().iter().enumerate() {
         let subtotal = line.subtotal()?;
+        let image_url = media
+            .get(&(line.product_id().as_uuid(), line.product_variant_id().as_uuid()))
+            .and_then(|assets| {
+                assets
+                    .iter()
+                    .find(|asset| asset.kind == chaos_domain::catalog::MediaKind::Image)
+            })
+            .map(|asset| asset.url.as_str());
         sqlx::query(
             "INSERT INTO commerce.order_lines \
              (store_id, order_id, position, product_id, product_variant_id, product_title, \
               variant_title, sku, track_inventory, quantity, \
-              unit_price_amount_minor, subtotal_amount_minor, created_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+              unit_price_amount_minor, subtotal_amount_minor, image_url, created_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
         )
         .bind(actor.store_id.as_uuid())
         .bind(order_id.as_uuid())
@@ -534,6 +547,7 @@ async fn insert_order_lines(
         .bind(i32::try_from(line.quantity()).map_err(unexpected_conversion)?)
         .bind(line.unit_price().amount_minor())
         .bind(subtotal.amount_minor())
+        .bind(image_url)
         .bind(now)
         .execute(&mut **transaction)
         .await

@@ -182,7 +182,9 @@ pending-order lookup or Order-ID recovery endpoint. A successful payment
 confirms the Order, consumes the reservation, and clears the action; a provider
 failure, cancellation, or expiry cancels the Order, releases the reservation,
 and clears the action. `cart_lines` stores only Variant identity and quantity;
-Order lines retain the immutable product and pricing snapshot.
+Order lines retain the immutable product, pricing, and presentation-image
+snapshot (the resolved catalog image URL frozen at checkout, shown on the
+provider payment form).
 There is no local checkout expiry job: the provider callback is the source of
 truth. New products are added only to a separate active Cart and a later
 checkout creates a new Order.

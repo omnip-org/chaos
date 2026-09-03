@@ -134,6 +134,10 @@ pub enum PaymentCommandKind {
 pub struct PaymentLineItem {
     pub name: String,
     pub sku: Option<String>,
+    /// Absolute HTTPS URL of the presentation image snapshotted onto the Order
+    /// line at checkout. Stripe fetches and caches it; it must be publicly
+    /// reachable.
+    pub image_url: Option<String>,
     pub quantity: u32,
     pub unit_amount_minor: i64,
 }
