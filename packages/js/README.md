@@ -88,8 +88,16 @@ const action = session.client_action;
 // A storefront can use the SDK's provider adapter from the optional subpath.
 // It has no extra dependencies: it loads Stripe.js from https://js.stripe.com
 // at runtime (Stripe does not allow bundling it), so nothing else to install.
-const mounted = await mountEmbeddedCheckout(action, document.querySelector("#checkout")!);
-// Direct Stripe accounts do not use a Stripe-Account header or account_reference.
+const mounted = await mountEmbeddedCheckout(action, document.querySelector("#checkout")!, {
+  // Optional. `onComplete` fires instead of a redirect only when the Checkout
+  // Session uses `redirect_on_completion: "never" | "if_required"`.
+  onComplete: () => renderInPlaceSuccess(),
+  onAnalyticsEvent: (event) => track(event.eventType),
+  // Resume the same session after a reload instead of creating a new one.
+  fetchClientSecret: async () => savedClientToken,
+});
+// `mounted.unmount()` hides the form (e.g. on `onComplete`); `mounted.destroy()`
+// disposes it. Direct Stripe accounts do not use a Stripe-Account header.
 
 // PageView, ViewContent, Search, and active ViewDuration are recorded by the
 // browser SDK. Cart and checkout resources record their commerce events only

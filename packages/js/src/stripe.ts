@@ -1,7 +1,38 @@
 import type { PaymentClientAction } from "./types.js";
 
 export interface EmbeddedCheckoutMount {
+  /** Removes the checkout from the DOM; it can be mounted again. */
+  unmount(): void;
+  /** Removes and destroys the checkout; create a new instance to show it again. */
   destroy(): void;
+}
+
+/**
+ * A Stripe Embedded Checkout analytics event. Shape is owned by Stripe.js and
+ * left opaque here so this package stays dependency-free; narrow it at the call
+ * site if needed.
+ */
+export type EmbeddedCheckoutAnalyticsEvent = {
+  eventType: string;
+  [key: string]: unknown;
+};
+
+export interface MountEmbeddedCheckoutOptions {
+  /**
+   * Called when checkout completes without a redirect. Only fires when the
+   * Checkout Session was created with
+   * `redirect_on_completion: "never" | "if_required"`; otherwise Stripe
+   * redirects to the session's `return_url` instead.
+   */
+  onComplete?: () => void;
+  /** Stripe Embedded Checkout analytics events during the session. */
+  onAnalyticsEvent?: (event: EmbeddedCheckoutAnalyticsEvent) => void;
+  /**
+   * Provides the Checkout Session client secret lazily. Use it to resume the
+   * same session after a reload or a remount instead of creating a new one.
+   * When given, it is used in place of `action.client_token`.
+   */
+  fetchClientSecret?: () => Promise<string>;
 }
 
 /**
@@ -16,10 +47,17 @@ interface StripeEmbeddedCheckoutHandle {
   destroy(): void;
 }
 
+interface StripeEmbeddedCheckoutPageOptions {
+  clientSecret?: string;
+  fetchClientSecret?: () => Promise<string>;
+  onComplete?: () => void;
+  onAnalyticsEvent?: (event: EmbeddedCheckoutAnalyticsEvent) => void;
+}
+
 interface StripeInstance {
-  createEmbeddedCheckoutPage(options: {
-    clientSecret: string;
-  }): Promise<StripeEmbeddedCheckoutHandle>;
+  createEmbeddedCheckoutPage(
+    options: StripeEmbeddedCheckoutPageOptions,
+  ): Promise<StripeEmbeddedCheckoutHandle>;
 }
 
 type StripeConstructor = (publishableKey: string) => StripeInstance;
@@ -94,6 +132,7 @@ function loadStripeJs(): Promise<StripeConstructor | null> {
 export async function mountEmbeddedCheckout(
   action: PaymentClientAction,
   container: HTMLElement,
+  options: MountEmbeddedCheckoutOptions = {},
 ): Promise<EmbeddedCheckoutMount> {
   if (action.type !== "mount_embedded_checkout") {
     throw new TypeError("unsupported payment client action");
@@ -104,13 +143,18 @@ export async function mountEmbeddedCheckout(
     throw new Error("Stripe.js is unavailable in this environment");
   }
 
+  const pageOptions: StripeEmbeddedCheckoutPageOptions = options.fetchClientSecret
+    ? { fetchClientSecret: options.fetchClientSecret }
+    : { clientSecret: action.client_token };
+  if (options.onComplete) pageOptions.onComplete = options.onComplete;
+  if (options.onAnalyticsEvent) pageOptions.onAnalyticsEvent = options.onAnalyticsEvent;
+
   const stripe = Stripe(action.public_key);
-  const checkout = await stripe.createEmbeddedCheckoutPage({
-    clientSecret: action.client_token,
-  });
+  const checkout = await stripe.createEmbeddedCheckoutPage(pageOptions);
   checkout.mount(container);
 
   return {
+    unmount: () => checkout.unmount(),
     destroy: () => checkout.destroy(),
   };
 }
