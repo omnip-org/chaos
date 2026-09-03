@@ -20,7 +20,7 @@ An owner may create and administer the Store, add Users as members, and grant or
 
 ## Sales Channel
 
-A publication and client-delivery surface within one Store, such as web, mobile, point of sale, marketplace, or custom. Products may be published to selected channels. Each Sales Channel stores the canonical storefront origin used for customer-facing links such as order tracking. A Sales Channel does not own products or orders independently of its Store.
+A publication and client-delivery surface within one Store, such as web, mobile, point of sale, marketplace, or custom. Products may be published to selected channels. Each Sales Channel stores the canonical storefront origin used for customer-facing links such as the guest order lookup page. A Sales Channel does not own products or orders independently of its Store.
 
 ## Product and Variant
 
@@ -90,7 +90,8 @@ membership and role.
 
 A Store-scoped public credential for storefront or Channel clients. It is bound
 to one active Channel when created and can enter the complete Store API.
-Operation-specific Shopper credentials, tracking capabilities, resource
-ownership, and business rules protect non-public data and mutations. It cannot
+Operation-specific Shopper credentials, the order-number + email match on guest
+order lookup, resource ownership, and business rules protect non-public data and
+mutations. It cannot
 authenticate administration clients or invoke Store administration. Its
 plaintext format is `pk_<24 Base58 characters>`.

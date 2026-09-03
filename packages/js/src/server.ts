@@ -14,7 +14,7 @@ import type {
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutOptions,
   SubmitReviewRequest,
-  TrackedOrder,
+  OrderLookup,
 } from "./types.js";
 
 export interface StorefrontCookieOptions {
@@ -364,17 +364,27 @@ function isRecoverableCartCheckoutError(error: unknown): boolean {
   );
 }
 
-/** Parses and validates a guest order capability before calling the shared order resource. */
-export async function getTrackedOrderFromRequest(
+/** Parses and validates a guest order-number + email pair before calling the shared order resource. */
+export async function lookupOrderFromRequest(
   client: ChaosStorefrontClient,
   request: Request,
-): Promise<TrackedOrder> {
-  const body = await readJsonRecord(request, "get_tracked_order");
-  const token = body.tracking_token;
-  if (typeof token !== "string" || !/^ot_[^\s]{1,509}$/.test(token)) {
-    throw invalidRequest("tracking_token is invalid");
+): Promise<OrderLookup> {
+  const body = await readJsonRecord(request, "lookup_order");
+  const orderNumber = body.order_number;
+  const email = body.email;
+  if (
+    typeof orderNumber !== "string" ||
+    !/^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$/.test(orderNumber.trim())
+  ) {
+    throw invalidRequest("order_number is invalid");
   }
-  const { data } = await client.orders.getTrackedOrder(token);
+  if (typeof email !== "string" || email.trim().length === 0) {
+    throw invalidRequest("email is required");
+  }
+  const { data } = await client.orders.lookupOrder({
+    orderNumber: orderNumber.trim(),
+    email: email.trim(),
+  });
   return data;
 }
 

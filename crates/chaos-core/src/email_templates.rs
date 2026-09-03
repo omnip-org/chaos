@@ -32,7 +32,7 @@ pub(crate) struct OrderConfirmationTemplateData<'a> {
     pub shipping_amount_minor: i64,
     pub total_amount_minor: i64,
     pub currency: &'a str,
-    pub tracking_url: &'a str,
+    pub lookup_url: &'a str,
     pub brand: &'a EmailBrandConfiguration,
     pub line_items: &'a [EmailOrderLineItem],
     pub shipping_address: Option<&'a PostalAddress>,
@@ -55,7 +55,7 @@ pub(crate) fn render_order_confirmation(
     let tax_amount = format_money(data.tax_amount_minor, &currency);
     let shipping_amount = format_money(data.shipping_amount_minor, &currency);
     let total_amount = format_money(data.total_amount_minor, &currency);
-    let tracking_url = data.tracking_url.to_owned();
+    let lookup_url = data.lookup_url.to_owned();
     let line_items_text = render_line_items_text(data.line_items, &currency);
     let shipping_address_text = render_shipping_address_text(data.shipping_address);
     let discount_text =
@@ -68,7 +68,7 @@ pub(crate) fn render_order_confirmation(
     let html_currency = escape_html(&currency);
     let html_shipping_amount = escape_html(&shipping_amount);
     let html_tax_amount = escape_html(&tax_amount);
-    let html_tracking_url = escape_html(&tracking_url);
+    let html_lookup_url = escape_html(&lookup_url);
     let html_brand_name = escape_html(&data.brand.brand_name);
     let html_primary_color = escape_html(&data.brand.primary_color);
     let html_accent_color = escape_html(&data.brand.accent_color);
@@ -94,7 +94,7 @@ pub(crate) fn render_order_confirmation(
             ("order_number", order_number.as_str()),
             ("total_amount", total_amount.as_str()),
             ("currency", currency.as_str()),
-            ("tracking_url", tracking_url.as_str()),
+            ("lookup_url", lookup_url.as_str()),
         ],
     )
     .trim()
@@ -110,7 +110,7 @@ pub(crate) fn render_order_confirmation(
             ("tax_amount", tax_amount.as_str()),
             ("total_amount", total_amount.as_str()),
             ("currency", currency.as_str()),
-            ("tracking_url", tracking_url.as_str()),
+            ("lookup_url", lookup_url.as_str()),
             ("line_items_text", line_items_text.as_str()),
             ("shipping_address_text", shipping_address_text.as_str()),
             ("support_text", support_text.as_str()),
@@ -134,7 +134,7 @@ pub(crate) fn render_order_confirmation(
             ("tax_amount", html_tax_amount.as_str()),
             ("total_amount", html_total_amount.as_str()),
             ("currency", html_currency.as_str()),
-            ("tracking_url", html_tracking_url.as_str()),
+            ("lookup_url", html_lookup_url.as_str()),
             ("line_items_html", line_items_html.as_str()),
             ("shipping_address_html", shipping_address_html.as_str()),
             ("support_html", support_html.as_str()),
@@ -442,7 +442,7 @@ mod tests {
                 shipping_amount_minor: 99,
                 total_amount_minor: 1349,
                 currency: "USD",
-                tracking_url: "https://shop.example/orders/track#token=a&b",
+                lookup_url: "https://shop.example/orders/lookup?order_number=W-1&email=a&b",
                 brand: &EmailBrandConfiguration {
                     brand_name: "A <Store>".into(),
                     logo_url: Some("https://cdn.example/logo?a=1&b=2".into()),
@@ -489,7 +489,7 @@ mod tests {
         assert!(
             rendered
                 .html
-                .contains("https://shop.example/orders/track#token=a&amp;b")
+                .contains("https://shop.example/orders/lookup?order_number=W-1&amp;email=a&amp;b")
         );
         assert!(!rendered.html.contains("T-shirt <classic>"));
     }
@@ -506,7 +506,7 @@ mod tests {
                 shipping_amount_minor: 0,
                 total_amount_minor: 1299,
                 currency: "USD",
-                tracking_url: "https://shop.example/track",
+                lookup_url: "https://shop.example/lookup",
                 brand: &EmailBrandConfiguration::defaults("Example Store".into()),
                 line_items: &[],
                 shipping_address: None,
@@ -538,7 +538,7 @@ mod tests {
                 shipping_amount_minor: 0,
                 total_amount_minor: 1234,
                 currency: "JPY",
-                tracking_url: "https://shop.example/track",
+                lookup_url: "https://shop.example/lookup",
                 brand: &EmailBrandConfiguration::defaults("Example Store".into()),
                 line_items: &[EmailOrderLineItem {
                     product_title: "Coffee".into(),
@@ -564,7 +564,7 @@ mod tests {
                 shipping_amount_minor: 0,
                 total_amount_minor: 1234,
                 currency: "KWD",
-                tracking_url: "https://shop.example/track",
+                lookup_url: "https://shop.example/lookup",
                 brand: &EmailBrandConfiguration::defaults("Example Store".into()),
                 line_items: &[],
                 shipping_address: None,

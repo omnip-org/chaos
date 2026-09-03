@@ -23,7 +23,6 @@ use chaos_domain::{
     store::SalesChannelId,
 };
 use rand::Rng;
-use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;

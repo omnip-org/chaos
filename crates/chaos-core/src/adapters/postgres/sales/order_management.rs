@@ -1,9 +1,6 @@
 use crate::{
     ApplicationError,
-    adapters::postgres::{
-        database::{ORDER_TRACKING_TOKEN_LIFETIME, generate_order_tracking_capability},
-        sales::{consume_order_inventory, release_order_inventory},
-    },
+    adapters::postgres::sales::{consume_order_inventory, release_order_inventory},
     contracts::{AdminActor, OrderDetail, OrderListFilter, OrderPage},
     error::database_error,
 };
@@ -11,7 +8,6 @@ use chaos_domain::{
     sales::{Order, OrderId, OrderStatus},
     store::StoreId,
 };
-use secrecy::ExposeSecret;
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -168,21 +164,6 @@ impl PostgresOrderManagementRepository {
         .await
         .map_err(database_error)?;
         if target_status == OrderStatus::Confirmed {
-            let tracking_capability = generate_order_tracking_capability();
-            sqlx::query(
-                "INSERT INTO commerce.order_tracking_tokens \
-                 (store_id, order_id, token_digest, expires_at, created_at) \
-                 VALUES ($1, $2, $3, $4, $5) \
-                 ON CONFLICT (store_id, order_id) DO NOTHING",
-            )
-            .bind(store_id.as_uuid())
-            .bind(order_id.as_uuid())
-            .bind(tracking_capability.digest.as_slice())
-            .bind(now + ORDER_TRACKING_TOKEN_LIFETIME)
-            .bind(now)
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
             sqlx::query(
                 "INSERT INTO integration.event_outbox \
                  (id, store_id, aggregate_type, aggregate_id, internal_event_type, payload) \
@@ -194,7 +175,6 @@ impl PostgresOrderManagementRepository {
             .bind(serde_json::json!({
                 "aggregate_id": order_id.as_uuid(),
                 "order_id": order_id.as_uuid(),
-                "tracking_token": tracking_capability.token.expose_secret(),
             }))
             .execute(&mut *transaction)
             .await

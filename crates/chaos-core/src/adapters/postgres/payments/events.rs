@@ -48,7 +48,6 @@ async fn insert_order_confirmed_event(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
     order_id: OrderId,
-    tracking_token: &secrecy::SecretString,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO integration.event_outbox \
@@ -61,7 +60,6 @@ async fn insert_order_confirmed_event(
     .bind(json!({
         "aggregate_id": order_id.as_uuid(),
         "order_id": order_id.as_uuid(),
-        "tracking_token": tracking_token.expose_secret(),
     }))
     .execute(&mut **transaction)
     .await
@@ -830,28 +828,7 @@ async fn confirm_paid_order(
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
-    let tracking_capability = generate_order_tracking_capability();
-    sqlx::query(
-        "INSERT INTO commerce.order_tracking_tokens \
-         (store_id, order_id, token_digest, expires_at, created_at) \
-         VALUES ($1, $2, $3, $4, $5) \
-         ON CONFLICT (store_id, order_id) DO NOTHING",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .bind(tracking_capability.digest.as_slice())
-    .bind(now + ORDER_TRACKING_TOKEN_LIFETIME)
-    .bind(now)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    insert_order_confirmed_event(
-        transaction,
-        store_id,
-        order_id,
-        &tracking_capability.token,
-    )
-    .await?;
+    insert_order_confirmed_event(transaction, store_id, order_id).await?;
     let cart_id: Option<Uuid> = sqlx::query_scalar(
         "SELECT cart_id FROM commerce.orders WHERE store_id = $1 AND id = $2",
     )

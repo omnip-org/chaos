@@ -128,14 +128,15 @@ Money uses integer minor units plus an ISO currency. Orders snapshot the product
 
 Orders use an internal UUID for joins and a client-supplied idempotency key for checkout
 deduplication on the source Cart, plus a random shopper-facing
-`W-YYYYMMDD-XXXXXXXX` order number for receipts, support, and MCP lookup. Guest order
-tracking uses the Order's Sales Channel storefront origin with a fragment capability,
-valid for 180 days from order confirmation. Only its digest is stored in the tracking
-table; the plaintext is carried by the durable `order.confirmed` outbox job until the
-confirmation email reaches its terminal state, and then is removed from the outbox
-payload. The capability is presented directly on every tracking request rather than
-exchanged for a separate session — the tracking response omits contact details and the
-full postal address precisely because the link itself is treated as shareable.
+`W-YYYYMMDD-XXXXXXXX` order number for receipts, support, and MCP lookup. A guest reads
+one Order through `POST /api/v1/orders/lookup`, supplying that order number together
+with the contact email on the Order. The pair is matched within the Publishable Key's
+Store and Sales Channel; an unknown number, a wrong email, and malformed input all
+return the same `not_found` so the endpoint cannot enumerate order numbers. No
+capability is minted or stored. The confirmation email links to the Sales Channel
+storefront origin's `/orders/lookup` page with the order number and email pre-filled as
+query parameters. The response omits contact details and the full postal address
+because `(order number, email)` is a weaker credential than a random capability link.
 
 The Storefront identity is a Store-scoped persisted `commerce.shoppers` row. A
 website visit creates one Shopper through `/api/v1/shopper/sessions`, and the

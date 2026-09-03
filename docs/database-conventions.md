@@ -19,7 +19,7 @@ tables. Scheduled scans derived from current business state are not queues and
 may use short, recoverable row leases.
 
 The Worker runs bounded retention for expired OAuth requests, authorization
-codes, bearer tokens, refresh tokens, Order tracking capabilities, and terminal integration
+codes, bearer tokens, refresh tokens, and terminal integration
 outbox/webhook rows. Pending media uploads are not deleted by database
 maintenance because their corresponding object-store object must be removed
 through the storage provider first.

@@ -139,7 +139,7 @@ storefront.orders.recordPurchase(purchase);
 ```
 
 The server helpers `addCartLineFromRequest()`, `updateCartLineFromRequest()`,
-`createEmbeddedCheckoutFromRequest()`, `getTrackedOrderFromRequest()`, and
+`createEmbeddedCheckoutFromRequest()`, `lookupOrderFromRequest()`, and
 `createProductReviewFromRequest()` own request parsing, validation, session
 cookies, and the corresponding Chaos operation. Framework routes only adapt
 the response or redirect. Browser bridge methods own same-origin paths,
@@ -232,17 +232,18 @@ const chaos = createStorefrontClient({
 });
 ```
 
-Confirmation emails link to the Sales Channel storefront's `/orders/track` page with the
-tracking token in the URL fragment. The page reads the fragment locally and
-submits it in the request body; the token is never placed in a query string:
+Confirmation emails link to the Sales Channel storefront's `/orders/lookup` page
+with the order number and contact email pre-filled as query parameters. The
+page submits both in the request body and the API returns the restricted order
+view when they match:
 
 ```ts
-const trackingToken = new URLSearchParams(window.location.hash.slice(1)).get(
-  "token",
-);
-if (!trackingToken) throw new Error("missing order tracking token");
-const tracked = await chaos.orders.getTrackedOrder(trackingToken);
-console.log(tracked.order_number, tracked.shipping_status);
+const params = new URLSearchParams(window.location.search);
+const order = await chaos.orders.lookupOrder({
+  orderNumber: params.get("order_number") ?? "",
+  email: params.get("email") ?? "",
+});
+console.log(order.order_number, order.shipping_status);
 ```
 
 ### Errors

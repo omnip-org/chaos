@@ -4,8 +4,8 @@ use sqlx::{PgPool, Postgres, Transaction};
 const CLEANUP_BATCH_SIZE: i32 = 500;
 
 /// Bounded retention work that must run with the same least-privilege pools as
-/// the data it removes. Identity cleanup uses `chaos_identity`; the tracking
-/// token routine is a narrowly granted SECURITY DEFINER function because the
+/// the data it removes. Identity cleanup uses `chaos_identity`; the integration
+/// cleanup routine is a narrowly granted SECURITY DEFINER function because the
 /// runtime role must not receive cross-Store delete access.
 #[derive(Clone)]
 pub struct PostgresMaintenance {
@@ -32,14 +32,6 @@ impl PostgresMaintenance {
             .commit()
             .await
             .map_err(database_error)?;
-
-        let tracking_deleted: i32 =
-            sqlx::query_scalar("SELECT commerce.cleanup_expired_order_tracking_tokens($1)")
-                .bind(CLEANUP_BATCH_SIZE)
-                .fetch_one(&self.runtime_pool)
-                .await
-                .map_err(database_error)?;
-        deleted += usize::try_from(tracking_deleted).unwrap_or_default();
 
         let integration_deleted: i32 =
             sqlx::query_scalar("SELECT integration.cleanup_terminal_rows($1)")

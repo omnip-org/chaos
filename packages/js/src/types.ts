@@ -177,15 +177,14 @@ export interface OrderLine {
   product_title: string;
   variant_title: string;
   sku?: string;
-  track_inventory: boolean;
   quantity: number;
   unit_price_amount_minor: number;
   subtotal_amount_minor: number;
 }
 
-/** The subset of a Fulfillment exposed on the order-tracking view: shipping
+/** The subset of a Fulfillment exposed on the order-lookup view: shipping
  * progress and carrier tracking, without the internal Store provider-account id. */
-export interface TrackedOrderFulfillment {
+export interface OrderLookupFulfillment {
   status: "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
   tracking_number?: string;
   tracking_url?: string;
@@ -194,11 +193,11 @@ export interface TrackedOrderFulfillment {
 }
 
 /**
- * The order-tracking view served through the long-lived capability link.
- * Contact details and the full billing/shipping address are intentionally
- * absent — see `TrackedOrderData` on the API side.
+ * The order view returned by `orders.lookupOrder` for a matching
+ * order-number + email pair. Contact details and the full billing/shipping
+ * address are intentionally absent — see `OrderLookupData` on the API side.
  */
-export interface TrackedOrder {
+export interface OrderLookup {
   id: UUID;
   order_number: string;
   currency: CurrencyCode;
@@ -215,7 +214,7 @@ export interface TrackedOrder {
   shipping_amount_minor: number;
   total_amount_minor: number;
   refunded_amount_minor: number;
-  fulfillments: TrackedOrderFulfillment[];
+  fulfillments: OrderLookupFulfillment[];
   lines: OrderLine[];
   created_at: string;
   updated_at: string;

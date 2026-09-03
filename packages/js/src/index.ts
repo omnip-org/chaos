@@ -62,7 +62,7 @@ export {
   createServerStorefrontClient,
   createShopperTokenStorage,
   getOrCreateCartSession,
-  getTrackedOrderFromRequest,
+  lookupOrderFromRequest,
   peekCartSession,
   persistCartSession,
   updateCartLine,

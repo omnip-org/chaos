@@ -6,7 +6,7 @@ import type {
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutOptions,
   PurchaseAnalyticsInput,
-  TrackedOrder,
+  OrderLookup,
 } from "./types.js";
 
 export interface StorefrontBrowserOptions {
@@ -191,20 +191,25 @@ export class BrowserOrderResource {
     this.client.recordPurchase(input);
   }
 
-  async getTrackedOrder(trackingToken: string): Promise<TrackedOrder> {
-    if (!/^ot_[^\s]{1,509}$/.test(trackingToken)) {
-      throw new ChaosApiError(400, "invalid_tracking_token", "tracking token is invalid");
+  async lookupOrder(params: { orderNumber: string; email: string }): Promise<OrderLookup> {
+    const orderNumber = params.orderNumber?.trim() ?? "";
+    const email = params.email?.trim() ?? "";
+    if (!/^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$/.test(orderNumber)) {
+      throw new ChaosApiError(400, "invalid_order_number", "order number is invalid");
     }
-    const response = await this.client.request<DataEnvelope<TrackedOrder>>(
-      "/orders/tracking",
+    if (email.length === 0) {
+      throw new ChaosApiError(400, "invalid_email", "email is required");
+    }
+    const response = await this.client.request<DataEnvelope<OrderLookup>>(
+      "/orders/lookup",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tracking_token: trackingToken }),
+        body: JSON.stringify({ order_number: orderNumber, email }),
         cache: "no-store",
       },
     );
-    return requireData<TrackedOrder>(response, "invalid_tracked_order_response");
+    return requireData<OrderLookup>(response, "invalid_order_lookup_response");
   }
 }
 
