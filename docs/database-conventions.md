@@ -180,7 +180,10 @@ the build pipeline provides the migrated database or offline query metadata.
 - `commerce.cart_lines` stores only the selected Variant and quantity. Product
   titles, SKU, inventory behavior, and current price are resolved from the
   active catalog for cart reads and checkout; immutable history belongs to
-  `commerce.order_lines`.
+  `commerce.order_lines`. `order_lines.image_url` freezes the ready Media
+  public URL resolved with the exact Variant -> Option Value -> Product fallback
+  at order creation, so the provider payment form shows the image the shopper
+  saw even after the catalog changes.
 - `commerce.carts.payment_client_action` is private provider-form recovery
   state. It is allowed only on a locked Cart, is returned only by checkout
   handoff endpoints, and is cleared by every terminal payment or Order path.

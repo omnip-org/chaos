@@ -339,6 +339,12 @@ impl PaymentProvider for StripeGateway {
                     sku.into(),
                 ));
             }
+            if let Some(image_url) = line.image_url.as_deref() {
+                form.push((
+                    format!("line_items[{index}][price_data][product_data][images][0]"),
+                    image_url.into(),
+                ));
+            }
         }
         for country in &checkout_details.shipping_countries {
             form.push((
@@ -1037,6 +1043,7 @@ mod tests {
             line_items: vec![PaymentLineItem {
                 name: "T-shirt — Medium / Black".into(),
                 sku: Some("TS-M-BLK".into()),
+                image_url: Some("https://cdn.example/tshirt-black-m.jpg".into()),
                 quantity: 1,
                 unit_amount_minor: 1234,
             }],
@@ -1446,6 +1453,10 @@ mod tests {
         assert_eq!(form["line_items[0][quantity]"], "1");
         assert_eq!(form["line_items[0][price_data][currency]"], "usd");
         assert_eq!(form["line_items[0][price_data][unit_amount]"], "1234");
+        assert_eq!(
+            form["line_items[0][price_data][product_data][images][0]"],
+            "https://cdn.example/tshirt-black-m.jpg"
+        );
         assert_eq!(form["metadata[chaos_order_id]"], aggregate_id.to_string());
         drop(requests);
         server.abort();

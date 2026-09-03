@@ -506,17 +506,18 @@ impl PostgresStripeRepository {
                     })
                 })
                 .transpose()?;
-            let line_rows = sqlx::query_as::<_, (String, String, Option<String>, i32, i64)>(
-                "SELECT product_title, variant_title, sku, quantity, \
-                        unit_price_amount_minor \
+            let line_rows =
+                sqlx::query_as::<_, (String, String, Option<String>, i32, i64, Option<String>)>(
+                    "SELECT product_title, variant_title, sku, quantity, \
+                        unit_price_amount_minor, image_url \
                  FROM commerce.order_lines WHERE store_id = $1 AND order_id = $2 \
                  ORDER BY position",
-            )
-            .bind(job.store_id)
-            .bind(order_id)
-            .fetch_all(&mut *transaction)
-            .await
-            .map_err(database_error)?;
+                )
+                .bind(job.store_id)
+                .bind(order_id)
+                .fetch_all(&mut *transaction)
+                .await
+                .map_err(database_error)?;
             let line_items = line_rows
                 .into_iter()
                 .map(|line| {
@@ -527,6 +528,7 @@ impl PostgresStripeRepository {
                             format!("{} — {}", line.0, line.1)
                         },
                         sku: line.2,
+                        image_url: line.5,
                         quantity: u32::try_from(line.3).map_err(unexpected_conversion)?,
                         unit_amount_minor: line.4,
                     })
