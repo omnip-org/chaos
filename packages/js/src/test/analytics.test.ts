@@ -661,7 +661,6 @@ test("attributes server checkout creation to the source Cart", async () => {
   const eventId = environment.analytics.recordCheckoutCreation({
     checkout: {
       order_number: "W-20260830-7K4M9Q2D",
-      source_cart_id: "00000000-0000-4000-8000-000000000021",
       client_action: {
         type: "mount_embedded_checkout",
         public_key: "pk_test_stripe",
@@ -670,7 +669,6 @@ test("attributes server checkout creation to the source Cart", async () => {
     },
     source_cart: {
       id: "00000000-0000-4000-8000-000000000021",
-      price_list_id: "00000000-0000-4000-8000-000000000023",
       currency: "USD",
       status: "locked",
       version: 1,
@@ -680,7 +678,6 @@ test("attributes server checkout creation to the source Cart", async () => {
           product_variant_id: "00000000-0000-4000-8000-000000000025",
           product_title: "Test product",
           variant_title: "Test variant",
-          track_inventory: false,
           quantity: 1,
           unit_price_amount_minor: 2_000,
           subtotal_amount_minor: 2_000,
@@ -693,7 +690,6 @@ test("attributes server checkout creation to the source Cart", async () => {
     },
     cart: {
       id: "00000000-0000-4000-8000-000000000026",
-      price_list_id: "00000000-0000-0000-0000-000000000023",
       currency: "USD",
       status: "active",
       version: 1,

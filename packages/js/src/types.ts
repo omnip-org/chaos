@@ -138,7 +138,6 @@ export interface CartLine {
   product_title: string;
   variant_title: string;
   sku?: string;
-  track_inventory: boolean;
   quantity: number;
   unit_price_amount_minor: number;
   subtotal_amount_minor: number;
@@ -148,7 +147,6 @@ export interface CartLine {
 
 export interface Cart {
   id: UUID;
-  price_list_id: UUID;
   currency: CurrencyCode;
   status: "active" | "locked" | "completed" | "abandoned";
   version: number;
@@ -234,7 +232,6 @@ export interface EmbeddedCheckoutOptions {
 
 export interface EmbeddedCheckoutSession {
   order_number: string;
-  source_cart_id: UUID;
   client_action: PaymentClientAction;
 }
 

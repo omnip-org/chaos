@@ -114,7 +114,6 @@ function isEmbeddedCheckoutSession(
   if (!isRecord(value) || !isRecord(value.client_action)) return false;
   return (
     isNonEmptyString(value.order_number) &&
-    isNonEmptyString(value.source_cart_id) &&
     value.client_action.type === "mount_embedded_checkout" &&
     isNonEmptyString(value.client_action.public_key) &&
     isNonEmptyString(value.client_action.client_token)
@@ -142,9 +141,8 @@ function checkoutIdempotencyKey(
   // receives a new key.
   return stableUuid(
     JSON.stringify([
-      "embedded-checkout-v2",
+      "embedded-checkout-v3",
       cart.id,
-      cart.price_list_id,
       cart.currency,
       cart.lines.map((line) => [
         line.product_id,
@@ -152,7 +150,6 @@ function checkoutIdempotencyKey(
         line.product_title,
         line.variant_title,
         line.sku,
-        line.track_inventory,
         line.quantity,
         line.unit_price_amount_minor,
       ]),

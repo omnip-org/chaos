@@ -33,7 +33,6 @@ function collection(handle: string): Collection {
 function cart(lines: Cart["lines"]): Cart {
   return {
     id: "00000000-0000-4000-8000-000000000001",
-    price_list_id: "00000000-0000-4000-8000-000000000002",
     currency: "USD",
     status: "active",
     version: 1,
@@ -65,7 +64,6 @@ test("browser commerce bridge owns API paths, response envelopes, and mutation a
     product_variant_id: "00000000-0000-4000-8000-000000000011",
     product_title: "Trail pack",
     variant_title: "One size",
-    track_inventory: false,
     quantity: 2,
     unit_price_amount_minor: 9900,
     subtotal_amount_minor: 19800,
@@ -114,7 +112,6 @@ test("browser checkout bridge forwards shared checkout options", async () => {
   const creation = {
     checkout: {
       order_number: "W-20260830-00000041",
-      source_cart_id: "00000000-0000-4000-8000-000000000042",
       client_action: {
         type: "mount_embedded_checkout" as const,
         public_key: "pk_test_store",
@@ -178,7 +175,6 @@ test("server checkout bridge creates a new Cart when the source Cart is terminal
     data: {
       checkout: {
         order_number: "W-20260830-00000061",
-        source_cart_id: "source-cart",
         client_action: {
           type: "mount_embedded_checkout" as const,
           public_key: "pk_test_store",
@@ -237,7 +233,6 @@ test("server checkout bridge retries the same Cart after a lost response", async
   };
   const checkout = {
     order_number: "W-20260830-00000071",
-    source_cart_id: "source-cart",
     client_action: {
       type: "mount_embedded_checkout" as const,
       public_key: "pk_test_store",
@@ -339,7 +334,6 @@ test("server review and cart adapters own form parsing and cookie persistence", 
             product_variant_id: variantId,
             product_title: "Trail pack",
             variant_title: "One size",
-            track_inventory: false,
             quantity,
             unit_price_amount_minor: 1000,
             subtotal_amount_minor: quantity * 1000,

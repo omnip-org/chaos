@@ -251,7 +251,6 @@ function isEmbeddedCheckoutCreation(
   const checkout = value.checkout;
   return (
     typeof checkout.order_number === "string" &&
-    typeof checkout.source_cart_id === "string" &&
     isRecord(checkout.client_action) &&
     checkout.client_action.type === "mount_embedded_checkout" &&
     typeof checkout.client_action.public_key === "string" &&
