@@ -427,7 +427,7 @@ export class ChaosStorefrontAnalytics {
   /** Records checkout initiation from the exact cart snapshot used by Chaos. */
   recordCheckoutCreation(input: EmbeddedCheckoutCreation): string | null {
     return this.recordInitiateCheckout({
-      cartId: input.checkout.source_cart_id,
+      cartId: input.source_cart.id,
       orderNumber: input.checkout.order_number,
       valueMinor: input.source_cart.subtotal_amount_minor,
       currency: input.source_cart.currency,

@@ -535,7 +535,6 @@ test("payments create an embedded Checkout session with SDK-owned request detail
         return jsonResponse(201, {
           data: {
             order_number: "W-20260830-00000001",
-            source_cart_id: "cart-1",
             client_action: {
               type: "mount_embedded_checkout",
               public_key: "pk_test_stripe",
@@ -578,7 +577,6 @@ test("payments create an embedded Checkout session with SDK-owned request detail
 test("checkout creation keeps the source Cart snapshot when rotating the Cart", async () => {
   const sourceCart = {
     id: "cart-1",
-    price_list_id: "price-list-1",
     currency: "USD",
     status: "active",
     version: 4,
@@ -589,7 +587,6 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
         product_variant_id: "variant-1",
         product_title: "Trail pack",
         variant_title: "One size",
-        track_inventory: false,
         quantity: 1,
         unit_price_amount_minor: 2_000,
         subtotal_amount_minor: 2_000,
@@ -620,7 +617,6 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
         return jsonResponse(201, {
           data: {
             order_number: "W-20260830-00000001",
-            source_cart_id: "cart-1",
             client_action: {
               type: "mount_embedded_checkout",
               public_key: "pk_test_stripe",
@@ -715,7 +711,6 @@ test("payments create an embedded Checkout session without an email", async () =
         return jsonResponse(201, {
           data: {
             order_number: "W-20260830-00000001",
-            source_cart_id: "cart-1",
             client_action: {
               type: "mount_embedded_checkout",
               public_key: "pk_test_stripe",
@@ -755,7 +750,6 @@ test("checkout idempotency follows the cart snapshot instead of the cart id", as
         return jsonResponse(200, {
           data: {
             id: "cart-1",
-            price_list_id: "price-list-1",
             version: cartVersion,
             currency: "USD",
             subtotal_amount_minor: 2_000,
@@ -766,7 +760,6 @@ test("checkout idempotency follows the cart snapshot instead of the cart id", as
                 product_title: "Trail pack",
                 variant_title: "One size",
                 sku: "PACK-1",
-                track_inventory: false,
                 quantity: cartQuantity,
                 unit_price_amount_minor: 2_000,
                 subtotal_amount_minor: 2_000 * cartQuantity,
@@ -782,7 +775,6 @@ test("checkout idempotency follows the cart snapshot instead of the cart id", as
       return jsonResponse(201, {
         data: {
           order_number: "W-20260830-55555555",
-          source_cart_id: "cart-1",
           client_action: {
             type: "mount_embedded_checkout",
             public_key: "pk_test_stripe",
@@ -953,7 +945,6 @@ test("checkout records InitiateCheckout after the session is created", async () 
     return {
       data: {
         order_number: "W-20260830-55555555",
-        source_cart_id: "cart-1",
         client_action: {
           type: "mount_embedded_checkout",
           public_key: "pk_test_stripe",
