@@ -1,6 +1,6 @@
 {
   "name": "@omnip-org/chaos-js",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Typed client and first-party analytics for Chaos Commerce storefronts, built on the public-key-authenticated Storefront API.",
   "type": "module",
   "sideEffects": false,
@@ -26,9 +26,6 @@
   },
   "engines": {
     "node": ">=22"
-  },
-  "dependencies": {
-    "@stripe/stripe-js": "^9.14.0"
   },
   "devDependencies": {
     "@types/node": "^26.3.0",

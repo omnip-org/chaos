@@ -85,7 +85,9 @@ const session = creation.checkout;
 // The SDK derives and sends a stable client idempotency key from the Cart
 // snapshot. Chaos derives the provider idempotency key from the Order ID.
 const action = session.client_action;
-// A storefront can use the SDK's provider adapter from the optional subpath:
+// A storefront can use the SDK's provider adapter from the optional subpath.
+// It has no extra dependencies: it loads Stripe.js from https://js.stripe.com
+// at runtime (Stripe does not allow bundling it), so nothing else to install.
 const mounted = await mountEmbeddedCheckout(action, document.querySelector("#checkout")!);
 // Direct Stripe accounts do not use a Stripe-Account header or account_reference.
 
