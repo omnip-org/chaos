@@ -522,6 +522,7 @@ mod tests {
             (Method::GET, "/api/v1/collections"),
             (Method::POST, "/api/v1/analytics/events"),
             (Method::POST, "/api/v1/carts"),
+            (Method::POST, "/api/v1/orders/lookup"),
             (
                 Method::POST,
                 "/webhooks/v1/payment/stripe/00000000-0000-0000-0000-000000000000",
@@ -557,6 +558,9 @@ mod tests {
                 .body(Body::empty())
                 .unwrap(),
             Request::get("/api/v1/orders/00000000-0000-0000-0000-000000000000")
+                .body(Body::empty())
+                .unwrap(),
+            Request::post("/api/v1/orders/tracking")
                 .body(Body::empty())
                 .unwrap(),
             Request::get("/storefront/v1/products")

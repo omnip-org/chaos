@@ -9,9 +9,9 @@ import type {
   ClientCommerceAnalyticsEventName,
   EmbeddedCheckoutCreation,
   InitiateCheckoutAnalyticsInput,
+  OrderLookup,
   PreparedAnalyticsEvent,
   PurchaseAnalyticsInput,
-  TrackedOrder,
 } from "./types.js";
 
 /**
@@ -581,7 +581,7 @@ export class ChaosStorefrontAnalytics {
   }
 
   /** Projects a confirmed, paid order without making the caller rebuild event fields. */
-  recordConfirmedOrder(order: Pick<TrackedOrder, "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines">): string | null {
+  recordConfirmedOrder(order: Pick<OrderLookup, "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines">): string | null {
     const input = toPurchaseAnalyticsInput(order);
     return input ? this.purchase(input) : null;
   }

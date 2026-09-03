@@ -10,6 +10,12 @@ Worker service runs background consumers and has no public listener. Restrict
 origin access to Cloudflare or use Cloudflare Tunnel. PostgreSQL and Redis
 must not be publicly reachable.
 
+NGINX applies a per-client request ceiling (`limit_req`/`limit_conn` keyed on
+the Cloudflare-restored client address) to the whole API surface. `/webhooks/`
+and `/health/` are exempt. The shared proxy settings live in
+`deploy/nginx/conf.d/proxy-backend.conf`; tune the `api_general` rate and burst
+in `deploy/nginx/nginx.conf` from access logs.
+
 API and Worker capacity are independent. API replicas never poll durable queues. The default Compose topology starts one Worker for cost efficiency; production may scale it to multiple replicas because PGMQ visibility timeouts, retry counters, and idempotent consumers coordinate concurrent claims.
 
 ## Host bootstrap
@@ -63,9 +69,9 @@ without exposing either secret.
 
 Transactional Email uses one platform-owned template per notification type.
 The order-confirmation template always renders the order snapshot, optional
-shipping address, product lines, amount breakdown, currency, and tracking URL
-in server code; Stores cannot replace that HTML and accidentally omit business
-logic. Store-specific brand tokens
+shipping address, product lines, amount breakdown, currency, and the order
+lookup URL in server code; Stores cannot replace that HTML and accidentally
+omit business logic. Store-specific brand tokens
 are persisted under the `brand` key in the Email account's
 `integration.provider_accounts.configuration` JSONB. Use `get_email_brand` to
 inspect them, `configure_email_brand` to save a Store name, public HTTPS logo,

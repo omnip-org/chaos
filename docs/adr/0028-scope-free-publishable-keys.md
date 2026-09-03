@@ -12,16 +12,17 @@ meaningful trust boundary, but they multiplied configuration, persistence,
 authentication, transport, and testing states.
 
 Sensitive operations already require stronger possession or authority: Shopper
-credentials bind carts, Orders, and Payment Attempts; guest tracking capabilities bind
-Order tracking; verified Provider webhooks confirm payments; and OAuth plus
-current Store membership authorize MCP administration.
+credentials bind carts, Orders, and Payment Attempts; guest Order lookup requires
+the order number and the contact email on the Order; verified Provider webhooks
+confirm payments; and OAuth plus current Store membership authorize MCP
+administration.
 
 ## Decision
 
 A Publishable Key identifies one Store and is bound to one active Sales Channel
 when it is created. Every active key may enter the complete Store API. Storefront operations continue to
-enforce resource ownership, Shopper or tracking credentials, idempotency, business
-state, validation, and rate limits where applicable.
+enforce resource ownership, Shopper credentials or the guest order-lookup match,
+idempotency, business state, validation, and rate limits where applicable.
 
 Publishable Keys have no scope enum, scope collection, or configurable scope input.
 The Storefront SDK exposes the API-key authentication model without OAuth-style

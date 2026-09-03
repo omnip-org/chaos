@@ -1,6 +1,6 @@
 # ADR 0027: Separate Order Identity, Display, and Guest Tracking
 
-- Status: Accepted
+- Status: Accepted; the guest-tracking capability is superseded by ADR 0034
 - Date: 2026-08-20
 
 ## Decision
@@ -12,24 +12,17 @@ and the suffix uses cryptographically secure Crockford Base32 characters.
 There is no sequential component. A unique database constraint rejects the
 extremely unlikely collision.
 
-Guest tracking no longer treats the Order UUID as a credential. Confirmation
-creates a 256-bit `ot_` tracking capability whose long-lived table stores only
-its SHA-256 digest. The emailed URL places the capability in the Fragment so
-it is not sent in HTTP request targets or Referrer headers. The Storefront
-submits that capability in a POST body to `/api/v1/orders/tracking` on
-each refresh; there is no second session table or token exchange. Access is
-read-only, bound to one Store, Sales Channel, tracking key, and Order.
-Tracking keys expire after 180 days and can be revoked.
-
-An external notification channel may carry the plaintext tracking capability
-because the recipient must receive it. Its payload is
-cleared after successful delivery. Failed jobs retain it only while retries
-remain possible.
+Guest tracking no longer treats the Order UUID as a credential. **ADR 0034
+supersedes the capability mechanism described in the rest of this section**: the
+`ot_` capability, its `commerce.order_tracking_tokens` table, the outbox
+payload's `tracking_token`, and `POST /api/v1/orders/tracking` are removed. A
+guest now reads an Order with `POST /api/v1/orders/lookup`, supplying the
+`W-YYYYMMDD-XXXXXXXX` number plus the contact email on the Order. The
+order-number decision above is unchanged.
 
 There is no public Order detail or Order-ID checkout recovery endpoint. An
-active Publishable Key authorizes the Store API entry point; possession of the
-tracking capability is the only public path for a guest to read an Order.
+active Publishable Key authorizes the Store API entry point; the order-number +
+email match is the only public path for a guest to read an Order.
 
-Carrier tracking URLs remain data shown inside the stable Chaos tracking page.
-Emails link to Chaos rather than making a carrier URL the primary customer
-entry point.
+Carrier tracking URLs remain data shown inside the Chaos order view. Emails link
+to Chaos rather than making a carrier URL the primary customer entry point.

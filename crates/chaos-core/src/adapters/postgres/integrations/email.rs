@@ -263,12 +263,6 @@ impl PostgresEmailRepository {
             .and_then(Value::as_str)
             .and_then(|value| Uuid::parse_str(value).ok())
             .ok_or_else(|| invalid_email_job("aggregate_id"))?;
-        let tracking_token = job
-            .payload
-            .get("tracking_token")
-            .and_then(Value::as_str)
-            .filter(|value| value.starts_with("ot_") && value.len() > 3)
-            .ok_or_else(|| invalid_email_job("tracking_token"))?;
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.store_id', $1, true)")
             .bind(job.store_id.to_string())
@@ -349,7 +343,7 @@ impl PostgresEmailRepository {
             shipping_country_code,
         )?;
         let sender = parse_email_account_configuration(account_configuration)?.sender();
-        let tracking_url = order_tracking_url(&origin, tracking_token)?;
+        let lookup_url = order_lookup_url(&origin, &order_number, &contact_email)?;
         let brand = load_email_brand(&mut transaction, StoreId::from_uuid(job.store_id))
             .await?
             .ok_or_else(email_provider_account_not_found_for_brand)
@@ -381,7 +375,7 @@ impl PostgresEmailRepository {
                 shipping_amount_minor,
                 total_amount_minor,
                 currency: &currency,
-                tracking_url: tracking_url.as_str(),
+                lookup_url: lookup_url.as_str(),
                 brand: &brand,
                 line_items: &line_items,
                 shipping_address: shipping_address.as_ref(),
@@ -767,15 +761,22 @@ fn email_order_corrupt_state() -> ApplicationError {
     ))
 }
 
-fn order_tracking_url(origin: &str, tracking_token: &str) -> Result<Url, ApplicationError> {
+fn order_lookup_url(
+    origin: &str,
+    order_number: &str,
+    email: &str,
+) -> Result<Url, ApplicationError> {
     let origin = StorefrontOrigin::parse(origin.to_owned())
         .map_err(|error| invalid_email_url(error.to_string()))?;
-    let mut tracking_url = Url::parse(origin.as_str())
+    let mut lookup_url = Url::parse(origin.as_str())
         .map_err(|error| invalid_email_url(error.to_string()))?
-        .join("orders/track")
+        .join("orders/lookup")
         .map_err(|error| invalid_email_url(error.to_string()))?;
-    tracking_url.set_fragment(Some(&format!("token={tracking_token}")));
-    Ok(tracking_url)
+    lookup_url
+        .query_pairs_mut()
+        .append_pair("order_number", order_number)
+        .append_pair("email", email);
+    Ok(lookup_url)
 }
 
 fn invalid_email_job(field: &'static str) -> ApplicationError {
@@ -790,29 +791,37 @@ fn email_provider_unavailable() -> ApplicationError {
 }
 
 fn invalid_email_url(error: String) -> ApplicationError {
-    ApplicationError::Unexpected(anyhow::anyhow!(
-        "failed to build order tracking URL: {error}"
-    ))
+    ApplicationError::Unexpected(anyhow::anyhow!("failed to build order lookup URL: {error}"))
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::{email_brand_detail, order_tracking_url};
+    use super::{email_brand_detail, order_lookup_url};
 
     #[test]
-    fn tracking_url_uses_the_sales_channel_origin() {
-        let first = order_tracking_url("https://first.example.test", "ot_first").unwrap();
-        let second = order_tracking_url("https://second.example.test/", "ot_second").unwrap();
+    fn lookup_url_uses_the_sales_channel_origin_and_encodes_the_pair() {
+        let first = order_lookup_url(
+            "https://first.example.test",
+            "W-20260820-7K4M9Q2D",
+            "buyer@example.test",
+        )
+        .unwrap();
+        let second = order_lookup_url(
+            "https://second.example.test/",
+            "W-20260820-7K4M9Q2D",
+            "a+b@example.test",
+        )
+        .unwrap();
 
         assert_eq!(
             first.as_str(),
-            "https://first.example.test/orders/track#token=ot_first"
+            "https://first.example.test/orders/lookup?order_number=W-20260820-7K4M9Q2D&email=buyer%40example.test"
         );
         assert_eq!(
             second.as_str(),
-            "https://second.example.test/orders/track#token=ot_second"
+            "https://second.example.test/orders/lookup?order_number=W-20260820-7K4M9Q2D&email=a%2Bb%40example.test"
         );
     }
 

@@ -3,7 +3,7 @@ import type {
   ProductVariant,
   PurchaseAnalyticsInput,
   Review,
-  TrackedOrder,
+  OrderLookup,
 } from "./types.js";
 
 export type SelectedOptions = Record<string, string>;
@@ -84,7 +84,7 @@ export function getOrderConfirmationState(
 /** Builds the provider-neutral Purchase input only for a confirmed, paid order. */
 export function toPurchaseAnalyticsInput(
   order: Pick<
-    TrackedOrder,
+    OrderLookup,
     "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines"
   >,
 ): PurchaseAnalyticsInput | null {

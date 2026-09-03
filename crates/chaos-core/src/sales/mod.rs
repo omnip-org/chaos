@@ -148,17 +148,24 @@ impl StorefrontSales {
             .await
     }
 
-    pub async fn get_tracked_order(
+    /// Guest Order lookup by the printed Order number and the contact email on
+    /// the Order. Both must match within the caller's Store and Sales Channel;
+    /// every miss — unknown number, wrong email, malformed input — returns the
+    /// same `NotFound` so the endpoint is not an Order-number oracle.
+    pub async fn lookup_order(
         &self,
         actor: &MachineActor,
-        tracking_token: &secrecy::SecretString,
-        now: OffsetDateTime,
+        order_number: &str,
+        email: &str,
     ) -> Result<crate::contracts::OrderDetail, ApplicationError> {
         actor.require_sales_channel()?;
         self.repository
-            .get_tracked_order(actor, tracking_token, now)
+            .lookup_order(actor, order_number, email)
             .await?
-            .ok_or(ApplicationError::Forbidden)
+            .ok_or(ApplicationError::NotFound {
+                resource: "order",
+                id: order_number.to_owned(),
+            })
     }
 }
 

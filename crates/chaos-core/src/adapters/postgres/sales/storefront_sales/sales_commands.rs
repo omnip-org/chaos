@@ -391,31 +391,36 @@ impl PostgresStorefrontSalesRepository {
         Ok(draft)
     }
 
-    pub(crate) async fn get_tracked_order(
+    /// Resolves an Order from its printed number plus the contact email on the
+    /// Order, scoped to the caller's Store and Sales Channel. Malformed input,
+    /// an unknown number, and a number whose email does not match all return
+    /// `Ok(None)` on the same path so the lookup cannot confirm which Order
+    /// numbers exist.
+    pub(crate) async fn lookup_order(
         &self,
         actor: &MachineActor,
-        tracking_token: &SecretString,
-        now: OffsetDateTime,
+        order_number: &str,
+        email: &str,
     ) -> Result<Option<OrderDetail>, ApplicationError> {
-        if !valid_capability(tracking_token.expose_secret(), "ot_") {
+        let Ok(order_number) = OrderNumber::parse(order_number) else {
+            return Ok(None);
+        };
+        let email = email.trim().to_lowercase();
+        if email.is_empty() {
             return Ok(None);
         }
         let mut transaction = self.begin(actor).await?;
-        let digest: [u8; 32] = Sha256::digest(tracking_token.expose_secret()).into();
         let order_id: Option<Uuid> = sqlx::query_scalar(
-            "UPDATE commerce.order_tracking_tokens AS token SET last_used_at=$1 \
-             WHERE token.store_id=$2 AND token.token_digest=$3 AND token.expires_at>$1 \
-               AND EXISTS ( \
-                   SELECT 1 FROM commerce.orders AS order_row \
-                   WHERE order_row.store_id=token.store_id \
-                     AND order_row.id=token.order_id \
-                     AND order_row.channel_id=$4 \
-               ) \
-             RETURNING token.order_id",
+            "SELECT order_row.id \
+             FROM commerce.orders AS order_row \
+             WHERE order_row.store_id = $1 \
+               AND order_row.order_number = $2 \
+               AND order_row.contact_email = $3 \
+               AND ($4::uuid IS NULL OR order_row.channel_id = $4)",
         )
-        .bind(now)
         .bind(actor.store_id.as_uuid())
-        .bind(digest.as_slice())
+        .bind(order_number.as_str())
+        .bind(&email)
         .bind(actor.channel_id.map(SalesChannelId::as_uuid))
         .fetch_optional(&mut *transaction)
         .await
@@ -535,12 +540,4 @@ async fn insert_order_lines(
         .map_err(database_error)?;
     }
     Ok(())
-}
-
-fn valid_capability(value: &str, prefix: &str) -> bool {
-    value.len() == prefix.len() + 43
-        && value.starts_with(prefix)
-        && value[prefix.len()..]
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }

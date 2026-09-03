@@ -3,9 +3,6 @@
 use async_trait::async_trait;
 use crate::{
     ApplicationError,
-    adapters::postgres::database::{
-        generate_order_tracking_capability, ORDER_TRACKING_TOKEN_LIFETIME,
-    },
     error::database_error,
     contracts::{
         AdminActor, MachineActor, OrderMetadataContext,

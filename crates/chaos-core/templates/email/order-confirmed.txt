@@ -13,7 +13,7 @@ Shipping: {{shipping_amount}} {{currency}}
 Tax: {{tax_amount}} {{currency}}
 Total: {{total_amount}} {{currency}}
 
-Track your order: {{tracking_url}}
+View your order: {{lookup_url}}
 
 {{support_text}}
 

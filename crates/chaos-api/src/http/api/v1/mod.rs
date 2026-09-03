@@ -8,7 +8,7 @@ mod analytics;
 mod carts;
 mod checkouts;
 mod collections;
-mod order_tracking;
+mod order_lookup;
 mod products;
 mod shopper;
 
@@ -21,6 +21,6 @@ pub(crate) fn routes() -> Router<ApiState> {
         .merge(shopper::routes())
         .merge(carts::routes())
         .merge(checkouts::routes())
-        .merge(order_tracking::routes())
+        .merge(order_lookup::routes())
         .merge(analytics::routes())
 }
