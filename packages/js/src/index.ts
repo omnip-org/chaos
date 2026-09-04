@@ -7,8 +7,8 @@ export {
   BrowserOrderResource,
   StorefrontBrowserClient,
   createStorefrontBrowserClient,
-} from "./browser.js";
-export type { StorefrontBrowserOptions } from "./browser.js";
+} from "./ssr/browser.js";
+export type { StorefrontBrowserOptions } from "./ssr/browser.js";
 
 export {
   ChaosStorefrontAnalytics,
@@ -69,7 +69,7 @@ export {
   updateCartLineFromRequest,
   DEFAULT_CART_COOKIE_NAME,
   DEFAULT_SHOPPER_TOKEN_COOKIE_NAME,
-} from "./server.js";
+} from "./ssr/server.js";
 export type {
   AddCartLineInput,
   EmbeddedCheckoutRequestInput,
@@ -79,6 +79,6 @@ export type {
   StorefrontSession,
   StorefrontSessionOptions,
   UpdateCartLineInput,
-} from "./server.js";
+} from "./ssr/server.js";
 
 export * from "./types.js";

@@ -1,15 +1,15 @@
-import { ChaosApiError } from "./errors.js";
-import { toPurchaseAnalyticsInput } from "./domain.js";
+import { ChaosApiError } from "../errors.js";
+import { toPurchaseAnalyticsInput } from "../domain.js";
 import {
   createStorefrontClient,
   type ChaosStorefrontClient,
   type ClientOptions,
-} from "./client.js";
+} from "../client.js";
 import {
   sendMetaCapiEvent,
   type MetaCapiConfig,
   type MetaCapiContext,
-} from "./meta-capi.js";
+} from "../providers/meta-capi.js";
 import type {
   Cart,
   CartLine,
@@ -19,7 +19,7 @@ import type {
   EmbeddedCheckoutOptions,
   SubmitReviewRequest,
   OrderLookup,
-} from "./types.js";
+} from "../types.js";
 
 export interface StorefrontCookieOptions {
   httpOnly?: boolean;

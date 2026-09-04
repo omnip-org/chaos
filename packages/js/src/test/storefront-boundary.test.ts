@@ -9,11 +9,11 @@ import {
   createServerStorefrontClient,
   recordConfirmedPurchaseCapi,
   type StorefrontCookieJar,
-} from "../server.js";
+} from "../ssr/server.js";
 import {
   createStorefrontBrowserClient,
   StorefrontBrowserClient,
-} from "../browser.js";
+} from "../ssr/browser.js";
 import { ChaosApiError } from "../errors.js";
 import type { ChaosStorefrontAnalytics } from "../analytics.js";
 import type {

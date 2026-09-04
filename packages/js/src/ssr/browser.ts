@@ -1,5 +1,5 @@
-import { ChaosApiError, throwForResponse } from "./errors.js";
-import type { ChaosStorefrontAnalytics } from "./analytics.js";
+import { ChaosApiError, throwForResponse } from "../errors.js";
+import type { ChaosStorefrontAnalytics } from "../analytics.js";
 import type {
   CartLineMutation,
   DataEnvelope,
@@ -7,7 +7,7 @@ import type {
   EmbeddedCheckoutOptions,
   PurchaseAnalyticsInput,
   OrderLookup,
-} from "./types.js";
+} from "../types.js";
 
 export interface StorefrontBrowserOptions {
   /** Same-origin storefront adapter prefix. Defaults to the shared route prefix. */

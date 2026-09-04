@@ -1,4 +1,4 @@
-import type { PaymentClientAction } from "./types.js";
+import type { PaymentClientAction } from "../types.js";
 
 export interface EmbeddedCheckoutMount {
   /** Removes the checkout from the DOM; it can be mounted again. */

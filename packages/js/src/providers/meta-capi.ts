@@ -1,10 +1,10 @@
-import { sha256Hex } from "./internal/sha256.js";
-import { toMajorUnits } from "./money.js";
+import { sha256Hex } from "../internal/sha256.js";
+import { toMajorUnits } from "../money.js";
 import type {
   AddToCartAnalyticsInput,
   InitiateCheckoutAnalyticsInput,
   PurchaseAnalyticsInput,
-} from "./types.js";
+} from "../types.js";
 
 /**
  * Server-only Meta Conversions API sender. This module must never be

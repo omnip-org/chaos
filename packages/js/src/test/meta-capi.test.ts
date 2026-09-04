@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { sendMetaCapiEvent, type MetaCapiConfig } from "../meta-capi.js";
+import { sendMetaCapiEvent, type MetaCapiConfig } from "../providers/meta-capi.js";
 
 function sha256Hex(input: string): string {
   return createHash("sha256").update(input).digest("hex");
