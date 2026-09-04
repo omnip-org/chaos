@@ -84,21 +84,29 @@ export class CartResource {
     }
   }
 
+  /**
+   * `previousQuantity` lets a caller that already knows the line's current
+   * quantity (alongside `expectedVersion`) skip the GET this method would
+   * otherwise make solely to compute the analytics delta.
+   */
   async setLine(
     cartId: string,
     productVariantId: string,
     body: SetCartLineRequest,
     expectedVersion?: number,
+    previousQuantity?: number,
   ): Promise<DataEnvelope<Cart>> {
     return this.enqueueMutation(cartId, async () => {
-      const current =
-        this.client.analytics || expectedVersion === undefined
-          ? await this.get(cartId)
-          : undefined;
+      const needsCurrentCart =
+        expectedVersion === undefined ||
+        (Boolean(this.client.analytics) && previousQuantity === undefined);
+      const current = needsCurrentCart ? await this.get(cartId) : undefined;
       const existingQuantity =
+        previousQuantity ??
         current?.data.lines.find(
           (line) => line.product_variant_id === productVariantId,
-        )?.quantity ?? 0;
+        )?.quantity ??
+        0;
       const response = await this.setLineRequest(
         cartId,
         productVariantId,
@@ -183,6 +191,16 @@ export class CartResource {
         ifMatch: String(expectedVersion),
       },
     );
+  }
+
+  /**
+   * Runs an operation serialized against this cart's mutation queue, so a
+   * read used to build a request (e.g. checkout) cannot race a concurrent
+   * line mutation for the same cart.
+   * @internal
+   */
+  runExclusive<T>(cartId: string, operation: () => Promise<T>): Promise<T> {
+    return this.enqueueMutation(cartId, operation);
   }
 
   private enqueueMutation<T>(

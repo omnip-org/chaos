@@ -1,5 +1,6 @@
 import { ChaosApiError, throwForResponse } from "./errors.js";
 import { toPurchaseAnalyticsInput } from "./domain.js";
+import { fnv1a32 } from "./internal/hash.js";
 import { toMajorUnits } from "./money.js";
 import type {
   AddToCartAnalyticsInput,
@@ -1292,13 +1293,7 @@ function analyticsStorageNamespace(
   endpoint: string,
   publishableKey: string,
 ): string {
-  const input = `${endpoint}\0${publishableKey}`;
-  let hash = 2_166_136_261;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 16_777_619);
-  }
-  return (hash >>> 0).toString(36);
+  return fnv1a32(`${endpoint}\0${publishableKey}`).toString(36);
 }
 
 function observeHistory(

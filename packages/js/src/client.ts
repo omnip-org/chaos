@@ -3,6 +3,7 @@ import {
   type AnalyticsOptions,
 } from "./analytics.js";
 import { ChaosApiError, throwForResponse } from "./errors.js";
+import { fnv1a32 } from "./internal/hash.js";
 import { CartResource } from "./resources/cart.js";
 import { CatalogResource } from "./resources/catalog.js";
 import { OrdersResource } from "./resources/orders.js";
@@ -364,13 +365,8 @@ function scopedShopperTokenKey(
   baseUrl: string,
   publishableKey: string,
 ): string {
-  let hash = 2_166_136_261;
-  const input = `${baseUrl}\0${publishableKey}`;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 16_777_619);
-  }
-  return `${SHOPPER_TOKEN_STORAGE_PREFIX}.${(hash >>> 0).toString(36)}`;
+  const hash = fnv1a32(`${baseUrl}\0${publishableKey}`);
+  return `${SHOPPER_TOKEN_STORAGE_PREFIX}.${hash.toString(36)}`;
 }
 
 function withEdgeClientIp(

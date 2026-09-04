@@ -1,5 +1,6 @@
 import type { ChaosStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
+import { fnv1a32 } from "../internal/hash.js";
 import type {
   Cart,
   DataEnvelope,
@@ -21,21 +22,29 @@ export class PaymentsResource {
     cartId: string,
     options: EmbeddedCheckoutOptions,
   ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
-    const cart = await this.client.cart.get(cartId);
-    return this.createEmbeddedCheckoutForCart(cart.data, options);
+    return this.client.cart.runExclusive(cartId, async () => {
+      const cart = await this.client.cart.get(cartId);
+      return this.createEmbeddedCheckoutForCart(cart.data, options);
+    });
   }
 
   async createEmbeddedCheckoutWithCart(
     cartId: string,
     options: EmbeddedCheckoutOptions,
   ): Promise<DataEnvelope<EmbeddedCheckoutCreation>> {
-    const cart = await this.client.cart.get(cartId);
-    const checkout = await this.createEmbeddedCheckoutForCart(cart.data, options);
+    const { checkout, sourceCart } = await this.client.cart.runExclusive(
+      cartId,
+      async () => {
+        const cart = await this.client.cart.get(cartId);
+        const result = await this.createEmbeddedCheckoutForCart(cart.data, options);
+        return { checkout: result, sourceCart: cart.data };
+      },
+    );
     const nextCart = await this.client.cart.getOrCreate();
     return {
       data: {
         checkout: checkout.data,
-        source_cart: cart.data,
+        source_cart: sourceCart,
         cart: nextCart.data,
       },
     };
@@ -158,18 +167,12 @@ function checkoutIdempotencyKey(
   );
 }
 
+const STABLE_UUID_SEEDS = [
+  2_166_136_261, 2_246_822_519, 3_266_489_909, 3_432_918_353,
+];
+
 function stableUuid(input: string): string {
-  const hashes = [
-    2_166_136_261, 2_246_822_519, 3_266_489_909, 3_432_918_353,
-  ].map((seed) => {
-    let hash = seed >>> 0;
-    for (let index = 0; index < input.length; index += 1) {
-      hash ^= input.charCodeAt(index);
-      hash = Math.imul(hash, 16_777_619);
-      hash ^= hash >>> 13;
-    }
-    return hash >>> 0;
-  });
+  const hashes = STABLE_UUID_SEEDS.map((seed) => fnv1a32(input, seed, true));
   const bytes = new Uint8Array(16);
   const view = new DataView(bytes.buffer);
   hashes.forEach((hash, index) => view.setUint32(index * 4, hash));

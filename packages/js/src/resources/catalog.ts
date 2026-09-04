@@ -64,6 +64,7 @@ export class CatalogResource {
     }
     const key = `${this.client.baseUrl}\0${this.client.publishableKey}\0${JSON.stringify(params)}`;
     const now = Date.now();
+    pruneExpiredCollectionCache(now);
     const cached = collectionCache.get(key);
     if (cached && cached.expiresAt > now) return cached.promise;
 
@@ -77,5 +78,17 @@ export class CatalogResource {
 
   getCollection(handle: string, params: Record<string, never> = {}): Promise<DataEnvelope<Collection>> {
     return this.client.request(`/collections/${encodeURIComponent(handle)}`, { method: "GET", query: params });
+  }
+}
+
+/**
+ * The cache is a module-level singleton so a shared Worker isolate keeps one
+ * warm cache across per-request client instances (see `listCollectionsCached`).
+ * Without this sweep, entries for stores/queries that stop being requested
+ * would sit in memory forever once expired instead of being reclaimed.
+ */
+function pruneExpiredCollectionCache(now: number): void {
+  for (const [key, entry] of collectionCache) {
+    if (entry.expiresAt <= now) collectionCache.delete(key);
   }
 }
