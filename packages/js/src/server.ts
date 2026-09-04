@@ -1,14 +1,18 @@
 import { ChaosApiError } from "./errors.js";
+import { toPurchaseAnalyticsInput } from "./domain.js";
 import {
   createStorefrontClient,
   type ChaosStorefrontClient,
   type ClientOptions,
 } from "./client.js";
+import {
+  sendMetaCapiEvent,
+  type MetaCapiConfig,
+  type MetaCapiContext,
+} from "./meta-capi.js";
 import type {
-  AnalyticsCollectionRequest,
-  AnalyticsCollectionResult,
-  BrowserAnalyticsEvent,
   Cart,
+  CartLine,
   CartLineMutation,
   DataEnvelope,
   EmbeddedCheckoutCreation,
@@ -49,6 +53,12 @@ export interface ServerClientOptions
   cookies?: StorefrontCookieJar;
   request?: Pick<Request, "headers">;
   session?: StorefrontSessionOptions;
+  /**
+   * Server-side Meta Conversions API delivery. Provide the store's own Meta
+   * access token from this deployment's environment variables — chaos-js
+   * never stores or proxies it. Omit to send Pixel/GA4 only (no CAPI).
+   */
+  capi?: { meta: MetaCapiConfig };
 }
 
 export interface StorefrontSession {
@@ -82,13 +92,20 @@ const DEFAULT_SESSION_COOKIE_OPTIONS: StorefrontCookieOptions = {
   maxAge: 60 * 60 * 24 * 30,
 };
 
+/**
+ * `createServerStorefrontClient`'s `capi` option, keyed by the client it
+ * belongs to instead of a field on `ChaosStorefrontClient` itself — the
+ * access token must never appear on the class shared with browser bundles.
+ */
+const serverCapiConfigs = new WeakMap<ChaosStorefrontClient, MetaCapiConfig>();
+
 /** Creates the request-scoped server client with cookie-backed shopper identity. */
 export function createServerStorefrontClient(
   options: ServerClientOptions,
 ): ChaosStorefrontClient {
-  const { cookies, request, session, ...clientOptions } = options;
+  const { cookies, request, session, capi, ...clientOptions } = options;
   const resolvedSession = resolveSessionOptions(session);
-  return createStorefrontClient({
+  const client = createStorefrontClient({
     ...clientOptions,
     storage: cookies
       ? createShopperTokenStorage(
@@ -102,6 +119,8 @@ export function createServerStorefrontClient(
     autoAcquireShopperToken: false,
     retryInvalidShopperToken: false,
   });
+  if (capi?.meta) serverCapiConfigs.set(client, capi.meta);
+  return client;
 }
 
 /** Bridges the SDK's shopper-token storage to an HttpOnly cookie. */
@@ -188,12 +207,19 @@ export async function addCartLine(
   persistCartSession(cookies, { cart }, options);
   const line = cart.lines.find((candidate) => candidate.product_variant_id === variantId);
   if (!line) throw new ChaosApiError(502, "cart_line_missing", "cart line missing after mutation");
+  const eventId = await recordAddToCartCapi(client, cookies, {
+    line,
+    quantity,
+    currency: cart.currency,
+    cartId: cart.id,
+  });
   return {
     cart,
     product_variant_id: variantId,
     previous_quantity: previousQuantity,
     new_quantity: line.quantity,
     removed: false,
+    ...(eventId ? { event_id: eventId } : {}),
   };
 }
 
@@ -242,12 +268,24 @@ export async function updateCartLine(
     { quantity },
   );
   persistCartSession(cookies, { cart }, options);
+  const newLine = cart.lines.find((candidate) => candidate.product_variant_id === variantId);
+  const increase = quantity - line.quantity;
+  const eventId =
+    increase > 0 && newLine
+      ? await recordAddToCartCapi(client, cookies, {
+          line: newLine,
+          quantity: increase,
+          currency: cart.currency,
+          cartId: cart.id,
+        })
+      : undefined;
   return {
     cart,
     product_variant_id: variantId,
     previous_quantity: line.quantity,
     new_quantity: quantity,
     removed: false,
+    ...(eventId ? { event_id: eventId } : {}),
   };
 }
 
@@ -319,6 +357,7 @@ export async function createEmbeddedCheckoutFromRequest(
         returnUrl,
         email,
         resolved,
+        request.url,
       );
     } catch (error) {
       if (!isRecoverableCartCheckoutError(error)) throw error;
@@ -333,6 +372,7 @@ export async function createEmbeddedCheckoutFromRequest(
     returnUrl,
     email,
     resolved,
+    request.url,
   );
 }
 
@@ -343,6 +383,7 @@ async function createCheckoutWithCart(
   returnUrl: string,
   email: string | undefined,
   options: StorefrontSessionOptions,
+  eventSourceUrl?: string,
 ): Promise<DataEnvelope<EmbeddedCheckoutCreation>> {
   const response = await client.payments.createEmbeddedCheckoutWithCart(
     cartId,
@@ -352,7 +393,16 @@ async function createCheckoutWithCart(
     },
   );
   persistCartSession(cookies, response.data, options);
-  return response;
+  const eventId =
+    response.data.source_cart.status === "active"
+      ? await recordInitiateCheckoutCapi(client, cookies, response.data, eventSourceUrl)
+      : undefined;
+  return {
+    data: {
+      ...response.data,
+      ...(eventId ? { event_id: eventId } : {}),
+    },
+  };
 }
 
 function isRecoverableCartCheckoutError(error: unknown): boolean {
@@ -386,6 +436,106 @@ export async function lookupOrderFromRequest(
     email: email.trim(),
   });
   return data;
+}
+
+/**
+ * Sends a confirmed, paid order to Meta CAPI once, using the `capi` config
+ * passed to `createServerStorefrontClient`. No-op without that config or
+ * without a confirmed+paid order — mirrors `ChaosStorefrontAnalytics.
+ * recordConfirmedOrder`, which projects the same order to the browser Pixel
+ * and GA4 using the same deterministic, order-derived event ID.
+ */
+export async function recordConfirmedPurchaseCapi(
+  client: ChaosStorefrontClient,
+  cookies: StorefrontCookieJar,
+  order: Pick<
+    OrderLookup,
+    "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines"
+  >,
+  eventSourceUrl?: string,
+): Promise<void> {
+  const capiConfig = serverCapiConfigs.get(client);
+  if (!capiConfig) return;
+  const input = toPurchaseAnalyticsInput(order);
+  if (!input) return;
+  await sendMetaCapiEvent(capiConfig, {
+    eventName: "purchase",
+    eventId: input.orderId.toLowerCase(),
+    context: metaCapiContextFrom(client, cookies, eventSourceUrl),
+    input,
+  });
+}
+
+async function recordAddToCartCapi(
+  client: ChaosStorefrontClient,
+  cookies: StorefrontCookieJar,
+  input: { line: CartLine; quantity: number; currency: string; cartId: string },
+): Promise<string | undefined> {
+  const capiConfig = serverCapiConfigs.get(client);
+  if (!capiConfig) return undefined;
+  const eventId = client.randomUUID();
+  await sendMetaCapiEvent(capiConfig, {
+    eventName: "add_to_cart",
+    eventId,
+    context: metaCapiContextFrom(client, cookies),
+    input: {
+      cartId: input.cartId,
+      productId: input.line.product_id,
+      productVariantId: input.line.product_variant_id,
+      quantity: input.quantity,
+      priceMinor: input.line.unit_price_amount_minor,
+      valueMinor: input.line.unit_price_amount_minor * input.quantity,
+      currency: input.currency,
+    },
+  });
+  return eventId;
+}
+
+async function recordInitiateCheckoutCapi(
+  client: ChaosStorefrontClient,
+  cookies: StorefrontCookieJar,
+  creation: EmbeddedCheckoutCreation,
+  eventSourceUrl: string | undefined,
+): Promise<string | undefined> {
+  const capiConfig = serverCapiConfigs.get(client);
+  if (!capiConfig) return undefined;
+  const eventId = client.randomUUID();
+  await sendMetaCapiEvent(capiConfig, {
+    eventName: "initiate_checkout",
+    eventId,
+    context: metaCapiContextFrom(client, cookies, eventSourceUrl),
+    input: {
+      cartId: creation.source_cart.id,
+      orderNumber: creation.checkout.order_number,
+      valueMinor: creation.source_cart.subtotal_amount_minor,
+      currency: creation.source_cart.currency,
+      items: creation.source_cart.lines.map((line) => ({
+        productId: line.product_id,
+        productVariantId: line.product_variant_id,
+        quantity: line.quantity,
+        priceMinor: line.unit_price_amount_minor,
+      })),
+    },
+  });
+  return eventId;
+}
+
+function metaCapiContextFrom(
+  client: ChaosStorefrontClient,
+  cookies: StorefrontCookieJar,
+  eventSourceUrl?: string,
+): MetaCapiContext {
+  const edge = client.edgeRequestContext();
+  const fbc = cookies.get("_fbc")?.value;
+  const fbp = cookies.get("_fbp")?.value;
+  const shopperToken = client.getShopperToken();
+  return {
+    ...(eventSourceUrl ? { eventSourceUrl } : {}),
+    ...(fbc ? { fbc } : {}),
+    ...(fbp ? { fbp } : {}),
+    ...edge,
+    ...(shopperToken ? { shopperToken } : {}),
+  };
 }
 
 /** Parses and submits the standard no-JavaScript product review form. */
@@ -424,19 +574,6 @@ export async function createProductReviewFromRequest(
       : {}),
   };
   await client.reviews.submit(requireText(productId, "productId"), payload);
-}
-
-/** Parses and forwards the analytics envelope without exposing its wire validation to a storefront. */
-export async function collectAnalyticsFromRequest(
-  client: ChaosStorefrontClient,
-  request: Request,
-): Promise<DataEnvelope<AnalyticsCollectionResult>> {
-  const body = await readJsonRecord(request, "collect_analytics");
-  if (!Array.isArray(body.events) || !body.events.every(isBrowserAnalyticsEvent)) {
-    throw invalidRequest("events is required");
-  }
-  const payload: AnalyticsCollectionRequest = { events: body.events };
-  return client.collectAnalytics(payload);
 }
 
 export function cartItemCount(cart: Cart): number {
@@ -512,14 +649,4 @@ function invalidRequest(message: string): ChaosApiError {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isBrowserAnalyticsEvent(value: unknown): value is BrowserAnalyticsEvent {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.event_id === "string" &&
-    typeof value.event_name === "string" &&
-    typeof value.occurred_at === "string" &&
-    isRecord(value.properties)
-  );
 }

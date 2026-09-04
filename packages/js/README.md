@@ -1,9 +1,14 @@
 # @omnip-org/chaos-js
 
-A typed client and first-party analytics collector for the Chaos Commerce
-Storefront API — the public-key-authenticated surface meant to be called
-directly from storefront browsers. The SDK is the typed public contract. One SDK covers
+A typed client for the Chaos Commerce Storefront API — the
+public-key-authenticated surface meant to be called directly from storefront
+browsers — with a bundled browser analytics collector that projects straight
+to Meta Pixel and GA4. The SDK is the typed public contract. One SDK covers
 catalog browsing, cart, checkout, order, payment, and behavior analytics flows.
+A storefront with its own server-side deployment can additionally send Meta
+Conversions API events from its own backend, using its own Meta access token,
+through the separate `@omnip-org/chaos-js/meta-capi` subpath — see
+[Server-side Meta Conversions API](#server-side-meta-conversions-api).
 
 ## Install
 
@@ -36,7 +41,9 @@ const chaos = createStorefrontClient({
   publishableKey: "pk_...",
   analytics: {
     providers: {
-      // Browser Meta Pixel ID; the CAPI Dataset ID is configured server-side.
+      // Browser Meta Pixel ID. A storefront with its own server-side
+      // deployment configures the same (or a different) Pixel/dataset ID
+      // again via createServerStorefrontClient's `capi` option, for Meta CAPI.
       metaPixel: { pixelId: "1234567890" },
       ga4: { measurementId: "G-EXAMPLE123" },
     },
@@ -99,16 +106,17 @@ const mounted = await mountEmbeddedCheckout(action, document.querySelector("#che
 // `mounted.unmount()` hides the form (e.g. on `onComplete`); `mounted.destroy()`
 // disposes it. Direct Stripe accounts do not use a Stripe-Account header.
 
-// PageView, ViewContent, Search, and active ViewDuration are recorded by the
-// browser SDK. Cart and checkout resources record their commerce events only
-// after the matching operation succeeds. The SDK owns canonical event fields,
-// event IDs, attribution, and the /analytics/events transport. Purchase
-// remains a payment-confirmation event on the server; the SDK only projects
-// the confirmed order to browser providers.
+// PageView, ViewContent, Search, and active ViewDuration project straight to
+// the configured Meta Pixel and GA4 as they happen. Cart and checkout
+// resources project AddToCart/InitiateCheckout only after the matching
+// operation succeeds; the business request never carries an analytics field.
+// Purchase is never inferred from browser activity — only from a confirmed,
+// paid order the storefront already has.
 // After the server confirms payment, let the SDK build the canonical projection:
 const purchase = toPurchaseAnalyticsInput(order);
 if (purchase) chaos.analytics?.purchase(purchase);
-// The server remains the source of truth for the ledger Purchase event.
+// A storefront with its own server-side deployment can also send the same
+// order to Meta CAPI from its backend — see the meta-capi subpath below.
 ```
 
 For a storefront with a server-rendered framework, use the request-scoped
@@ -158,66 +166,94 @@ update the consumer's lockfile to that exact release, and run the SDK and
 consumer checks against the same version.
 
 Pass `analytics: false` to `createStorefrontClient` to skip constructing the
-collector entirely. Collection starts immediately when the analytics client is
-constructed.
+browser collector entirely. Collection starts immediately when the analytics
+client is constructed.
 
 The client automatically acquires and persists the signed shopper token used to
-associate commerce operations and Analytics events on the first shopper-scoped
-request. `cart.getActive()` reads only an active cart, while
-`cart.getOrCreate()` explicitly recovers from a missing or completed cart.
-Invalid shopper-token retries are opt-in because silently minting a replacement
-can orphan a cart or hide an order. The collector automatically
-captures bounded UTM fields and the Referrer host.
-It keeps first-touch, browser-session, and last-non-direct source facts.
-Unsent events survive reloads in session storage, retain stable IDs during
-retry, and drain in bounded batches. View duration uses a monotonic clock and
-resumes correctly after browser back-forward cache restoration. Store-defined
-behaviors can be recorded with `chaos.analytics?.track("store_defined_event", {
-product_id: "..." })`.
-Commerce item properties use `product_id` and `product_variant_id`. Multi-item
-events repeat these fields inside each `items[]` entry; single-item events also
-expose the corresponding IDs at the top level. The Meta adapter uses the
-variant ID as the Meta content ID when present, otherwise the product ID.
-The SDK creates one commerce envelope containing the event ID, timestamp,
-session, traffic, UTM values, and Meta browser context (`fbc`/`fbp`) after the
-cart or checkout request succeeds. The business request does not contain an
-analytics field. The SDK sends the envelope through `/analytics/events`; the
-endpoint records it in the same ledger used by all browser observations. The
-SDK projects the event ID to browser providers after success and persists the
-first-party event for retry, so Meta can deduplicate the Pixel and CAPI copies.
-The API normalizes the session UUID into the analytics event's nullable
-`session_id` column and the UTM values into nullable `utm_*` columns. The
-server keeps shopper and internal Order IDs for authoritative payment and
-deduplication work; browser checkout events use the public order number and
-Cart ID as their association keys. First-touch and last-non-direct traffic
-history remains in `properties`; UTM values are not forwarded as Meta custom
-parameters.
-Do not duplicate `add_to_cart`, `initiate_checkout`, or `purchase` through
-generic `track()`. The SDK resources own the first two and send them through
-the common endpoint after the matching request succeeds. `purchase` is
-accepted only from payment confirmation; the SDK projects that confirmed
-order with the Order ID, while the Meta CAPI adapter routes the server-origin
-ledger event.
+associate commerce operations on the first shopper-scoped request.
+`cart.getActive()` reads only an active cart, while `cart.getOrCreate()`
+explicitly recovers from a missing or completed cart. Invalid shopper-token
+retries are opt-in because silently minting a replacement can orphan a cart or
+hide an order.
 
-Provider scripts are optional and load immediately when configured. For Meta
-events that are projected to both browser Pixel and CAPI, Pixel receives the
-same event ID used by CAPI.
-A confirmed Purchase uses the Order ID in both paths and is projected only once
-per browser, allowing Meta to deduplicate Pixel and CAPI copies. View duration
-and store-defined behavior events remain first-party ledger facts
-and are not sent to Meta. PageView remains in the first-party ledger and may
-be sent by the browser Pixel, but the server-side Meta CAPI adapter filters it
-for now. The collector records the page URL without its
-fragment, plus browser matching context (`fbc`, `fbp`, and user-agent),
-alongside the event; when a
-`fbclid` is present, the SDK also keeps the generated `_fbc` as a bounded
-first-party cookie. The API may use matching request cookies as a fallback for
-missing `fbc`/`fbp` values. For a server-side analytics bridge, pass its
-inbound request as `request` when creating the client; the SDK copies the
-edge-observed client IP into each analytics event and the API preserves the
-event's client IP and user-agent metadata. GA4 automatic
-PageView collection is disabled; Chaos maps semantic events to GA4 ecommerce
-names.
+PageView, ViewContent, Search, and active ViewDuration project straight to
+the configured Meta Pixel and GA4 as they happen — there is no queue, no
+batching, and no chaos-owned analytics ledger; provider scripts are optional
+and load immediately when configured. View duration uses a monotonic clock
+and resumes correctly after browser back-forward cache restoration.
+Store-defined behaviors can be recorded with
+`chaos.analytics?.track("store_defined_event", { product_id: "..." })`, which
+projects to GA4 as a custom event but is never sent to Meta Pixel. GA4
+automatic PageView collection stays disabled; Chaos maps semantic events to
+GA4 ecommerce names.
+
+Cart and checkout resources project `AddToCart`/`InitiateCheckout` only after
+the matching request succeeds — the business request never carries an
+analytics field — sharing one event ID between the ledger-free Pixel/GA4
+projection and, when a storefront also configured server-side Meta CAPI (see
+below), the matching CAPI call. Do not duplicate `add_to_cart`,
+`initiate_checkout`, or `purchase` through generic `track()`; the dedicated
+methods own those names and `track()` rejects them. Commerce item properties
+use `product_id` and `product_variant_id`. Multi-item events repeat these
+fields inside each `items[]` entry; single-item events also expose the
+corresponding IDs at the top level. The Meta adapter uses the variant ID as
+the Meta content ID when present, otherwise the product ID.
+
+`purchase` is a projection, not a first-party fact: the SDK never infers it
+from browser activity, only from a confirmed, paid order the storefront
+already has (typically via `chaos.orders.lookupOrder` on a return page). It
+derives its event ID from the Order ID, so a reload of the same confirmation
+page — and a matching server-side Meta CAPI call for the same order — project
+the identical ID and Meta deduplicates the copies.
+`chaos.analytics?.recordConfirmedOrder(order)` builds and sends this
+projection in one call.
+
+The collector maintains a first-party `_fbc` cookie from a landing `fbclid`,
+bounded and capped at 90 days, independent of whether the Meta Pixel script
+has finished loading — a server-side Meta CAPI call later in the same visit
+reads that cookie for `user_data.fbc`.
+
+### Server-side Meta Conversions API
+
+Meta CAPI delivery holds the store's own Meta access token, so it lives
+outside the main SDK entry, as the separate `@omnip-org/chaos-js/meta-capi`
+subpath — import it only from server-side code, never from a browser bundle:
+
+```ts
+import {
+  createServerStorefrontClient,
+  recordConfirmedPurchaseCapi,
+} from "@omnip-org/chaos-js";
+
+const chaos = createServerStorefrontClient({
+  publishableKey: process.env.CHAOS_PUBLISHABLE_KEY!,
+  baseUrl: "https://shop.example.com/api/v1",
+  cookies,
+  request,
+  // Provide the store's own Meta access token from this deployment's
+  // environment variables. Chaos never stores or proxies this secret.
+  capi: {
+    meta: {
+      accessToken: process.env.META_CAPI_ACCESS_TOKEN!,
+      pixelId: process.env.META_PIXEL_ID!,
+      testEventCode: process.env.META_TEST_EVENT_CODE,
+    },
+  },
+});
+
+// addCartLine/updateCartLine/createEmbeddedCheckoutFromRequest already send
+// Meta CAPI when `capi` is configured, and return the shared `event_id` on
+// the mutation/checkout result so a browser Pixel projection reading the
+// same response can reuse it instead of minting a second one.
+
+// On the order-confirmation page, once the order is confirmed and paid:
+await recordConfirmedPurchaseCapi(chaos, cookies, order, request.url);
+```
+
+A store with no server-side deployment simply omits `capi` and gets Pixel +
+GA4 only — an intentional fallback, not a missing feature. There is no
+chaos-owned analytics ledger or admin-side event browser; a store that wants
+its own first-party record of behavior events owns that storage itself.
 
 ### Server-side / SSR usage
 

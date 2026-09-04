@@ -3,7 +3,6 @@ import test from "node:test";
 
 import { createStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
-import type { AnalyticsCollectionRequest } from "../types.js";
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
@@ -158,106 +157,35 @@ test("explicit shopper sessions update the client token", async () => {
   assert.equal(client.getShopperToken(), "manual-token");
 });
 
-test("collectAnalytics owns the analytics request and recovers a stale identity", async () => {
-  const requests: Array<{
-    url: string;
-    token: string | undefined;
-    body: unknown;
-  }> = [];
+test("edgeRequestContext reads the edge-observed client IP and user agent", () => {
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: null,
-    fetch: (async (url: string, init: RequestInit) => {
-      const token =
-        new Headers(init.headers).get("x-chaos-shopper-token") ?? undefined;
-      const body =
-        typeof init.body === "string" ? JSON.parse(init.body) : undefined;
-      requests.push({ url, token, body });
-      if (url.endsWith("/analytics/events") && token === "stale-token") {
-        return jsonResponse(401, { error: { code: "unauthorized" } });
-      }
-      if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "fresh-token" } });
-      }
-      return jsonResponse(200, {
-        data: { received: 1, stored: 1, duplicates: 0 },
-      });
-    }) as unknown as typeof fetch,
-  });
-  client.setShopperToken("stale-token");
-
-  const payload = { events: [] };
-  const result = await client.collectAnalytics(payload);
-
-  assert.deepEqual(result, { data: { received: 1, stored: 1, duplicates: 0 } });
-  assert.deepEqual(
-    requests.map((request) => [
-      request.url.endsWith("/analytics/events"),
-      request.token,
-    ]),
-    [
-      [true, "stale-token"],
-      [false, undefined],
-      [true, "fresh-token"],
-    ],
-  );
-  assert.deepEqual(requests[2]?.body, payload);
-});
-
-test("attaches the edge client IP without mutating event metadata", async () => {
-  let capturedBody: unknown;
-  const client = createStorefrontClient({
-    publishableKey: "public_test",
-    storage: null,
-    request: new Request("https://shop.example.com/api/analytics/events", {
+    analytics: false,
+    request: new Request("https://shop.example.com/api/checkout", {
       headers: {
         "CF-Connecting-IP": "2001:db8::8",
         "User-Agent": "Worker/1.0",
       },
     }),
-    fetch: (async (_url: string, init: RequestInit) => {
-      capturedBody = JSON.parse(String(init.body));
-      return jsonResponse(200, {
-        data: { received: 1, stored: 1, duplicates: 0 },
-      });
-    }) as unknown as typeof fetch,
+    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
   });
-  client.setShopperToken("shopper-token");
 
-  const payload: AnalyticsCollectionRequest = {
-    events: [
-      {
-        event_id: "event-1",
-        event_name: "add_to_cart",
-        occurred_at: "2026-08-28T00:00:00Z",
-        properties: {
-          _meta: {
-            client_ip_address: "198.51.100.9",
-            client_user_agent: "Browser/1.0",
-            source_url: "https://shop.example.com/products",
-          },
-        },
-      },
-    ],
-  };
+  assert.deepEqual(client.edgeRequestContext(), {
+    clientIpAddress: "2001:db8::8",
+    clientUserAgent: "Worker/1.0",
+  });
+});
 
-  await client.collectAnalytics(payload);
+test("edgeRequestContext is empty without a request-scoped server client", () => {
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    analytics: false,
+    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+  });
 
-  const capturedEvent = (
-    capturedBody as {
-      events: Array<{ properties: Record<string, unknown> }>;
-    }
-  ).events[0]!;
-  const capturedMeta = capturedEvent.properties._meta as Record<string, unknown>;
-  assert.equal(capturedMeta.client_ip_address, "2001:db8::8");
-  assert.equal(capturedMeta.client_user_agent, "Browser/1.0");
-  assert.equal(capturedMeta.source_url, "https://shop.example.com/products");
-
-  const originalMeta = payload.events[0]!.properties._meta as Record<
-    string,
-    unknown
-  >;
-  assert.equal(originalMeta.client_ip_address, "198.51.100.9");
+  assert.deepEqual(client.edgeRequestContext(), {});
 });
 
 test("refreshes a stale shopper token once and retries the request", async () => {

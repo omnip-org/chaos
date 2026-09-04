@@ -10,12 +10,7 @@ import { OrdersResource } from "./resources/orders.js";
 import { PaymentsResource } from "./resources/payments.js";
 import { ReviewsResource } from "./resources/reviews.js";
 import { ShopperSessionResource } from "./resources/shopper-session.js";
-import type {
-  AnalyticsCollectionRequest,
-  AnalyticsCollectionResult,
-  DataEnvelope,
-  ShopperSession,
-} from "./types.js";
+import type { ShopperSession } from "./types.js";
 
 const SHOPPER_TOKEN_STORAGE_PREFIX = "chaos.storefront.shopper_token";
 const CLOUDFLARE_CLIENT_IP_HEADER = "CF-Connecting-IP";
@@ -26,7 +21,7 @@ export interface ClientOptions {
   /** Public channel API origin + prefix, e.g. "https://shop.example.com/api/v1". Defaults to same-origin "/api/v1". */
   baseUrl?: string;
   fetch?: typeof fetch;
-  /** Incoming request used to enrich server-side analytics with the edge-observed client IP. */
+  /** Incoming request used to enrich server-side Meta CAPI calls with the edge-observed client IP and user agent. */
   request?: Pick<Request, "headers">;
   /** Where the shopper token is persisted between requests. Defaults to window.localStorage when available. */
   storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
@@ -45,15 +40,10 @@ export interface ClientOptions {
   retryInvalidShopperToken?: boolean;
   /**
    * Options forwarded to the bundled analytics collector, minus
-   * publishableKey/fetch/randomUUID (inherited from this client). Pass
+   * publishableKey/randomUUID (inherited from this client). Pass
    * `analytics: false` to skip constructing it entirely.
    */
-  analytics?:
-    | Omit<
-        AnalyticsOptions,
-        "publishableKey" | "fetch" | "randomUUID" | "getShopperToken"
-      >
-    | false;
+  analytics?: Omit<AnalyticsOptions, "publishableKey" | "randomUUID"> | false;
 }
 
 /** @internal */
@@ -148,12 +138,8 @@ export class ChaosStorefrontClient {
       this.analytics = new ChaosStorefrontAnalytics({
         ...analyticsOptions,
         document: analyticsDocument,
-        endpoint:
-          analyticsOptions?.endpoint ?? `${this.baseUrl}/analytics/events`,
         publishableKey: this.publishableKey,
-        fetch: this.fetchImpl,
         randomUUID: this.randomUUID,
-        getShopperToken: () => this.ensureShopperToken(),
       });
     }
   }
@@ -223,51 +209,22 @@ export class ChaosStorefrontClient {
   }
 
   /**
-   * Sends an analytics batch through the authenticated Storefront API.
-   * Analytics is allowed to recover a stale anonymous shopper identity because
-   * event collection is append-only and does not own cart or order state.
-   * A request-scoped server client also carries the edge-observed client IP in
-   * the event metadata before forwarding the batch.
+   * Reads the edge-observed client IP and user agent from the request passed
+   * to `createServerStorefrontClient`, for a server-side Meta CAPI call to
+   * include in `user_data`. Returns an empty object outside a request-scoped
+   * server client.
+   * @internal
    */
-  async collectAnalytics(
-    payload: AnalyticsCollectionRequest,
-  ): Promise<DataEnvelope<AnalyticsCollectionResult>> {
-    if (!payload || !Array.isArray(payload.events)) {
-      throw new TypeError("analytics payload must contain an events array");
-    }
-    const analyticsPayload = withEdgeClientIp(
-      payload,
-      this.analyticsRequest,
-    );
-    if (!this.getShopperToken()) await this.acquireShopperToken();
-
-    try {
-      return await this.request<DataEnvelope<AnalyticsCollectionResult>>(
-        "/analytics/events",
-        {
-          method: "POST",
-          body: analyticsPayload,
-          requiresShopperToken: true,
-        },
-      );
-    } catch (error) {
-      if (
-        !(error instanceof ChaosApiError) ||
-        (error.status !== 401 && error.status !== 403)
-      ) {
-        throw error;
-      }
-      this.setShopperToken(null);
-      await this.acquireShopperToken();
-      return this.request<DataEnvelope<AnalyticsCollectionResult>>(
-        "/analytics/events",
-        {
-          method: "POST",
-          body: analyticsPayload,
-          requiresShopperToken: true,
-        },
-      );
-    }
+  edgeRequestContext(): { clientIpAddress?: string; clientUserAgent?: string } {
+    const headers = this.analyticsRequest?.headers;
+    const clientIpAddress = headers?.get(CLOUDFLARE_CLIENT_IP_HEADER)?.trim();
+    const clientUserAgent = headers?.get("user-agent")?.trim();
+    return {
+      ...(clientIpAddress && clientIpAddress.length <= MAX_CLIENT_IP_LENGTH
+        ? { clientIpAddress }
+        : {}),
+      ...(clientUserAgent ? { clientUserAgent } : {}),
+    };
   }
 
   private async requestWithShopperTokenRetry<
@@ -369,34 +326,3 @@ function scopedShopperTokenKey(
   return `${SHOPPER_TOKEN_STORAGE_PREFIX}.${hash.toString(36)}`;
 }
 
-function withEdgeClientIp(
-  payload: AnalyticsCollectionRequest,
-  request: Pick<Request, "headers"> | undefined,
-): AnalyticsCollectionRequest {
-  const clientIpAddress = request?.headers
-    .get(CLOUDFLARE_CLIENT_IP_HEADER)
-    ?.trim();
-  if (!clientIpAddress || clientIpAddress.length > MAX_CLIENT_IP_LENGTH) {
-    return payload;
-  }
-
-  return {
-    ...payload,
-    events: payload.events.map((event) => ({
-      ...event,
-      properties: {
-        ...event.properties,
-        _meta: {
-          ...(isRecord(event.properties._meta)
-            ? event.properties._meta
-            : {}),
-          client_ip_address: clientIpAddress,
-        },
-      },
-    })),
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}

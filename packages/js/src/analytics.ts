@@ -1,10 +1,8 @@
-import { ChaosApiError, throwForResponse } from "./errors.js";
 import { toPurchaseAnalyticsInput } from "./domain.js";
 import { fnv1a32 } from "./internal/hash.js";
 import { toMajorUnits } from "./money.js";
 import type {
   AddToCartAnalyticsInput,
-  AnalyticsCollectionResult,
   BrowserAnalyticsEventName,
   CartLineMutation,
   ClientCommerceAnalyticsEventName,
@@ -16,26 +14,18 @@ import type {
 } from "./types.js";
 
 /**
- * First-party behavior collection. Events use one stable envelope and keep
- * event-specific values inside properties so the collector can evolve without
- * a database migration for every new behavior.
+ * First-party behavior collection. Events project directly to the
+ * configured browser providers (Meta Pixel, GA4) — there is no chaos-owned
+ * ledger or delivery queue; a store that also wants server-side Meta
+ * Conversions API delivery uses the separate `@omnip-org/chaos-js/meta-capi`
+ * subpath from its own server-side code.
  */
 
-const MAX_BATCH_SIZE = 20;
-const MAX_QUEUE_SIZE = 100;
 const MAX_ENGAGEMENT_INTERVAL_MS = 60_000;
-const MAX_QUEUE_AGE_MS = 23 * 60 * 60 * 1_000;
 const MAX_PROPERTIES_BYTES = 32_768;
 const MAX_GA4_EVENT_NAME_BYTES = 40;
 const MAX_META_BROWSER_ID_LENGTH = 2_048;
 const META_FBC_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
-const MAX_UTM_VALUE_LENGTH = 2_048;
-// In-app browsers (notably Meta's iOS/Android WebView) intermittently reset
-// sessionStorage on an in-flow navigation such as PDP -> cart, which would
-// otherwise drop session-level UTM attribution mid-visit. A short-lived
-// localStorage fallback survives that reset without turning "session"
-// attribution into a long-lived, cross-visit identity like first-touch.
-const SESSION_TOUCH_FALLBACK_MAX_AGE_MS = 30 * 60 * 1_000;
 const COMMERCE_EVENT_NAMES = new Set([
   "add_to_cart",
   "initiate_checkout",
@@ -54,10 +44,6 @@ export interface PageViewInput {
 
 export interface AnalyticsOptions {
   publishableKey: string;
-  /** Returns the signed shopper identity used to associate events with commerce activity. */
-  getShopperToken: () => string | Promise<string>;
-  endpoint?: string;
-  fetch?: typeof fetch;
   document?: Document;
   window?: Window & typeof globalThis;
   storage?: Storage;
@@ -77,36 +63,8 @@ export interface AnalyticsOptions {
   autoStart?: boolean;
 }
 
-interface QueuedEvent {
-  event_id: string;
-  event_name: string;
-  occurred_at: string;
-  properties: Record<string, unknown>;
-}
-
-interface TrafficTouchpoint {
-  source?: string;
-  medium?: string;
-  campaign?: string;
-  campaign_id?: string;
-  term?: string;
-  content?: string;
-  referrer_domain?: string;
-  fbclid?: string;
-  gclid?: string;
-}
-
-interface TrafficAttribution {
-  first: TrafficTouchpoint;
-  session: TrafficTouchpoint;
-  last_non_direct?: TrafficTouchpoint;
-}
-
 export class ChaosStorefrontAnalytics {
-  private readonly endpoint: string;
   private readonly publishableKey: string;
-  private readonly getShopperToken: () => string | Promise<string>;
-  private readonly fetchImpl: typeof fetch;
   private readonly documentRef: Document;
   private readonly windowRef: Window & typeof globalThis;
   private readonly storage?: Storage;
@@ -119,18 +77,8 @@ export class ChaosStorefrontAnalytics {
   private readonly flushIntervalMs: number;
   private readonly providers: BrowserProviderAdapters;
 
-  private sessionId: string;
-  private readonly sessionStorageKey: string;
-  private readonly queueStorageKey: string;
-  private readonly firstTouchStorageKey: string;
-  private readonly lastNonDirectStorageKey: string;
-  private readonly sessionTouchStorageKey: string;
-  private readonly sessionTouchFallbackStorageKey: string;
   private readonly metaFbcStorageKey: string;
   private readonly providerEventStoragePrefix: string;
-  private traffic: TrafficAttribution | undefined;
-  private queue: QueuedEvent[] = [];
-  private inFlight: Promise<AnalyticsCollectionResult | null> | null = null;
   private running = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private currentPageViewEventId: string | null = null;
@@ -141,7 +89,6 @@ export class ChaosStorefrontAnalytics {
   private readonly onPageHide = () => {
     this.flushViewDuration();
     this.activeStartedAt = null;
-    void this.flush({ keepalive: true }).catch(() => {});
   };
   private readonly onPageShow = () => this.updateActivityState();
   private readonly onRouteChange = () => this.pageView();
@@ -151,10 +98,7 @@ export class ChaosStorefrontAnalytics {
     if (!options?.publishableKey) {
       throw new TypeError("publishableKey is required");
     }
-    this.endpoint = options.endpoint ?? "/api/v1/analytics/events";
     this.publishableKey = options.publishableKey;
-    this.getShopperToken = options.getShopperToken;
-    this.fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
     this.documentRef = options.document ?? globalThis.document;
     this.windowRef =
       options.window ?? (globalThis as unknown as Window & typeof globalThis);
@@ -174,15 +118,8 @@ export class ChaosStorefrontAnalytics {
     this.setIntervalImpl = setIntervalImpl.bind(globalThis);
     this.clearIntervalImpl = clearIntervalImpl.bind(globalThis);
     this.flushIntervalMs = options.flushIntervalMs ?? 15_000;
-    if (
-      !this.fetchImpl ||
-      !this.randomUUID ||
-      !this.documentRef ||
-      !this.windowRef
-    ) {
-      throw new TypeError(
-        "fetch, randomUUID, document, and window are required",
-      );
+    if (!this.randomUUID || !this.documentRef || !this.windowRef) {
+      throw new TypeError("randomUUID, document, and window are required");
     }
     if (this.flushIntervalMs < 1_000 || this.flushIntervalMs > 60_000) {
       throw new RangeError("flushIntervalMs must be between 1000 and 60000");
@@ -193,20 +130,10 @@ export class ChaosStorefrontAnalytics {
       options.providers,
     );
 
-    const storageNamespace = analyticsStorageNamespace(
-      this.endpoint,
-      this.publishableKey,
-    );
-    this.queueStorageKey = `chaos.analytics.${storageNamespace}.queue.v2`;
-    this.sessionStorageKey = `chaos.analytics.${storageNamespace}.session_id`;
-    this.firstTouchStorageKey = `chaos.analytics.${storageNamespace}.traffic.first.v1`;
-    this.lastNonDirectStorageKey = `chaos.analytics.${storageNamespace}.traffic.last_non_direct.v1`;
-    this.sessionTouchStorageKey = `chaos.analytics.${storageNamespace}.traffic.session.v1`;
-    this.sessionTouchFallbackStorageKey = `chaos.analytics.${storageNamespace}.traffic.session_fallback.v1`;
+    const storageNamespace = analyticsStorageNamespace(this.publishableKey);
     this.metaFbcStorageKey = `chaos.analytics.${storageNamespace}.meta.fbc.v2`;
     this.providerEventStoragePrefix = `chaos.analytics.${storageNamespace}.provider_event.v1.`;
-    this.sessionId = this.randomUUID();
-    this.enableCollectionStorage();
+    this.maintainFbcCookie();
     if (options.autoStart !== false) {
       this.start();
       this.pageView();
@@ -229,11 +156,10 @@ export class ChaosStorefrontAnalytics {
     this.updateActivityState();
     this.timer = this.setIntervalImpl(() => {
       this.flushViewDuration();
-      void this.flush().catch(() => {});
     }, this.flushIntervalMs);
   }
 
-  async stop(): Promise<void> {
+  stop(): void {
     if (this.running) {
       this.snapshotActiveTime();
       this.running = false;
@@ -253,17 +179,17 @@ export class ChaosStorefrontAnalytics {
       this.activeStartedAt = null;
     }
     this.flushViewDuration();
-    await this.flush({ keepalive: true });
   }
 
   pageView(input: PageViewInput = {}): string | null {
     const { path, title, referrerDomain } = input;
     this.flushViewDuration();
+    this.maintainFbcCookie();
     const resolvedPath = path ?? this.documentRef.location?.pathname ?? "/";
     const resolvedTitle = title ?? nonEmpty(this.documentRef.title);
     const resolvedReferrer =
       referrerDomain ?? referrerHost(this.documentRef.referrer);
-    const eventId = this.enqueue(
+    const eventId = this.emit(
       "page_view",
       compact({
         path: resolvedPath,
@@ -334,14 +260,19 @@ export class ChaosStorefrontAnalytics {
         `${eventName} must be sent through the analytics SDK after the commerce operation succeeds`,
       );
     }
-    return this.enqueue(eventName, properties, {
+    return this.emit(eventName, properties, {
       sendToMeta: isBrowserMetaEvent(eventName),
       sendToGa4: !COMMERCE_EVENT_NAMES.has(eventName),
     });
   }
 
-  /** Records a successful cart addition through the common event boundary. */
-  recordAddToCart(input: AddToCartAnalyticsInput): string | null {
+  /**
+   * Records a successful cart addition through the common event boundary.
+   * `eventId` lets a caller that already sent this event through server-side
+   * Meta CAPI (see `@omnip-org/chaos-js/meta-capi`) share the same event ID
+   * for Meta's Pixel+CAPI deduplication, instead of minting a second one.
+   */
+  recordAddToCart(input: AddToCartAnalyticsInput, eventId?: string): string | null {
     validateMoney(input.valueMinor, input.currency);
     if (!isUuid(input.productId))
       throw new TypeError("productId must be a valid UUID");
@@ -354,26 +285,33 @@ export class ChaosStorefrontAnalytics {
     if (input.cartId !== undefined && !isUuid(input.cartId))
       throw new TypeError("cartId must be a valid UUID");
 
-    return this.recordCommerceEvent("add_to_cart", {
-      ...(input.cartId ? { cart_id: input.cartId } : {}),
-      product_id: input.productId,
-      product_variant_id: input.productVariantId,
-      quantity: input.quantity,
-      value_minor: input.valueMinor,
-      currency: input.currency.toUpperCase(),
-      items: [
-        {
-          product_id: input.productId,
-          product_variant_id: input.productVariantId,
-          quantity: input.quantity,
-          price_minor: input.priceMinor,
-        },
-      ],
-    });
+    return this.recordCommerceEvent(
+      "add_to_cart",
+      {
+        ...(input.cartId ? { cart_id: input.cartId } : {}),
+        product_id: input.productId,
+        product_variant_id: input.productVariantId,
+        quantity: input.quantity,
+        value_minor: input.valueMinor,
+        currency: input.currency.toUpperCase(),
+        items: [
+          {
+            product_id: input.productId,
+            product_variant_id: input.productVariantId,
+            quantity: input.quantity,
+            price_minor: input.priceMinor,
+          },
+        ],
+      },
+      eventId,
+    );
   }
 
-  /** Records a successful embedded checkout creation. */
-  recordInitiateCheckout(input: InitiateCheckoutAnalyticsInput): string | null {
+  /** Records a successful embedded checkout creation. See `recordAddToCart` for `eventId`. */
+  recordInitiateCheckout(
+    input: InitiateCheckoutAnalyticsInput,
+    eventId?: string,
+  ): string | null {
     validateMoney(input.valueMinor, input.currency);
     if (!isUuid(input.cartId))
       throw new TypeError("cartId must be a valid UUID");
@@ -392,21 +330,29 @@ export class ChaosStorefrontAnalytics {
         throw new RangeError("priceMinor must be a non-negative safe integer");
     }
 
-    return this.recordCommerceEvent("initiate_checkout", {
-      cart_id: input.cartId,
-      order_number: input.orderNumber,
-      value_minor: input.valueMinor,
-      currency: input.currency.toUpperCase(),
-      items: input.items.map((item) => ({
-        product_id: item.productId,
-        product_variant_id: item.productVariantId,
-        quantity: item.quantity,
-        price_minor: item.priceMinor,
-      })),
-    });
+    return this.recordCommerceEvent(
+      "initiate_checkout",
+      {
+        cart_id: input.cartId,
+        order_number: input.orderNumber,
+        value_minor: input.valueMinor,
+        currency: input.currency.toUpperCase(),
+        items: input.items.map((item) => ({
+          product_id: item.productId,
+          product_variant_id: item.productVariantId,
+          quantity: item.quantity,
+          price_minor: item.priceMinor,
+        })),
+      },
+      eventId,
+    );
   }
 
-  /** Records the increase produced by a successful shared cart mutation. */
+  /**
+   * Records the increase produced by a successful shared cart mutation.
+   * Reuses `input.event_id` when the mutation carries one (set by a
+   * server-side helper that already sent this event through Meta CAPI).
+   */
   recordCartMutation(input: CartLineMutation): string | null {
     const quantity = input.new_quantity - input.previous_quantity;
     if (input.removed || quantity < 1) return null;
@@ -414,38 +360,46 @@ export class ChaosStorefrontAnalytics {
       (candidate) => candidate.product_variant_id === input.product_variant_id,
     );
     if (!line) return null;
-    return this.recordAddToCart({
-      cartId: input.cart.id,
-      productId: line.product_id,
-      productVariantId: line.product_variant_id,
-      quantity,
-      priceMinor: line.unit_price_amount_minor,
-      valueMinor: line.unit_price_amount_minor * quantity,
-      currency: input.cart.currency,
-    });
-  }
-
-  /** Records checkout initiation from the exact cart snapshot used by Chaos. */
-  recordCheckoutCreation(input: EmbeddedCheckoutCreation): string | null {
-    return this.recordInitiateCheckout({
-      cartId: input.source_cart.id,
-      orderNumber: input.checkout.order_number,
-      valueMinor: input.source_cart.subtotal_amount_minor,
-      currency: input.source_cart.currency,
-      items: input.source_cart.lines.map((line) => ({
+    return this.recordAddToCart(
+      {
+        cartId: input.cart.id,
         productId: line.product_id,
         productVariantId: line.product_variant_id,
-        quantity: line.quantity,
+        quantity,
         priceMinor: line.unit_price_amount_minor,
-      })),
-    });
+        valueMinor: line.unit_price_amount_minor * quantity,
+        currency: input.cart.currency,
+      },
+      input.event_id,
+    );
   }
 
   /**
-   * Creates the internal commerce envelope shared by browser providers and the
-   * common analytics endpoint. It does not enqueue or project the event; the
-   * public high-level methods call it only after the commerce operation
-   * succeeds.
+   * Records checkout initiation from the exact cart snapshot used by Chaos.
+   * Reuses `input.event_id` — see `recordCartMutation`.
+   */
+  recordCheckoutCreation(input: EmbeddedCheckoutCreation): string | null {
+    return this.recordInitiateCheckout(
+      {
+        cartId: input.source_cart.id,
+        orderNumber: input.checkout.order_number,
+        valueMinor: input.source_cart.subtotal_amount_minor,
+        currency: input.source_cart.currency,
+        items: input.source_cart.lines.map((line) => ({
+          productId: line.product_id,
+          productVariantId: line.product_variant_id,
+          quantity: line.quantity,
+          priceMinor: line.unit_price_amount_minor,
+        })),
+      },
+      input.event_id,
+    );
+  }
+
+  /**
+   * Builds the internal commerce envelope shared by browser providers. It
+   * does not project the event; the public high-level methods call it only
+   * after the commerce operation succeeds.
    * @internal Used only by the SDK's high-level commerce methods.
    */
   prepareCommerceEvent(
@@ -463,18 +417,15 @@ export class ChaosStorefrontAnalytics {
       event_id: canonicalEventId,
       event_name: eventName,
       occurred_at: new Date(this.now()).toISOString(),
-      properties: this.contextualProperties(properties),
+      properties: compact(properties),
     };
     validateEventProperties(event.properties);
     return event;
   }
 
   /**
-   * Records a prepared commerce event through the common analytics endpoint
-   * after the matching business operation succeeds. The prepared attribution
-   * context is always retained; the optional properties are values returned or
-   * derived from that successful operation. Browser providers receive the same
-   * event ID immediately while the first-party event is queued for delivery.
+   * Projects a prepared commerce event to browser providers after the
+   * matching business operation succeeds, exactly once per event ID.
    * @internal Used only by the SDK's high-level commerce methods.
    */
   sendCommerceEvent(
@@ -489,35 +440,19 @@ export class ChaosStorefrontAnalytics {
     if (!isUuid(event.event_id)) {
       throw new TypeError("commerce event_id must be a valid UUID");
     }
-    const contextual = event.properties;
-    const merged = compact({
-      ...contextual,
-      ...properties,
-      _meta: contextual._meta,
-      session_id: contextual.session_id,
-      traffic: contextual.traffic,
-    });
+    const merged = compact({ ...event.properties, ...properties });
     validateEventProperties(merged);
     const eventId = event.event_id.toLowerCase();
-    this.queue.push({
-      event_id: eventId,
-      event_name: event.event_name,
-      occurred_at: event.occurred_at,
-      properties: merged,
-    });
-    this.projectProviderEventOnce(event.event_name, eventId, merged);
-    this.trimQueue();
-    this.persistQueue();
-    void this.flush().catch(() => {});
-    return eventId;
+    return this.projectProviderEventOnce(event.event_name, eventId, merged);
   }
 
   private recordCommerceEvent(
     eventName: ClientCommerceAnalyticsEventName,
     properties: Record<string, unknown>,
+    eventId?: string,
   ): string | null {
     try {
-      const event = this.prepareCommerceEvent(eventName, properties);
+      const event = this.prepareCommerceEvent(eventName, properties, eventId);
       return this.sendCommerceEvent(event);
     } catch {
       // Analytics is optional and must never turn a successful commerce
@@ -533,7 +468,7 @@ export class ChaosStorefrontAnalytics {
     productId: string;
     productVariantId?: string;
   }): string | null {
-    return this.enqueue(
+    return this.emit(
       "view_content",
       compact({
         product_id: productId,
@@ -549,7 +484,7 @@ export class ChaosStorefrontAnalytics {
     query: string;
     resultCount?: number;
   }): string | null {
-    return this.enqueue(
+    return this.emit(
       "search",
       compact({ query, result_count: resultCount }),
     );
@@ -567,7 +502,7 @@ export class ChaosStorefrontAnalytics {
     return this.projectProviderEventOnce(
       "purchase",
       orderId,
-      this.contextualProperties({
+      compact({
         order_id: orderId,
         value_minor: input.valueMinor,
         currency,
@@ -621,8 +556,8 @@ export class ChaosStorefrontAnalytics {
     try {
       this.providers.track(eventName, eventId, properties);
     } catch {
-      // Browser provider failures are best-effort; keep the first-party
-      // conversion available to the collector.
+      // Browser provider failures are best-effort; keep the event ID stable
+      // for a future retry.
     }
     this.storage?.setItem(storageKey, new Date(this.now()).toISOString());
     return eventId;
@@ -640,7 +575,7 @@ export class ChaosStorefrontAnalytics {
         Math.floor(this.accumulatedActiveMs),
         MAX_ENGAGEMENT_INTERVAL_MS,
       );
-      this.enqueue(
+      this.emit(
         "view_duration",
         compact({
           page_view_event_id: this.currentPageViewEventId,
@@ -655,91 +590,15 @@ export class ChaosStorefrontAnalytics {
     return emitted;
   }
 
-  flush(
-    options: { keepalive?: boolean } = {},
-  ): Promise<AnalyticsCollectionResult | null> {
-    if (this.inFlight) return this.inFlight;
-    this.pruneExpiredQueue();
-    if (this.queue.length === 0) return Promise.resolve(null);
-    this.inFlight = this.drainQueue(Boolean(options.keepalive)).finally(() => {
-      this.inFlight = null;
-    });
-    return this.inFlight;
-  }
-
-  private async drainQueue(
-    keepalive: boolean,
-  ): Promise<AnalyticsCollectionResult | null> {
-    let result: AnalyticsCollectionResult | null = null;
-    while (this.queue.length > 0) {
-      const batch = this.queue.splice(0, MAX_BATCH_SIZE);
-      result = mergeCollectionResults(
-        result,
-        await this.sendBatch(batch, keepalive),
-      );
-    }
-    return result;
-  }
-
-  private async sendBatch(
-    batch: QueuedEvent[],
-    keepalive: boolean,
-  ): Promise<AnalyticsCollectionResult | null> {
-    try {
-      const response = await this.fetchImpl(this.endpoint, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${this.publishableKey}`,
-          "content-type": "application/json",
-          "x-chaos-shopper-token": await this.getShopperToken(),
-        },
-        body: JSON.stringify({ events: batch }),
-        keepalive,
-      });
-      if (!response.ok) {
-        await throwForResponse(response);
-      }
-      this.persistQueue();
-      const envelope = (await response.json()) as {
-        data: AnalyticsCollectionResult;
-      };
-      return envelope.data;
-    } catch (error) {
-      if (isSplittableClientError(error) && batch.length > 1) {
-        const splitAt = Math.ceil(batch.length / 2);
-        const first = await this.sendBatch(batch.slice(0, splitAt), keepalive);
-        const second = await this.sendBatch(batch.slice(splitAt), keepalive);
-        return mergeCollectionResults(first, second);
-      }
-      if (isPermanentClientError(error)) {
-        // A client-side validation error belongs to this event batch. Drop
-        // only the offending single event after bisection, so valid events in
-        // the same batch are not lost with it.
-        this.persistQueue();
-        return null;
-      }
-      this.queue.unshift(...batch);
-      this.trimQueue();
-      this.persistQueue();
-      throw error;
-    }
-  }
-
-  private enqueue(
+  /** Projects one generic event straight to the configured browser providers. */
+  private emit(
     eventName: string,
     properties: Record<string, unknown>,
     options: { sendToMeta?: boolean; sendToGa4?: boolean } = {},
   ): string | null {
     validateEventName(eventName);
+    validateEventProperties(properties);
     const eventId = this.randomUUID();
-    const event: QueuedEvent = {
-      event_id: eventId,
-      event_name: eventName,
-      occurred_at: new Date(this.now()).toISOString(),
-      properties: this.contextualProperties(properties),
-    };
-    validateEventProperties(event.properties);
-    this.queue.push(event);
     try {
       const providerOptions: { meta?: boolean; ga4?: boolean } = {};
       if (options.sendToMeta !== undefined)
@@ -753,176 +612,26 @@ export class ChaosStorefrontAnalytics {
       // Browser provider failures must not turn a successful API operation
       // into a failed commerce operation.
     }
-    this.trimQueue();
-    this.persistQueue();
-    if (this.queue.length >= MAX_BATCH_SIZE) {
-      void this.flush().catch(() => {});
-    }
     return eventId;
   }
 
-  private contextualProperties(
-    properties: Record<string, unknown>,
-  ): Record<string, unknown> {
-    return compact({
-      ...properties,
-      _meta: this.metaContext(),
-      session_id: this.sessionId,
-      ...(this.traffic ? { traffic: this.traffic } : {}),
-    });
-  }
-
-  private trimQueue(): void {
-    if (this.queue.length > MAX_QUEUE_SIZE) {
-      const removedPageViews = new Set(
-        this.queue
-          .splice(0, this.queue.length - MAX_QUEUE_SIZE)
-          .filter((event) => event.event_name === "page_view")
-          .map((event) => event.event_id),
-      );
-      if (removedPageViews.size > 0) {
-        this.queue = this.queue.filter(
-          (event) =>
-            event.event_name !== "view_duration" ||
-            !removedPageViews.has(String(event.properties.page_view_event_id)),
-        );
-      }
-    }
-  }
-
-  private persistQueue(): void {
-    writeStoredJson(this.sessionStorageRef, this.queueStorageKey, this.queue);
-  }
-
-  private enableCollectionStorage(): void {
-    this.sessionId = persistentIdentifier(
-      this.sessionStorageRef,
-      this.sessionStorageKey,
-      this.randomUUID,
-    );
-    this.restoreQueue();
-    this.resolveTraffic();
-  }
-
-  private restoreQueue(): void {
-    if (this.queue.length > 0) return;
-    const restored = readStoredJson(
-      this.sessionStorageRef,
-      this.queueStorageKey,
-    );
-    if (Array.isArray(restored)) {
-      this.queue = restored.filter(validQueuedEvent).slice(-MAX_QUEUE_SIZE);
-      this.pruneExpiredQueue();
-    }
-  }
-
-  private pruneExpiredQueue(): void {
-    const oldestAccepted = this.now() - MAX_QUEUE_AGE_MS;
-    this.queue = this.queue.filter(
-      (event) => Date.parse(event.occurred_at) >= oldestAccepted,
-    );
-    this.persistQueue();
-  }
-
-  private resolveTraffic(): void {
-    const captured = captureTrafficTouchpoint(
-      this.documentRef.location?.search,
-      this.documentRef.referrer,
-    );
-    const storedSession = readTrafficTouchpoint(
-      this.sessionStorageRef,
-      this.sessionTouchStorageKey,
-    );
-    // sessionStorage is the source of truth for "session" attribution. It is
-    // only missing here because this really is a new tab session, or because
-    // an in-app browser reset storage mid-visit; the two are indistinguishable
-    // from sessionStorage alone. A same-visit fallback only applies when the
-    // current URL supplies no UTM/click-id parameters of its own (an
-    // in-flow, same-origin referrer does not count as one, since it names
-    // this site, not an external campaign), and only when this navigation's
-    // referrer is same-origin: that is the one signal that reliably tells an
-    // in-flow navigation (PDP -> cart) apart from an unrelated tab opened
-    // directly, which must never inherit another tab's attribution. A
-    // genuine new landing with fresh UTM parameters always wins regardless.
-    const fallbackSession =
-      !storedSession &&
-      !hasUtmOrClickId(captured) &&
-      this.isSameOriginReferrer()
-        ? this.readSessionTouchFallback()
-        : undefined;
-    const session = storedSession
-      ? (compact({
-          ...storedSession,
-          fbclid: captured.fbclid,
-          gclid: captured.gclid,
-        }) as TrafficTouchpoint)
-      : (fallbackSession ?? captured);
-    writeStoredJson(
-      this.sessionStorageRef,
-      this.sessionTouchStorageKey,
-      session,
-    );
-    if (isNonDirectTouchpoint(session)) {
-      writeStoredJson(this.storage, this.sessionTouchFallbackStorageKey, {
-        touchpoint: session,
-        capturedAt: this.now(),
-      });
-    }
-    const first =
-      readTrafficTouchpoint(this.storage, this.firstTouchStorageKey) ?? session;
-    writeStoredJson(this.storage, this.firstTouchStorageKey, first);
-    const existingLast = readTrafficTouchpoint(
-      this.storage,
-      this.lastNonDirectStorageKey,
-    );
-    const lastNonDirect = isNonDirectTouchpoint(session)
-      ? session
-      : existingLast;
-    if (lastNonDirect)
-      writeStoredJson(
-        this.storage,
-        this.lastNonDirectStorageKey,
-        lastNonDirect,
-      );
-    this.traffic = {
-      first,
-      session,
-      ...(lastNonDirect ? { last_non_direct: lastNonDirect } : {}),
-    };
-  }
-
   /**
-   * True only when this navigation's referrer is this same site, which is
-   * the signal that distinguishes an in-flow navigation (eligible for the
-   * localStorage fallback) from an unrelated tab opened directly.
+   * Keeps the `_fbc` cookie in sync with a `fbclid` on the current URL, so a
+   * server-side Meta CAPI call later in the same visit can read a fresh
+   * value from the request's cookies. A no-op without a current `fbclid` —
+   * an existing valid cookie is left untouched.
    */
-  private isSameOriginReferrer(): boolean {
-    const referrer = this.documentRef.referrer;
-    const currentHref = this.documentRef.location?.href;
-    if (!referrer || !currentHref) return false;
-    try {
-      return new URL(referrer).origin === new URL(currentHref).origin;
-    } catch {
-      return false;
-    }
-  }
-
-  private readSessionTouchFallback(): TrafficTouchpoint | undefined {
-    const stored = readStoredJson(this.storage, this.sessionTouchFallbackStorageKey);
-    if (!isRecord(stored)) return undefined;
-    const capturedAt = stored.capturedAt;
-    if (typeof capturedAt !== "number") return undefined;
-    if (this.now() - capturedAt > SESSION_TOUCH_FALLBACK_MAX_AGE_MS)
-      return undefined;
-    if (!isRecord(stored.touchpoint)) return undefined;
-    const touchpoint = readTrafficTouchpointValue(stored.touchpoint);
-    if (!touchpoint || !isNonDirectTouchpoint(touchpoint)) return undefined;
-    // fbclid/gclid identify a specific ad click observed at a specific time;
-    // reviving them from another tab's fallback would let metaContext() pair
-    // a stale click with today's timestamp (see the resolveFbc warning below
-    // about not doing exactly this from a stale _fbc cookie).
-    const { fbclid: _fbclid, gclid: _gclid, ...rest } = touchpoint;
-    return rest;
+  private maintainFbcCookie(): void {
+    const fbclid = boundedText(
+      new URLSearchParams(this.documentRef.location?.search ?? "").get(
+        "fbclid",
+      ) ?? undefined,
+      MAX_META_BROWSER_ID_LENGTH,
+    );
+    if (!fbclid) return;
+    const cookieFbc = readCookie(this.documentRef, "_fbc");
+    const fbc = this.resolveFbc(fbclid);
+    if (fbc && fbc !== cookieFbc) writeCookie(this.documentRef, "_fbc", fbc);
   }
 
   private updateActivityState(): void {
@@ -945,28 +654,10 @@ export class ChaosStorefrontAnalytics {
     );
   }
 
-  private metaContext(): Record<string, unknown> {
-    // Only build fbc from a click observed in the current landing/session.
-    // Reusing a historical last-non-direct fbclid with a new timestamp would
-    // create an invalid click context. A current landing fbclid takes
-    // precedence over a previous _fbc cookie; without a current click, the
-    // persisted cookie remains valid across sessions.
-    const fbclid = this.traffic?.session.fbclid;
-    const rawCookieFbc = readCookie(this.documentRef, "_fbc");
-    const cookieFbc = validFbc(rawCookieFbc) ? rawCookieFbc : undefined;
-    const fbc = fbclid ? this.resolveFbc(fbclid) : cookieFbc;
-    const boundedFbc = boundedText(fbc, MAX_META_BROWSER_ID_LENGTH);
-    if (boundedFbc && boundedFbc !== cookieFbc)
-      writeCookie(this.documentRef, "_fbc", boundedFbc);
-    const rawFbp = readCookie(this.documentRef, "_fbp");
-    return compact({
-      source_url: currentSourceUrl(this.documentRef, this.windowRef),
-      fbc: boundedFbc,
-      fbp: validFbc(rawFbp) ? rawFbp : undefined,
-      client_user_agent: boundedText(this.windowRef.navigator?.userAgent, 512),
-    });
-  }
-
+  /**
+   * Pairs a `fbclid` with a stable `fb.1.<first-seen-timestamp>.<fbclid>`
+   * value so the timestamp reflects the original click, not a later reload.
+   */
   private resolveFbc(fbclid: string | undefined): string | undefined {
     if (!fbclid || /\s/.test(fbclid)) return undefined;
     const stored = readStoredJson(
@@ -1289,11 +980,8 @@ function commerceItemIds(properties: Record<string, unknown>): string[] {
   return typeof itemId === "string" && itemId.length > 0 ? [itemId] : [];
 }
 
-function analyticsStorageNamespace(
-  endpoint: string,
-  publishableKey: string,
-): string {
-  return fnv1a32(`${endpoint}\0${publishableKey}`).toString(36);
+function analyticsStorageNamespace(publishableKey: string): string {
+  return fnv1a32(publishableKey).toString(36);
 }
 
 function observeHistory(
@@ -1354,22 +1042,6 @@ export function createStorefrontAnalytics(
   return new ChaosStorefrontAnalytics(options);
 }
 
-function persistentIdentifier(
-  storage: Storage | undefined,
-  key: string,
-  randomUUID: () => string,
-): string {
-  try {
-    const existing = storage?.getItem(key);
-    if (isUuid(existing)) return existing as string;
-    const generated = randomUUID();
-    storage?.setItem(key, generated);
-    return generated;
-  } catch {
-    return randomUUID();
-  }
-}
-
 function isUuid(value: string | null | undefined): boolean {
   return (
     typeof value === "string" &&
@@ -1386,46 +1058,6 @@ function referrerHost(value: string | undefined): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-function currentSourceUrl(
-  documentRef: Document,
-  windowRef: Window & typeof globalThis,
-): string | undefined {
-  const documentHref = documentRef.location?.href;
-  if (isHttpUrl(documentHref)) return withoutUrlFragment(documentHref);
-  const windowLocation = (windowRef as unknown as { location?: Location })
-    .location;
-  const origin = windowLocation?.origin;
-  const path = documentRef.location?.pathname;
-  if (!isHttpUrl(origin) || typeof path !== "string") return undefined;
-  try {
-    return new URL(
-      `${path}${documentRef.location?.search ?? ""}`,
-      origin,
-    ).toString();
-  } catch {
-    return undefined;
-  }
-}
-
-function isHttpUrl(value: string | undefined): value is string {
-  if (!value) return false;
-  try {
-    const url = new URL(value);
-    return (
-      (url.protocol === "http:" || url.protocol === "https:") &&
-      Boolean(url.hostname)
-    );
-  } catch {
-    return false;
-  }
-}
-
-function withoutUrlFragment(value: string): string {
-  const url = new URL(value);
-  url.hash = "";
-  return url.toString();
 }
 
 function readCookie(documentRef: Document, name: string): string | undefined {
@@ -1485,104 +1117,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function captureTrafficTouchpoint(
-  search: string | undefined,
-  referrer: string | undefined,
-): TrafficTouchpoint {
-  const parameters = new URLSearchParams(search ?? "");
-  return compact({
-    source: boundedText(
-      parameters.get("utm_source") ?? undefined,
-      MAX_UTM_VALUE_LENGTH,
-    ),
-    medium: boundedText(
-      parameters.get("utm_medium") ?? undefined,
-      MAX_UTM_VALUE_LENGTH,
-    ),
-    campaign: boundedText(
-      parameters.get("utm_campaign") ?? undefined,
-      MAX_UTM_VALUE_LENGTH,
-    ),
-    campaign_id: boundedText(
-      parameters.get("utm_id") ?? undefined,
-      MAX_UTM_VALUE_LENGTH,
-    ),
-    term: boundedText(
-      parameters.get("utm_term") ?? undefined,
-      MAX_UTM_VALUE_LENGTH,
-    ),
-    content: boundedText(
-      parameters.get("utm_content") ?? undefined,
-      MAX_UTM_VALUE_LENGTH,
-    ),
-    referrer_domain: referrerHost(referrer),
-    fbclid: boundedText(
-      parameters.get("fbclid") ?? undefined,
-      MAX_META_BROWSER_ID_LENGTH,
-    ),
-    gclid: boundedText(parameters.get("gclid") ?? undefined, 512),
-  }) as TrafficTouchpoint;
-}
-
-function isNonDirectTouchpoint(value: TrafficTouchpoint): boolean {
-  return Boolean(
-    value.source ||
-    value.medium ||
-    value.campaign ||
-    value.referrer_domain ||
-    value.fbclid ||
-    value.gclid,
-  );
-}
-
-/** Unlike isNonDirectTouchpoint, ignores referrer_domain: an in-flow,
- * same-origin referrer names this site, not an external campaign, so it
- * must not by itself block the session-touch fallback. */
-function hasUtmOrClickId(value: TrafficTouchpoint): boolean {
-  return Boolean(
-    value.source ||
-    value.medium ||
-    value.campaign ||
-    value.campaign_id ||
-    value.term ||
-    value.content ||
-    value.fbclid ||
-    value.gclid,
-  );
-}
-
-function readTrafficTouchpoint(
-  storage: Storage | undefined,
-  key: string,
-): TrafficTouchpoint | undefined {
-  const value = readStoredJson(storage, key);
-  if (!isRecord(value)) return undefined;
-  return readTrafficTouchpointValue(value);
-}
-
-function readTrafficTouchpointValue(
-  candidate: Record<string, unknown>,
-): TrafficTouchpoint | undefined {
-  const result = compact({
-    source: storedText(candidate.source, MAX_UTM_VALUE_LENGTH),
-    medium: storedText(candidate.medium, MAX_UTM_VALUE_LENGTH),
-    campaign: storedText(candidate.campaign, MAX_UTM_VALUE_LENGTH),
-    campaign_id: storedText(candidate.campaign_id, MAX_UTM_VALUE_LENGTH),
-    term: storedText(candidate.term, MAX_UTM_VALUE_LENGTH),
-    content: storedText(candidate.content, MAX_UTM_VALUE_LENGTH),
-    referrer_domain: storedText(candidate.referrer_domain, 253),
-    fbclid: storedText(candidate.fbclid, MAX_META_BROWSER_ID_LENGTH),
-    gclid: storedText(candidate.gclid, 512),
-  }) as TrafficTouchpoint;
-  return result;
-}
-
-function storedText(value: unknown, maximumLength: number): string | undefined {
-  return typeof value === "string"
-    ? boundedText(value, maximumLength)
-    : undefined;
-}
-
 function readStoredJson(storage: Storage | undefined, key: string): unknown {
   try {
     const value = storage?.getItem(key);
@@ -1600,21 +1134,8 @@ function writeStoredJson(
   try {
     storage?.setItem(key, JSON.stringify(value));
   } catch {
-    // Storage is optional; the in-memory queue remains functional.
+    // Storage is optional; the fbc pairing is best-effort.
   }
-}
-
-function validQueuedEvent(value: unknown): value is QueuedEvent {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const event = value as Partial<QueuedEvent>;
-  return (
-    isUuid(event.event_id) &&
-    typeof event.event_name === "string" &&
-    isValidEventName(event.event_name) &&
-    typeof event.occurred_at === "string" &&
-    Number.isFinite(Date.parse(event.occurred_at)) &&
-    isValidEventProperties(event.properties)
-  );
 }
 
 function validateEventName(eventName: string): void {
@@ -1656,35 +1177,6 @@ function isValidEventProperties(
   } catch {
     return false;
   }
-}
-
-function isPermanentClientError(error: unknown): error is ChaosApiError {
-  return (
-    error instanceof ChaosApiError &&
-    error.status >= 400 &&
-    error.status < 500 &&
-    error.status !== 429
-  );
-}
-
-function isSplittableClientError(error: unknown): error is ChaosApiError {
-  return (
-    error instanceof ChaosApiError &&
-    (error.status === 400 || error.status === 422)
-  );
-}
-
-function mergeCollectionResults(
-  first: AnalyticsCollectionResult | null,
-  second: AnalyticsCollectionResult | null,
-): AnalyticsCollectionResult | null {
-  if (!first) return second;
-  if (!second) return first;
-  return {
-    received: first.received + second.received,
-    stored: first.stored + second.stored,
-    duplicates: first.duplicates + second.duplicates,
-  };
 }
 
 function isValidGa4EventName(eventName: string): boolean {

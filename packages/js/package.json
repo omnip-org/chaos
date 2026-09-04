@@ -14,6 +14,10 @@
     "./stripe": {
       "types": "./dist/stripe.d.ts",
       "default": "./dist/stripe.js"
+    },
+    "./meta-capi": {
+      "types": "./dist/meta-capi.d.ts",
+      "default": "./dist/meta-capi.js"
     }
   },
   "files": ["dist", "!dist/test", "README.md"],

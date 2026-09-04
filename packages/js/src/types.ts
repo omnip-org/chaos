@@ -163,6 +163,12 @@ export interface CartLineMutation {
   previous_quantity: number;
   new_quantity: number;
   removed: boolean;
+  /**
+   * Set when a server-side helper already sent this event through Meta CAPI
+   * (`@omnip-org/chaos-js/meta-capi`), so the browser-side Pixel projection
+   * reuses the same ID instead of minting a second one.
+   */
+  event_id?: string;
 }
 
 export interface SetCartLineRequest {
@@ -242,6 +248,8 @@ export interface EmbeddedCheckoutCreation {
   source_cart: Cart;
   /** The newly obtained active Cart for subsequent shopping. */
   cart: Cart;
+  /** Set when a server-side helper already sent this event through Meta CAPI — see `CartLineMutation.event_id`. */
+  event_id?: string;
 }
 
 /** The provider-neutral client handoff needed to mount the payment form. */
@@ -369,24 +377,6 @@ export interface InitiateCheckoutAnalyticsInput {
   valueMinor: number;
   currency: CurrencyCode;
   items: AnalyticsCommerceItem[];
-}
-
-export interface BrowserAnalyticsEvent {
-  event_id: UUID;
-  event_name: BrowserAnalyticsEventName;
-  occurred_at: string;
-  properties: Record<string, unknown>;
-}
-
-/** Payload accepted by the first-party analytics collection endpoint. */
-export interface AnalyticsCollectionRequest {
-  events: BrowserAnalyticsEvent[];
-}
-
-export interface AnalyticsCollectionResult {
-  received: number;
-  stored: number;
-  duplicates: number;
 }
 
 // Pagination query shared by list endpoints.

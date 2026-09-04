@@ -6,6 +6,8 @@ import {
   addCartLine,
   createEmbeddedCheckoutFromRequest,
   createProductReviewFromRequest,
+  createServerStorefrontClient,
+  recordConfirmedPurchaseCapi,
   type StorefrontCookieJar,
 } from "../server.js";
 import {
@@ -385,4 +387,162 @@ test("collection cache is isolated by store and shares in-flight reads", async (
   assert.deepEqual(secondResult.map((item) => item.handle), ["b"]);
   assert.equal(firstCalls, 1);
   assert.equal(secondCalls, 1);
+});
+
+function jsonResponse(status: number, body: unknown): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers({ "content-type": "application/json" }),
+    json: async () => body,
+  } as unknown as Response;
+}
+
+test("addCartLine sends Meta CAPI and shares the event ID with the mutation result", async () => {
+  const writes = new Map<string, string>();
+  writes.set("_fbc", "fb.1.1700000000000.click");
+  writes.set("_fbp", "fb.1.1700000000000.browser");
+  const cookies: StorefrontCookieJar = {
+    get: (name) => {
+      const value = writes.get(name);
+      return value === undefined ? undefined : { value };
+    },
+    set: (name, value) => writes.set(name, value),
+  };
+
+  let cartState = cart([]);
+  const storefrontFetch = (async (url: string, init: RequestInit = {}) => {
+    const method = init.method ?? "GET";
+    if (url.endsWith("/shopper/sessions")) {
+      return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+    }
+    if (url.endsWith("/carts") && method === "POST") {
+      return jsonResponse(201, { data: cartState });
+    }
+    if (/\/carts\/[^/]+$/.test(url) && method === "GET") {
+      return jsonResponse(200, { data: cartState });
+    }
+    if (/\/carts\/[^/]+\/lines\//.test(url) && method === "PUT") {
+      const body = JSON.parse(String(init.body)) as { quantity: number };
+      cartState = cart([
+        {
+          product_id: "00000000-0000-4000-8000-000000000030",
+          product_variant_id: "00000000-0000-4000-8000-000000000031",
+          product_title: "Trail pack",
+          variant_title: "One size",
+          quantity: body.quantity,
+          unit_price_amount_minor: 1_000,
+          subtotal_amount_minor: body.quantity * 1_000,
+          media: [],
+        },
+      ]);
+      return jsonResponse(200, { data: cartState });
+    }
+    return jsonResponse(404, { error: { code: "not_found", message: "not found" } });
+  }) as unknown as typeof fetch;
+
+  const capiRequests: Array<Record<string, unknown>> = [];
+  const client = createServerStorefrontClient({
+    publishableKey: "public_test",
+    baseUrl: "https://shop.example.com/api/v1",
+    cookies,
+    fetch: storefrontFetch,
+    capi: {
+      meta: {
+        accessToken: "capi-token",
+        pixelId: "pixel-1",
+        fetch: (async (_url: string, init: RequestInit) => {
+          capiRequests.push(JSON.parse(String(init.body)));
+          return jsonResponse(200, { events_received: 1 });
+        }) as unknown as typeof fetch,
+      },
+    },
+  });
+
+  const mutation = await addCartLine(client, cookies, {
+    variantId: "00000000-0000-4000-8000-000000000031",
+    quantity: 2,
+  });
+
+  assert.equal(typeof mutation.event_id, "string");
+  assert.equal(capiRequests.length, 1);
+  const capiEvent = (capiRequests[0]!.data as Array<Record<string, unknown>>)[0]!;
+  assert.equal(capiEvent.event_id, mutation.event_id);
+  assert.equal(capiEvent.event_name, "AddToCart");
+  const userData = capiEvent.user_data as Record<string, unknown>;
+  assert.equal(userData.fbc, "fb.1.1700000000000.click");
+  assert.equal(userData.fbp, "fb.1.1700000000000.browser");
+});
+
+test("recordConfirmedPurchaseCapi uses the same order-derived event ID as the browser purchase() call", async () => {
+  const cookies: StorefrontCookieJar = { get: () => undefined, set: () => {} };
+  const capiRequests: Array<Record<string, unknown>> = [];
+  const client = createServerStorefrontClient({
+    publishableKey: "public_test",
+    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+    capi: {
+      meta: {
+        accessToken: "capi-token",
+        pixelId: "pixel-1",
+        fetch: (async (_url: string, init: RequestInit) => {
+          capiRequests.push(JSON.parse(String(init.body)));
+          return jsonResponse(200, { events_received: 1 });
+        }) as unknown as typeof fetch,
+      },
+    },
+  });
+
+  await recordConfirmedPurchaseCapi(client, cookies, {
+    id: "00000000-0000-4000-8000-000000000099",
+    status: "confirmed",
+    payment_status: "paid",
+    currency: "USD",
+    total_amount_minor: 2_000,
+    lines: [
+      {
+        product_id: "00000000-0000-4000-8000-000000000091",
+        product_variant_id: "00000000-0000-4000-8000-000000000092",
+        product_title: "Trail pack",
+        variant_title: "One size",
+        quantity: 1,
+        unit_price_amount_minor: 2_000,
+        subtotal_amount_minor: 2_000,
+      },
+    ],
+  });
+
+  assert.equal(capiRequests.length, 1);
+  const event = (capiRequests[0]!.data as Array<Record<string, unknown>>)[0]!;
+  assert.equal(event.event_id, "00000000-0000-4000-8000-000000000099");
+  assert.equal(event.event_name, "Purchase");
+});
+
+test("recordConfirmedPurchaseCapi is a no-op for an order that is not confirmed and paid", async () => {
+  const cookies: StorefrontCookieJar = { get: () => undefined, set: () => {} };
+  let capiCalls = 0;
+  const client = createServerStorefrontClient({
+    publishableKey: "public_test",
+    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+    capi: {
+      meta: {
+        accessToken: "capi-token",
+        pixelId: "pixel-1",
+        fetch: (async () => {
+          capiCalls += 1;
+          return jsonResponse(200, { events_received: 1 });
+        }) as unknown as typeof fetch,
+      },
+    },
+  });
+
+  await recordConfirmedPurchaseCapi(client, cookies, {
+    id: "00000000-0000-4000-8000-000000000098",
+    status: "pending",
+    payment_status: "pending",
+    currency: "USD",
+    total_amount_minor: 2_000,
+    lines: [],
+  });
+
+  assert.equal(capiCalls, 0);
 });
