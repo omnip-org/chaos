@@ -1,7 +1,3 @@
-import {
-  ChaosStorefrontAnalytics,
-  type AnalyticsOptions,
-} from "./analytics.js";
 import { ChaosApiError, throwForResponse } from "./errors.js";
 import { fnv1a32 } from "./internal/hash.js";
 import { CartResource } from "./resources/cart.js";
@@ -38,12 +34,6 @@ export interface ClientOptions {
    * order; use CartResource.getOrCreate for explicit cart recovery.
    */
   retryInvalidShopperToken?: boolean;
-  /**
-   * Options forwarded to the bundled analytics collector, minus
-   * publishableKey/randomUUID (inherited from this client). Pass
-   * `analytics: false` to skip constructing it entirely.
-   */
-  analytics?: Omit<AnalyticsOptions, "publishableKey" | "randomUUID"> | false;
 }
 
 /** @internal */
@@ -85,7 +75,6 @@ export class ChaosStorefrontClient {
   readonly orders: OrdersResource;
   readonly payments: PaymentsResource;
   readonly reviews: ReviewsResource;
-  readonly analytics?: ChaosStorefrontAnalytics;
 
   constructor(options: ClientOptions) {
     if (!options.publishableKey) {
@@ -131,17 +120,6 @@ export class ChaosStorefrontClient {
     this.orders = new OrdersResource(this);
     this.payments = new PaymentsResource(this);
     this.reviews = new ReviewsResource(this);
-    const analyticsOptions =
-      options.analytics === false ? undefined : options.analytics;
-    const analyticsDocument = analyticsOptions?.document ?? globalThis.document;
-    if (options.analytics !== false && analyticsDocument) {
-      this.analytics = new ChaosStorefrontAnalytics({
-        ...analyticsOptions,
-        document: analyticsDocument,
-        publishableKey: this.publishableKey,
-        randomUUID: this.randomUUID,
-      });
-    }
   }
 
   getShopperToken(): string | null {

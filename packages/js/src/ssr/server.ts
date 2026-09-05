@@ -46,11 +46,7 @@ export interface StorefrontSessionOptions {
 export interface ServerClientOptions
   extends Omit<
     ClientOptions,
-    | "storage"
-    | "request"
-    | "analytics"
-    | "autoAcquireShopperToken"
-    | "retryInvalidShopperToken"
+    "storage" | "request" | "autoAcquireShopperToken" | "retryInvalidShopperToken"
   > {
   cookies?: StorefrontCookieJar;
   request?: Pick<Request, "headers">;
@@ -117,7 +113,6 @@ export function createServerStorefrontClient(
         )
       : null,
     ...(request ? { request } : {}),
-    analytics: false,
     autoAcquireShopperToken: false,
     retryInvalidShopperToken: false,
   });
@@ -268,6 +263,7 @@ export async function updateCartLine(
     session.cart.id,
     variantId,
     { quantity },
+    session.cart.version,
   );
   persistCartSession(cookies, { cart }, options);
   const newLine = cart.lines.find((candidate) => candidate.product_variant_id === variantId);
@@ -291,19 +287,19 @@ export async function updateCartLine(
   };
 }
 
-/** Parses and executes the standard no-JavaScript add-to-cart form contract. */
+/** Parses and executes the standard JSON add-to-cart request contract. */
 export async function addCartLineFromRequest(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
   request: Request,
   options: StorefrontSessionOptions = {},
 ): Promise<CartLineMutation> {
-  const form = await readForm(request, "add_cart_line");
-  const variantId = form.get("variant_id");
+  const body = await readJsonRecord(request, "add_cart_line");
+  const variantId = body.variant_id;
   if (typeof variantId !== "string") {
     throw invalidRequest("variant_id is required");
   }
-  const quantity = parseQuantity(form.get("quantity"));
+  const quantity = optionalPositiveQuantity(body.quantity);
   return addCartLine(
     client,
     cookies,
@@ -312,7 +308,7 @@ export async function addCartLineFromRequest(
   );
 }
 
-/** Parses and executes the standard cart-line update/remove form contract. */
+/** Parses and executes the standard JSON cart-line update/remove request contract. */
 export async function updateCartLineFromRequest(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
@@ -320,9 +316,9 @@ export async function updateCartLineFromRequest(
   variantId: string,
   options: StorefrontSessionOptions = {},
 ): Promise<CartLineMutation> {
-  const form = await readForm(request, "update_cart_line");
-  const intent = form.get("intent");
-  const quantity = parseQuantity(form.get("quantity"));
+  const body = await readJsonRecord(request, "update_cart_line");
+  const intent = body.intent;
+  const quantity = optionalPositiveQuantity(body.quantity);
   return updateCartLine(
     client,
     cookies,
@@ -537,17 +533,18 @@ function metaCapiContextFrom(
   };
 }
 
-/** Parses and submits the standard no-JavaScript product review form. */
+/** Parses and submits the standard JSON product review request contract. */
 export async function createProductReviewFromRequest(
   client: ChaosStorefrontClient,
   request: Request,
   productId: string,
 ): Promise<void> {
-  const form = await readForm(request, "create_product_review");
-  const rating = Number(form.get("rating"));
-  const content = form.get("content");
-  const authorName = form.get("author_name");
+  const body = await readJsonRecord(request, "create_product_review");
+  const rating = body.rating;
+  const content = body.content;
+  const authorName = body.author_name;
   if (
+    typeof rating !== "number" ||
     !Number.isSafeInteger(rating) ||
     rating < 1 ||
     rating > 5 ||
@@ -559,8 +556,8 @@ export async function createProductReviewFromRequest(
     throw invalidRequest("review payload is invalid");
   }
 
-  const title = form.get("title");
-  const authorEmail = form.get("author_email");
+  const title = body.title;
+  const authorEmail = body.author_email;
   const payload: SubmitReviewRequest = {
     rating,
     content: content.trim(),
@@ -599,14 +596,6 @@ function clearCookie(
   cookies.set(name, "", { ...options, maxAge: 0 });
 }
 
-async function readForm(request: Request, code: string): Promise<FormData> {
-  try {
-    return await request.formData();
-  } catch {
-    throw invalidRequest(`${code} payload is invalid`);
-  }
-}
-
 async function readJsonRecord(
   request: Request,
   code: string,
@@ -621,16 +610,11 @@ async function readJsonRecord(
   return body;
 }
 
-function parseQuantity(value: FormDataEntryValue | null): number | undefined {
-  if (typeof value !== "string" || !value.trim()) return undefined;
-  const quantity = Number(value);
-  if (!Number.isSafeInteger(quantity)) {
-    throw invalidRequest("quantity must be a positive safe integer");
-  }
-  return quantity;
+function optionalPositiveQuantity(value: unknown): number | undefined {
+  return value === undefined ? undefined : requirePositiveQuantity(value);
 }
 
-function requirePositiveQuantity(quantity: number | undefined): number {
+function requirePositiveQuantity(quantity: unknown): number {
   if (typeof quantity !== "number" || !Number.isSafeInteger(quantity) || quantity < 1) {
     throw invalidRequest("quantity must be a positive safe integer");
   }

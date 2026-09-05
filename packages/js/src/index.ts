@@ -1,8 +1,6 @@
-export { ChaosStorefrontClient, createStorefrontClient } from "./client.js";
-export type { ClientOptions } from "./client.js";
-
 export {
   BrowserCartResource,
+  BrowserCatalogResource,
   BrowserCheckoutResource,
   BrowserOrderResource,
   StorefrontBrowserClient,

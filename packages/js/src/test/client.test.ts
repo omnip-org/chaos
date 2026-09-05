@@ -26,19 +26,6 @@ function jsonResponse(status: number, body: unknown): Response {
   } as unknown as Response;
 }
 
-test("does not construct browser analytics during SSR", () => {
-  const client = createStorefrontClient({
-    publishableKey: "public_test",
-    baseUrl: "https://shop.example.com/api/v1",
-    storage: null,
-    randomUUID: () => "random-id",
-    fetch: (async () =>
-      jsonResponse(200, { data: {} })) as unknown as typeof fetch,
-  });
-
-  assert.equal(client.analytics, undefined);
-});
-
 test("defers shopper session creation until a browser request needs it", async () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
   Object.defineProperty(globalThis, "document", {
@@ -50,7 +37,6 @@ test("defers shopper session creation until a browser request needs it", async (
     const client = createStorefrontClient({
       publishableKey: "public_test",
       storage: null,
-      analytics: false,
       fetch: (async (url: string) => {
         requests.push(url);
         return jsonResponse(201, {
@@ -81,7 +67,6 @@ test("acquires a shopper session on the first shopper-scoped request and reuses 
     publishableKey: "public_test",
     storage,
     randomUUID: () => `id-${++sequence}`,
-    analytics: false,
     fetch: (async (url: string, init: RequestInit) => {
       const headers: Record<string, string> = {};
       new Headers(init.headers).forEach((value, key) => {
@@ -118,7 +103,6 @@ test("reuses a shopper token persisted from a previous session", async () => {
   const firstClient = createStorefrontClient({
     publishableKey: "public_test",
     storage,
-    analytics: false,
     fetch: (async () =>
       jsonResponse(200, { data: {} })) as unknown as typeof fetch,
   });
@@ -127,7 +111,6 @@ test("reuses a shopper token persisted from a previous session", async () => {
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage,
-    analytics: false,
     fetch: (async (url: string) => {
       requests.push(String(url));
       return jsonResponse(200, { data: { id: "cart-1", lines: [] } });
@@ -145,7 +128,6 @@ test("explicit shopper sessions update the client token", async () => {
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage,
-    analytics: false,
     fetch: (async () =>
       jsonResponse(201, {
         data: { shopper_token: "manual-token" },
@@ -161,7 +143,6 @@ test("edgeRequestContext reads the edge-observed client IP and user agent", () =
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: null,
-    analytics: false,
     request: new Request("https://shop.example.com/api/checkout", {
       headers: {
         "CF-Connecting-IP": "2001:db8::8",
@@ -181,7 +162,6 @@ test("edgeRequestContext is empty without a request-scoped server client", () =>
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: null,
-    analytics: false,
     fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
   });
 
@@ -194,7 +174,6 @@ test("refreshes a stale shopper token once and retries the request", async () =>
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage,
-    analytics: false,
     retryInvalidShopperToken: true,
     fetch: (async (url: string, init: RequestInit) => {
       const headers = new Headers(init.headers);
@@ -227,7 +206,6 @@ test("can fail on a stale shopper token without silently changing identity", asy
     publishableKey: "public_test",
     baseUrl: "https://shop.example.com/api/v1",
     storage: null,
-    analytics: false,
     retryInvalidShopperToken: false,
     fetch: (async (url: string) => {
       requests.push(url);
@@ -249,7 +227,6 @@ test("can require an explicitly seeded shopper token", async () => {
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: null,
-    analytics: false,
     autoAcquireShopperToken: false,
     fetch: (async () => {
       requestCount += 1;
@@ -272,7 +249,6 @@ test("creates a fresh cart when the stored cart is locked", async () => {
     publishableKey: "public_test",
     baseUrl: "https://shop.example.com/api/v1",
     storage: null,
-    analytics: false,
     fetch: (async (url: string, init: RequestInit) => {
       const token = new Headers(init.headers).get("x-chaos-shopper-token");
       requests.push({ url, token });
@@ -309,7 +285,6 @@ test("shares one shopper-session request across concurrent explicit acquisitions
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: null,
-    analytics: false,
     fetch: (async (url: string) => {
       if (url.endsWith("/shopper/sessions")) {
         sessionRequests += 1;
@@ -335,7 +310,6 @@ test("serializes concurrent addLine calls for one cart", async () => {
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: null,
-    analytics: false,
     randomUUID: () => "random-id",
     fetch: (async (url: string, init: RequestInit) => {
       if (url.endsWith("/shopper/sessions")) {
@@ -375,7 +349,6 @@ test("maps non-2xx responses to a typed ChaosApiError with server details", asyn
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: new MemoryStorage(),
-    analytics: false,
     fetch: (async () =>
       jsonResponse(422, {
         error: {
@@ -403,7 +376,6 @@ test("catalog.listProducts forwards query parameters", async () => {
     publishableKey: "public_test",
     baseUrl: "https://shop.example.com/api/v1",
     storage: new MemoryStorage(),
-    analytics: false,
     fetch: (async (url: string) => {
       captured.url = new URL(String(url));
       return jsonResponse(200, {
@@ -436,7 +408,6 @@ test("payments create an embedded Checkout session with SDK-owned request detail
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: null,
-    analytics: false,
     randomUUID: () => `id-${++sequence}`,
     fetch: (async (url: string, init: RequestInit) => {
       requests.push({
@@ -533,7 +504,6 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: null,
-    analytics: false,
     fetch: (async (url: string, init: RequestInit) => {
       if (url.endsWith("/shopper/sessions")) {
         return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
@@ -576,7 +546,6 @@ test("payments reject a checkout response that is missing required fields", asyn
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: null,
-    analytics: false,
     randomUUID: () => `id-${++sequence}`,
     fetch: (async (url: string) => {
       if (url.endsWith("/shopper/sessions")) {
@@ -614,7 +583,6 @@ test("payments create an embedded Checkout session without an email", async () =
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: null,
-    analytics: false,
     randomUUID: () => `id-${++sequence}`,
     fetch: (async (url: string, init: RequestInit) => {
       requests.push({
@@ -727,226 +695,3 @@ test("checkout idempotency follows the cart snapshot instead of the cart id", as
   assert.notEqual(idempotencyKeys[2], idempotencyKeys[3]);
 });
 
-test("commerce resources record one event after the mutation succeeds", async () => {
-  const requests: Array<{ path: string; body: unknown }> = [];
-  let projection: unknown;
-  const client = createStorefrontClient({
-    publishableKey: "public_test",
-    storage: null,
-    analytics: false,
-    fetch: (async () =>
-      jsonResponse(200, { data: {} })) as unknown as typeof fetch,
-  });
-  const mutable = client as unknown as {
-    analytics: {
-      recordAddToCart: (input: unknown) => string | null;
-    };
-    request: (path: string, options?: { body?: unknown }) => Promise<unknown>;
-  };
-  mutable.analytics = {
-    recordAddToCart: (input) => {
-      projection = input;
-      return null;
-    },
-  };
-  mutable.request = async (path, options = {}) => {
-    requests.push({ path, body: options.body });
-    if (path === "/carts/cart-1") {
-      return {
-        data: {
-          id: "cart-1",
-          version: 4,
-          currency: "USD",
-          lines: [],
-        },
-      };
-    }
-    return {
-      data: {
-        id: "cart-1",
-        version: 5,
-        currency: "USD",
-        lines: [
-          {
-            product_id: "product-1",
-            product_variant_id: "variant-1",
-            quantity: 2,
-            unit_price_amount_minor: 1_000,
-          },
-        ],
-      },
-    };
-  };
-
-  await client.cart.addLine("cart-1", "variant-1", 2);
-
-  assert.deepEqual(requests[1]?.body, { quantity: 2 });
-  assert.deepEqual(projection, {
-    cartId: "cart-1",
-    productId: "product-1",
-    productVariantId: "variant-1",
-    quantity: 2,
-    priceMinor: 1_000,
-    valueMinor: 2_000,
-    currency: "USD",
-  });
-});
-
-test("commerce resources do not project a browser event when the mutation fails", async () => {
-  let projections = 0;
-  const client = createStorefrontClient({
-    publishableKey: "public_test",
-    storage: null,
-    analytics: false,
-    fetch: (async () =>
-      jsonResponse(200, { data: {} })) as unknown as typeof fetch,
-  });
-  const mutable = client as unknown as {
-    analytics: {
-      recordAddToCart: () => string | null;
-    };
-    request: (path: string, options?: { body?: unknown }) => Promise<unknown>;
-  };
-  mutable.analytics = {
-    recordAddToCart: () => {
-      projections += 1;
-      return null;
-    },
-  };
-  mutable.request = async (path) => {
-    if (path === "/carts/cart-1") {
-      return { data: { id: "cart-1", version: 1, currency: "USD", lines: [] } };
-    }
-    throw new Error("mutation failed");
-  };
-
-  await assert.rejects(
-    client.cart.addLine("cart-1", "variant-1", 1),
-    /mutation failed/,
-  );
-  assert.equal(projections, 0);
-});
-
-test("checkout records InitiateCheckout after the session is created", async () => {
-  let requestBody: unknown;
-  let projection: unknown;
-  const client = createStorefrontClient({
-    publishableKey: "public_test",
-    storage: null,
-    analytics: false,
-    fetch: (async () =>
-      jsonResponse(200, { data: {} })) as unknown as typeof fetch,
-  });
-  const mutable = client as unknown as {
-    analytics: {
-      recordInitiateCheckout: (input: unknown) => string | null;
-    };
-    request: (path: string, options?: { body?: unknown }) => Promise<unknown>;
-  };
-  mutable.analytics = {
-    recordInitiateCheckout: (input) => {
-      projection = input;
-      return null;
-    },
-  };
-  mutable.request = async (path, options = {}) => {
-    if (path === "/carts/cart-1") {
-      return {
-        data: {
-          id: "cart-1",
-          version: 4,
-          currency: "USD",
-          status: "active",
-          subtotal_amount_minor: 2_000,
-          lines: [
-            {
-              product_id: "product-1",
-              product_variant_id: "variant-1",
-              quantity: 2,
-              unit_price_amount_minor: 1_000,
-            },
-          ],
-        },
-      };
-    }
-    requestBody = options.body;
-    return {
-      data: {
-        order_number: "W-20260830-55555555",
-        client_action: {
-          type: "mount_embedded_checkout",
-          public_key: "pk_test_stripe",
-          client_token: "cs_test_secret",
-        },
-      },
-    };
-  };
-
-  await client.payments.createEmbeddedCheckout("cart-1", {
-    returnUrl: "https://shop.example.com/checkout/success",
-  });
-
-  assert.deepEqual(requestBody, {
-    payment_provider: "stripe",
-    return_url: "https://shop.example.com/checkout/success",
-  });
-  assert.deepEqual(projection, {
-    cartId: "cart-1",
-    orderNumber: "W-20260830-55555555",
-    valueMinor: 2_000,
-    currency: "USD",
-    items: [
-      {
-        productId: "product-1",
-        productVariantId: "variant-1",
-        quantity: 2,
-        priceMinor: 1_000,
-      },
-    ],
-  });
-});
-
-test("browser SDK observations record only after successful responses", async () => {
-  const recorded: Array<[string, unknown]> = [];
-  const client = createStorefrontClient({
-    publishableKey: "public_test",
-    storage: new MemoryStorage(),
-    analytics: false,
-    randomUUID: () => "random-id",
-    fetch: (async () =>
-      jsonResponse(200, { data: {} })) as unknown as typeof fetch,
-  });
-  // Replace transport and analytics at the resource boundary to test orchestration only.
-  const mutable = client as unknown as {
-    analytics: Record<string, (input: unknown) => void>;
-    request: (path: string) => Promise<unknown>;
-  };
-  mutable.analytics = {
-    search: (input) => recorded.push(["search", input]),
-    viewContent: (input) => recorded.push(["view_content", input]),
-  };
-  mutable.request = async (path) => {
-    if (path === "/products")
-      return {
-        data: [{ id: "product-1" }],
-        meta: { page: { has_more: false } },
-      };
-    if (path.startsWith("/products/")) return { data: { id: "product-1" } };
-    if (path === "/carts/cart-1") return { data: { id: "cart-1", lines: [] } };
-    return {
-      data: {
-        id: "cart-1",
-        lines: [{ product_variant_id: "variant-1", quantity: 2 }],
-      },
-    };
-  };
-
-  await client.catalog.listProducts({ q: "shoes" });
-  await client.catalog.getProduct("shoe");
-  await client.cart.addLine("cart-1", "variant-1", 2);
-
-  assert.deepEqual(recorded, [
-    ["search", { query: "shoes" }],
-    ["view_content", { productId: "product-1" }],
-  ]);
-});

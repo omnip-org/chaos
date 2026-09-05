@@ -16,11 +16,8 @@ import {
 } from "../ssr/browser.js";
 import { ChaosApiError } from "../errors.js";
 import type { ChaosStorefrontAnalytics } from "../analytics.js";
-import type {
-  Cart,
-  ChaosStorefrontClient,
-  Collection,
-} from "../index.js";
+import type { ChaosStorefrontClient } from "../client.js";
+import type { Cart, Collection } from "../index.js";
 
 function collection(handle: string): Collection {
   return {
@@ -98,11 +95,10 @@ test("browser commerce bridge owns API paths, response envelopes, and mutation a
 
   assert.deepEqual(result, mutation);
   assert.equal(requests[0]?.url, "/api/cart/line-items");
-  assert.equal(
-    (requests[0]?.init.body as URLSearchParams).get("variant_id"),
-    line.product_variant_id,
-  );
-  assert.equal((requests[0]?.init.body as URLSearchParams).get("quantity"), "1");
+  assert.deepEqual(JSON.parse(String(requests[0]?.init.body)), {
+    variant_id: line.product_variant_id,
+    quantity: 1,
+  });
   assert.deepEqual(recorded, ["cart"]);
   assert.equal((requests[0]?.init.credentials), "same-origin");
   assert.ok(browser instanceof StorefrontBrowserClient);
@@ -160,6 +156,39 @@ test("browser checkout bridge forwards shared checkout options", async () => {
     ],
   });
   assert.deepEqual(recorded, ["checkout", "purchase"]);
+});
+
+test("browser catalog bridge forwards product reads and records Search/ViewContent", async () => {
+  const requests: string[] = [];
+  const recorded: Array<[string, unknown]> = [];
+  const product = { id: "00000000-0000-4000-8000-000000000050", handle: "trail-pack" };
+  const browser = createStorefrontBrowserClient({
+    analytics: {
+      search: (input: unknown) => recorded.push(["search", input]),
+      viewContent: (input: unknown) => recorded.push(["view_content", input]),
+    } as unknown as ChaosStorefrontAnalytics,
+    fetch: (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.endsWith("/products?q=shoes")) {
+        return new Response(
+          JSON.stringify({ data: [product], meta: { page: { has_more: false } } }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ data: product }), { status: 200 });
+    }) as typeof fetch,
+  });
+
+  await browser.catalog.listProducts({ q: "shoes" });
+  await browser.catalog.getProduct("trail-pack");
+
+  assert.equal(requests[0], "/api/products?q=shoes");
+  assert.equal(requests[1], "/api/products/trail-pack");
+  assert.deepEqual(recorded, [
+    ["search", { query: "shoes" }],
+    ["view_content", { productId: product.id }],
+  ]);
 });
 
 test("server checkout bridge creates a new Cart when the source Cart is terminal", async () => {
@@ -278,7 +307,7 @@ test("server checkout bridge retries the same Cart after a lost response", async
   assert.equal(writes.get("chaos_cart_id"), "active-cart");
 });
 
-test("server review and cart adapters own form parsing and cookie persistence", async () => {
+test("server review and cart adapters own request parsing and cookie persistence", async () => {
   const submitted: { productId: string; payload: unknown }[] = [];
   const reviewClient = {
     reviews: {
@@ -287,19 +316,19 @@ test("server review and cart adapters own form parsing and cookie persistence", 
       },
     },
   } as unknown as ChaosStorefrontClient;
-  const reviewBody = new URLSearchParams({
-    rating: "5",
-    title: "Excellent",
-    content: "Very comfortable",
-    author_name: "Ada",
-    author_email: "ada@example.com",
-  });
 
   await createProductReviewFromRequest(
     reviewClient,
     new Request("https://shop.example/review", {
       method: "POST",
-      body: reviewBody,
+      body: JSON.stringify({
+        rating: 5,
+        title: "Excellent",
+        content: "Very comfortable",
+        author_name: "Ada",
+        author_email: "ada@example.com",
+      }),
+      headers: { "Content-Type": "application/json" },
     }),
     "00000000-0000-4000-8000-000000000020",
   );

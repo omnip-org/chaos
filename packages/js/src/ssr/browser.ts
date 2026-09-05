@@ -7,6 +7,8 @@ import type {
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutOptions,
   OrderLookup,
+  PageEnvelope,
+  Product,
 } from "../types.js";
 
 export interface StorefrontBrowserOptions {
@@ -18,6 +20,7 @@ export interface StorefrontBrowserOptions {
 
 export class StorefrontBrowserClient {
   readonly cart: BrowserCartResource;
+  readonly catalog: BrowserCatalogResource;
   readonly checkout: BrowserCheckoutResource;
   readonly orders: BrowserOrderResource;
 
@@ -31,6 +34,7 @@ export class StorefrontBrowserClient {
     this.analytics = options.analytics;
     if (!this.fetchImpl) throw new TypeError("fetch is required");
     this.cart = new BrowserCartResource(this);
+    this.catalog = new BrowserCatalogResource(this);
     this.checkout = new BrowserCheckoutResource(this);
     this.orders = new BrowserOrderResource(this);
   }
@@ -74,6 +78,22 @@ export class StorefrontBrowserClient {
       // The order is already confirmed; analytics must remain best-effort.
     }
   }
+
+  recordSearch(input: { query: string }): void {
+    try {
+      this.analytics?.search(input);
+    } catch {
+      // The search already ran; analytics must remain best-effort.
+    }
+  }
+
+  recordViewContent(input: { productId: string; productVariantId?: string }): void {
+    try {
+      this.analytics?.viewContent(input);
+    } catch {
+      // The product already loaded; analytics must remain best-effort.
+    }
+  }
 }
 
 export class BrowserCartResource {
@@ -84,13 +104,13 @@ export class BrowserCartResource {
     if (!Number.isSafeInteger(quantity) || quantity < 1) {
       throw new RangeError("quantity must be a positive safe integer");
     }
-    const body = new URLSearchParams({
-      variant_id: variantId,
-      quantity: String(quantity),
-    });
     const response = await this.client.request<DataEnvelope<CartLineMutation>>(
       "/cart/line-items",
-      { method: "POST", body },
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ variant_id: variantId, quantity }),
+      },
     );
     const mutation = requireData<CartLineMutation>(
       response,
@@ -112,7 +132,7 @@ export class BrowserCartResource {
     if (!Number.isSafeInteger(quantity) || quantity < 1) {
       throw new RangeError("quantity must be a positive safe integer");
     }
-    return this.mutateLine(variantId, { quantity: String(quantity) });
+    return this.mutateLine(variantId, { quantity });
   }
 
   removeLine(variantId: string): Promise<CartLineMutation> {
@@ -122,12 +142,15 @@ export class BrowserCartResource {
 
   private async mutateLine(
     variantId: string,
-    values: Record<string, string>,
+    values: Record<string, unknown>,
   ): Promise<CartLineMutation> {
-    const body = new URLSearchParams(values);
     const response = await this.client.request<DataEnvelope<CartLineMutation>>(
       `/cart/line-items/${encodeURIComponent(variantId)}`,
-      { method: "POST", body },
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values),
+      },
     );
     const mutation = requireData<CartLineMutation>(
       response,
@@ -142,6 +165,41 @@ export class BrowserCartResource {
     }
     this.client.recordCartMutation(mutation);
     return mutation;
+  }
+}
+
+export interface BrowserListProductsParams {
+  q?: string;
+  collection?: string;
+  cursor?: string;
+  limit?: number;
+  currency?: string;
+}
+
+/** Forwards catalog reads to the storefront's own same-origin route and records the matching Search/ViewContent event. */
+export class BrowserCatalogResource {
+  constructor(private readonly client: StorefrontBrowserClient) {}
+
+  async listProducts(params: BrowserListProductsParams = {}): Promise<PageEnvelope<Product>> {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined) search.set(key, String(value));
+    }
+    const query = search.toString();
+    const response = await this.client.request<PageEnvelope<Product>>(
+      `/products${query ? `?${query}` : ""}`,
+    );
+    if (params.q) this.client.recordSearch({ query: params.q });
+    return response;
+  }
+
+  async getProduct(handle: string, params: { currency?: string } = {}): Promise<DataEnvelope<Product>> {
+    const query = params.currency ? `?currency=${encodeURIComponent(params.currency)}` : "";
+    const response = await this.client.request<DataEnvelope<Product>>(
+      `/products/${encodeURIComponent(handle)}${query}`,
+    );
+    this.client.recordViewContent({ productId: response.data.id });
+    return response;
   }
 }
 

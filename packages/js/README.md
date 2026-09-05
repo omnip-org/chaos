@@ -1,13 +1,14 @@
 # @omnip-org/chaos-js
 
-A typed client for the Chaos Commerce Storefront API — the
-public-key-authenticated surface meant to be called directly from storefront
-browsers — with a bundled browser analytics collector that projects straight
-to Meta Pixel and GA4. The SDK is the typed public contract. One SDK covers
-catalog browsing, cart, checkout, order, payment, and behavior analytics flows.
-A storefront with its own server-side deployment can additionally send Meta
-Conversions API events from its own backend, using its own Meta access token,
-through the separate `@omnip-org/chaos-js/meta-capi` subpath — see
+A typed client for the Chaos Commerce Storefront API, built for a storefront
+with its own server-side deployment (SSR/edge/Worker) — the publishable key
+and shopper token live server-side only, never in a browser bundle. The
+storefront's server uses `createServerStorefrontClient` to talk to Chaos, and
+exposes a few thin same-origin routes that its browser code calls through
+`createStorefrontBrowserClient`. A bundled browser analytics collector
+projects straight to Meta Pixel and GA4; the storefront's own backend can
+additionally send Meta Conversions API events using its own Meta access
+token, through the separate `@omnip-org/chaos-js/meta-capi` subpath — see
 [Server-side Meta Conversions API](#server-side-meta-conversions-api).
 
 ## Install
@@ -29,28 +30,30 @@ npm install @omnip-org/chaos-js
 
 ## Usage
 
-```ts
-import {
-  createStorefrontClient,
-  resolveProductMedia,
-  toPurchaseAnalyticsInput,
-} from "@omnip-org/chaos-js";
-import { mountEmbeddedCheckout } from "@omnip-org/chaos-js/stripe";
+This SDK requires a storefront with its own server-side deployment. There is
+no supported pure-browser mode: the publishable key and the shopper token are
+only ever held by `createServerStorefrontClient`, on the server. A storefront
+exposes a few thin same-origin routes backed by the server helpers below, and
+its browser code talks only to those routes through
+`createStorefrontBrowserClient` — never directly to Chaos.
 
-const chaos = createStorefrontClient({
-  publishableKey: "pk_...",
-  analytics: {
-    providers: {
-      // Browser Meta Pixel ID. A storefront with its own server-side
-      // deployment configures the same (or a different) Pixel/dataset ID
-      // again via createServerStorefrontClient's `capi` option, for Meta CAPI.
-      metaPixel: { pixelId: "1234567890" },
-      ga4: { measurementId: "G-EXAMPLE123" },
-    },
-  },
+```ts
+// Server: request-scoped, holds the publishable key and the shopper's
+// HttpOnly-cookie-backed token. `cookies` is any jar with get(name) and
+// set(name, value, options).
+import {
+  createServerStorefrontClient,
+  resolveProductMedia,
+} from "@omnip-org/chaos-js";
+
+const chaos = createServerStorefrontClient({
+  publishableKey: process.env.CHAOS_PUBLISHABLE_KEY!,
+  baseUrl: "https://chaos.example/api/v1",
+  cookies,
+  request,
 });
 
-// Catalog
+// Catalog — rendered server-side into the page; no separate client fetch needed.
 const { data: products } = await chaos.catalog.listProducts({ q: "shoes" });
 const { data: product } = await chaos.catalog.getProduct("running-shoes");
 
@@ -59,42 +62,63 @@ const { data: product } = await chaos.catalog.getProduct("running-shoes");
 // then Product fallback media.
 const selectedVariant = product.variants[0]!;
 const gallery = resolveProductMedia(product, selectedVariant);
+```
 
-// Cart — the shopper token is acquired and persisted automatically on the
-// first shopper-scoped call, then reused for every subsequent Cart/Checkout call.
-const { data: cart } = await chaos.cart.create();
-await chaos.cart.addLine(cart.id, product.variants[0].id);
-// If a persisted cart has already been locked by checkout, getOrCreate returns
-// an active cart without changing the shopper identity.
-const { data: activeCart } = await chaos.cart.getOrCreate(cart.id);
-// Cart mutations use the response version as an If-Match precondition. The
-// SDK reads and sends it automatically; direct HTTP callers must send the
-// current Cart version in the If-Match header.
+```ts
+// Storefront backend route handlers (e.g. POST /api/cart/line-items,
+// POST /api/checkout) — thin adapters over the server helpers, which own
+// request parsing, validation, session cookies, and the Chaos operation:
+import {
+  addCartLineFromRequest,
+  createEmbeddedCheckoutFromRequest,
+} from "@omnip-org/chaos-js";
 
-// Stripe Embedded Checkout — Chaos reserves inventory, locks this Cart, and
-// creates the pending Order before Stripe collects the remaining details. The
-// response's cart is a separate active Cart for later shopping.
-// The return URL must be HTTPS outside local loopback development.
-const { data: creation } = await chaos.payments.createEmbeddedCheckoutWithCart(cart.id, {
-  email: "shopper@example.com",
-  returnUrl: "https://shop.example.com/checkout/success",
+const mutation = await addCartLineFromRequest(chaos, cookies, request);
+const creation = await createEmbeddedCheckoutFromRequest(chaos, cookies, request);
+// creation.data.source_cart is the exact pre-checkout snapshot used for
+// InitiateCheckout analytics; creation.data.cart is the new active Cart —
+// keep using it for later shopping, the original Cart is now locked.
+// Retrying the same Cart checkout request with the same Cart snapshot reuses
+// the existing Order and Stripe Session; a new Cart is only created when the
+// source Cart is no longer eligible for checkout.
+```
+
+```ts
+// Browser: talks only to the storefront's own same-origin routes above.
+import {
+  createStorefrontAnalytics,
+  createStorefrontBrowserClient,
+  toPurchaseAnalyticsInput,
+} from "@omnip-org/chaos-js";
+import { mountEmbeddedCheckout } from "@omnip-org/chaos-js/stripe";
+
+const analytics = createStorefrontAnalytics({
+  publishableKey: "pk_...",
+  providers: {
+    // Browser Meta Pixel ID. The storefront's backend configures the same
+    // (or a different) Pixel/dataset ID again via createServerStorefrontClient's
+    // `capi` option, for Meta CAPI.
+    metaPixel: { pixelId: "1234567890" },
+    ga4: { measurementId: "G-EXAMPLE123" },
+  },
 });
-const session = creation.checkout;
-// creation.source_cart is the exact pre-checkout snapshot used for
-// InitiateCheckout analytics; creation.cart is the new active Cart.
-// Keep using creation.cart for any later shopping; the original Cart is now
-// locked and must not be edited or checked out again.
-// The source Cart is the recovery key. Retrying the same Cart checkout request
-// with the same Cart snapshot reuses the existing Order and Stripe Session.
-// The server helper applies this same rule when a response is lost before the
-// Cart cookie is rotated; it only creates a new Cart when the source Cart is no
-// longer eligible for checkout.
-// The SDK derives and sends a stable client idempotency key from the Cart
-// snapshot. Chaos derives the provider idempotency key from the Order ID.
-const action = session.client_action;
-// A storefront can use the SDK's provider adapter from the optional subpath.
-// It has no extra dependencies: it loads Stripe.js from https://js.stripe.com
-// at runtime (Stripe does not allow bundling it), so nothing else to install.
+const storefront = createStorefrontBrowserClient({ baseUrl: "/api", analytics });
+
+// Cart/checkout bridge methods own same-origin paths, credentials, response
+// envelopes, typed errors, and successful cart/checkout analytics.
+const mutation = await storefront.cart.addLine(variantId, 1);
+const creation = await storefront.checkout.createEmbeddedCheckout(returnUrl);
+// catalog.listProducts/getProduct record Search/ViewContent after a
+// successful response — call them from the page that renders search results
+// or a PDP if that data came from the server-rendered page, not this fetch.
+await storefront.catalog.getProduct("running-shoes");
+
+// Stripe Embedded Checkout — Chaos reserves inventory, locks the Cart, and
+// creates the pending Order before Stripe collects the remaining details.
+// The return URL must be HTTPS outside local loopback development.
+const action = creation.checkout.client_action;
+// The SDK's Stripe adapter has no extra dependencies: it loads Stripe.js from
+// https://js.stripe.com at runtime (Stripe does not allow bundling it).
 const mounted = await mountEmbeddedCheckout(action, document.querySelector("#checkout")!, {
   // Optional. `onComplete` fires instead of a redirect only when the Checkout
   // Session uses `redirect_on_completion: "never" | "if_required"`.
@@ -106,53 +130,11 @@ const mounted = await mountEmbeddedCheckout(action, document.querySelector("#che
 // `mounted.unmount()` hides the form (e.g. on `onComplete`); `mounted.destroy()`
 // disposes it. Direct Stripe accounts do not use a Stripe-Account header.
 
-// PageView, ViewContent, and Search project straight to the configured Meta
-// Pixel and GA4 as they happen. Cart and checkout resources project
-// AddToCart/InitiateCheckout only after the matching operation succeeds; the
-// business request never carries an analytics field. Purchase is never
-// inferred from browser activity — only from a confirmed, paid order the
-// storefront already has.
-// After the server confirms payment, let the SDK build the canonical projection:
-const purchase = toPurchaseAnalyticsInput(order);
-if (purchase) chaos.analytics?.recordPurchase(purchase);
-// A storefront with its own server-side deployment can also send the same
-// order to Meta CAPI from its backend — see the meta-capi subpath below.
+// Purchase is never inferred from browser activity — only from a confirmed,
+// paid order the storefront already has (typically via chaos.orders.lookupOrder
+// on the return page):
+storefront.orders.recordPurchase(toPurchaseAnalyticsInput(order)!);
 ```
-
-For a storefront with a server-rendered framework, use the request-scoped
-server adapter and the browser bridge instead of duplicating API paths in page
-components:
-
-```ts
-import {
-  createServerStorefrontClient,
-  createStorefrontBrowserClient,
-  createProductReviewFromRequest,
-  addCartLineFromRequest,
-} from "@omnip-org/chaos-js";
-
-// Worker/SSR request — `cookies` is any jar with get(name) and set(name, value, options).
-const server = createServerStorefrontClient({
-  publishableKey: "pk_...",
-  baseUrl: "https://chaos.example/api/v1",
-  cookies,
-  request,
-});
-
-// Browser island — `baseUrl` points to the storefront's thin same-origin routes.
-const storefront = createStorefrontBrowserClient({ baseUrl: "/api", analytics: chaos.analytics });
-await storefront.cart.addLine(variantId, 1);
-await storefront.checkout.createEmbeddedCheckout(returnUrl);
-storefront.orders.recordPurchase(purchase);
-```
-
-The server helpers `addCartLineFromRequest()`, `updateCartLineFromRequest()`,
-`createEmbeddedCheckoutFromRequest()`, `lookupOrderFromRequest()`, and
-`createProductReviewFromRequest()` own request parsing, validation, session
-cookies, and the corresponding Chaos operation. Framework routes only adapt
-the response or redirect. Browser bridge methods own same-origin paths,
-credentials, response envelopes, typed errors, and successful cart/checkout
-analytics.
 
 ### Contract boundary
 
@@ -165,12 +147,13 @@ returning them. When the API contract changes, publish this package first,
 update the consumer's lockfile to that exact release, and run the SDK and
 consumer checks against the same version.
 
-Pass `analytics: false` to `createStorefrontClient` to skip constructing the
-browser collector entirely. Collection starts immediately when the analytics
-client is constructed.
+Analytics collection starts immediately when `createStorefrontAnalytics` is
+constructed; omit it from `createStorefrontBrowserClient` to skip browser
+collection entirely.
 
-The client automatically acquires and persists the signed shopper token used to
-associate commerce operations on the first shopper-scoped request.
+The server client automatically acquires and persists the signed shopper
+token, in the HttpOnly cookie set up by `createServerStorefrontClient`, used
+to associate commerce operations on the first shopper-scoped request.
 `cart.getActive()` reads only an active cart, while `cart.getOrCreate()`
 explicitly recovers from a missing or completed cart. Invalid shopper-token
 retries are opt-in because silently minting a replacement can orphan a cart or
@@ -185,15 +168,15 @@ chaos-owned analytics ledger; provider scripts are optional and load
 immediately when configured. GA4 automatic PageView collection stays
 disabled; Chaos maps semantic events to GA4 ecommerce names.
 
-Cart and checkout resources project `AddToCart`/`InitiateCheckout` only after
-the matching request succeeds — the business request never carries an
-analytics field — sharing one event ID between the ledger-free Pixel/GA4
-projection and, when a storefront also configured server-side Meta CAPI (see
-below), the matching CAPI call. Commerce item properties use `product_id` and
-`product_variant_id`. Multi-item events repeat these fields inside each
-`items[]` entry; single-item events also expose the corresponding IDs at the
-top level. The Meta adapter uses the variant ID as the Meta content ID when
-present, otherwise the product ID.
+The browser bridge (`StorefrontBrowserClient`) projects `AddToCart`/
+`InitiateCheckout` only after the matching request succeeds — the business
+request never carries an analytics field — sharing one event ID between the
+ledger-free Pixel/GA4 projection and, when a storefront also configured
+server-side Meta CAPI (see below), the matching CAPI call. Commerce item
+properties use `product_id` and `product_variant_id`. Multi-item events repeat
+these fields inside each `items[]` entry; single-item events also expose the
+corresponding IDs at the top level. The Meta adapter uses the variant ID as
+the Meta content ID when present, otherwise the product ID.
 
 `purchase` is a projection, not a first-party fact: the SDK never infers it
 from browser activity, only from a confirmed, paid order the storefront
@@ -201,8 +184,8 @@ already has (typically via `chaos.orders.lookupOrder` on a return page). It
 derives its event ID from the Order ID, so a reload of the same confirmation
 page — and a matching server-side Meta CAPI call for the same order — project
 the identical ID and Meta deduplicates the copies.
-`chaos.analytics?.recordConfirmedPurchase(order)` builds and sends this
-projection in one call.
+`storefront.orders.recordPurchase(toPurchaseAnalyticsInput(order))` builds and
+sends this projection in one call.
 
 The collector maintains a first-party `_fbc` cookie from a landing `fbclid`,
 bounded and capped at 90 days, independent of whether the Meta Pixel script
@@ -256,25 +239,14 @@ failure must never turn a successful commerce operation into a failed one).
 Pass `capi.meta.onError(error, event)` to observe failures — e.g. an expired
 access token — instead of them going unnoticed.
 
-Only call `chaos.analytics?.recordAddToCart`/`recordInitiateCheckout`
-directly (with no `eventId`) when CAPI is **not** also configured for the
-same action. If both fire for the same add-to-cart/checkout, always route
-through the paired helpers above (or pass the CAPI call's `eventId` through
-by hand) — two independently-minted event IDs for one action means Meta
-receives it twice and cannot deduplicate.
+Only call `analytics.recordAddToCart`/`recordInitiateCheckout` directly (with
+no `eventId`), bypassing the `storefront.cart`/`storefront.checkout` bridge,
+when CAPI is **not** also configured for the same action. If both fire for
+the same add-to-cart/checkout, always route through the paired helpers above
+(or pass the CAPI call's `eventId` through by hand) — two independently-minted
+event IDs for one action means Meta receives it twice and cannot deduplicate.
 
-### Server-side / SSR usage
-
-`createStorefrontClient` defaults to same-origin relative URLs (`/api/v1/...`),
-which relies on a browser `fetch` and `location`. From Node, an edge
-function, or any non-browser environment, pass an absolute `baseUrl`:
-
-```ts
-const chaos = createStorefrontClient({
-  publishableKey: process.env.CHAOS_PUBLISHABLE_KEY!,
-  baseUrl: "https://shop.example.com/api/v1",
-});
-```
+### Guest order lookup
 
 Confirmation emails link to the Sales Channel storefront's `/orders/lookup` page
 with the order number and contact email pre-filled as query parameters. The
@@ -282,8 +254,10 @@ page submits both in the request body and the API returns the restricted order
 view when they match:
 
 ```ts
+// Browser bridge — the page's route (e.g. /api/orders/lookup) is backed by
+// the server's lookupOrderFromRequest() helper.
 const params = new URLSearchParams(window.location.search);
-const order = await chaos.orders.lookupOrder({
+const order = await storefront.orders.lookupOrder({
   orderNumber: params.get("order_number") ?? "",
   email: params.get("email") ?? "",
 });

@@ -64,27 +64,7 @@ export class PaymentsResource {
         idempotencyKey: checkoutIdempotencyKey(cart, body),
       },
     );
-    const checkout = requireEmbeddedCheckoutSession(response);
-
-    if (cart.status === "active") {
-      try {
-        this.client.analytics?.recordInitiateCheckout({
-          cartId: cart.id,
-          orderNumber: checkout.data.order_number,
-          valueMinor: cart.subtotal_amount_minor,
-          currency: cart.currency,
-          items: cart.lines.map((line) => ({
-            productId: line.product_id,
-            productVariantId: line.product_variant_id,
-            quantity: line.quantity,
-            priceMinor: line.unit_price_amount_minor,
-          })),
-        });
-      } catch {
-        // The checkout session already exists; analytics is best-effort.
-      }
-    }
-    return checkout;
+    return requireEmbeddedCheckoutSession(response);
   }
 }
 

@@ -84,48 +84,25 @@ export class CartResource {
     }
   }
 
-  /**
-   * `previousQuantity` lets a caller that already knows the line's current
-   * quantity (alongside `expectedVersion`) skip the GET this method would
-   * otherwise make solely to compute the analytics delta.
-   */
   async setLine(
     cartId: string,
     productVariantId: string,
     body: SetCartLineRequest,
     expectedVersion?: number,
-    previousQuantity?: number,
   ): Promise<DataEnvelope<Cart>> {
     return this.enqueueMutation(cartId, async () => {
-      const needsCurrentCart =
-        expectedVersion === undefined ||
-        (Boolean(this.client.analytics) && previousQuantity === undefined);
-      const current = needsCurrentCart ? await this.get(cartId) : undefined;
-      const existingQuantity =
-        previousQuantity ??
-        current?.data.lines.find(
-          (line) => line.product_variant_id === productVariantId,
-        )?.quantity ??
-        0;
-      const response = await this.setLineRequest(
+      const current =
+        expectedVersion === undefined ? await this.get(cartId) : undefined;
+      return this.setLineRequest(
         cartId,
         productVariantId,
         body,
         expectedVersion ?? current!.data.version,
       );
-      if (body.quantity > existingQuantity) {
-        projectAddToCart(
-          this.client,
-          response.data,
-          productVariantId,
-          body.quantity - existingQuantity,
-        );
-      }
-      return response;
     });
   }
 
-  /** Adds a quantity to a Cart line and records AddToCart after success. */
+  /** Adds a quantity to a Cart line. */
   async addLine(
     cartId: string,
     productVariantId: string,
@@ -139,7 +116,7 @@ export class CartResource {
       const existing = current.data.lines.find(
         (line) => line.product_variant_id === productVariantId,
       );
-      const response = await this.setLineRequest(
+      return this.setLineRequest(
         cartId,
         productVariantId,
         {
@@ -147,15 +124,6 @@ export class CartResource {
         },
         current.data.version,
       );
-      if (this.client.analytics) {
-        projectAddToCart(
-          this.client,
-          response.data,
-          productVariantId,
-          quantity,
-        );
-      }
-      return response;
     });
   }
 
@@ -215,31 +183,5 @@ export class CartResource {
     });
     this.mutationQueues.set(cartId, settled);
     return settled;
-  }
-}
-
-function projectAddToCart(
-  client: ChaosStorefrontClient,
-  cart: Cart,
-  productVariantId: string,
-  quantity: number,
-): void {
-  try {
-    const line = cart.lines.find(
-      (candidate) => candidate.product_variant_id === productVariantId,
-    );
-    if (!line) return;
-    client.analytics?.recordAddToCart({
-      cartId: cart.id,
-      productId: line.product_id,
-      productVariantId: line.product_variant_id,
-      quantity,
-      priceMinor: line.unit_price_amount_minor,
-      valueMinor: line.unit_price_amount_minor * quantity,
-      currency: cart.currency,
-    });
-  } catch {
-    // Analytics recording and provider projection are best-effort after the
-    // successful cart mutation.
   }
 }
