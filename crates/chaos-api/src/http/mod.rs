@@ -12,19 +12,18 @@ use chaos_core::{
         stripe::{StripeGateway, StripeWebhookVerifier},
     },
     adapters::postgres::{
-        DefaultPublishableKeyGenerator, PostgresAnalyticsDestinationStore,
-        PostgresAnalyticsEventStore, PostgresCatalogConfigurationRepository,
-        PostgresCatalogManagementRepository, PostgresCatalogProvisioningRepository,
-        PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresEmailRepository,
-        PostgresFulfillmentRepository, PostgresIntegrationAccountRepository,
-        PostgresIntegrationWebhookRepository, PostgresInventoryRepository,
-        PostgresMediaAssetRepository, PostgresOrderManagementRepository,
-        PostgresPricingManagementRepository, PostgresPricingProvisioningRepository,
-        PostgresPublishableKeyRepository, PostgresReviewRepository,
-        PostgresStoreAdministrationRepository, PostgresStoreMembershipRepository,
-        PostgresStoreProvisioningRepository, PostgresStoreReadRepository,
-        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
-        PostgresStripeRepository,
+        DefaultPublishableKeyGenerator, PostgresCapiEventStore,
+        PostgresCatalogConfigurationRepository, PostgresCatalogManagementRepository,
+        PostgresCatalogProvisioningRepository, PostgresCatalogReadRepository,
+        PostgresCollectionRepository, PostgresEmailRepository, PostgresFulfillmentRepository,
+        PostgresIntegrationAccountRepository, PostgresIntegrationWebhookRepository,
+        PostgresInventoryRepository, PostgresMediaAssetRepository,
+        PostgresOrderManagementRepository, PostgresPricingManagementRepository,
+        PostgresPricingProvisioningRepository, PostgresPublishableKeyRepository,
+        PostgresReviewRepository, PostgresStoreAdministrationRepository,
+        PostgresStoreMembershipRepository, PostgresStoreProvisioningRepository,
+        PostgresStoreReadRepository, PostgresStorefrontCatalogRepository,
+        PostgresStorefrontSalesRepository, PostgresStripeRepository,
     },
     adapters::security::{
         identity::{OidcIdentityVerifier, OidcProviderConfiguration, PostgresIdentityRepository},
@@ -238,15 +237,9 @@ impl ApiState {
         );
         let publishable_key_authentication =
             PublishableKeyAuthentication::new(publishable_key_repository);
-        let analytics_event_store = Arc::new(PostgresAnalyticsEventStore::new(
-            infrastructure.runtime_pool(),
+        let analytics_administration = AnalyticsAdministration::new(Arc::new(
+            PostgresCapiEventStore::new(infrastructure.runtime_pool()),
         ));
-        let analytics_administration = AnalyticsAdministration::new(
-            Arc::new(PostgresAnalyticsDestinationStore::new(
-                infrastructure.runtime_pool(),
-            )),
-            analytics_event_store,
-        );
         let dynamic_secrets = Arc::new(DynamicSecretResolver::new(&settings.provider_secret_key));
         let provider_secret_management =
             ProviderSecretManagement::new(store_administration_repository, dynamic_secrets.clone());

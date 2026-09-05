@@ -1,6 +1,6 @@
 use axum::{Router, extract::DefaultBodyLimit, http::HeaderMap};
 use chaos_core::ApplicationError;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::http::{ApiError, ApiState};
@@ -25,11 +25,6 @@ struct PaymentWebhookPath {
 struct EmailWebhookPath {
     provider: String,
     provider_account_id: Uuid,
-}
-
-#[derive(Serialize)]
-struct WebhookReceiptData {
-    accepted: bool,
 }
 
 pub(super) fn required_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str, ApiError> {

@@ -1,4 +1,4 @@
-use chaos_core::contracts::{AnalyticsDestination, AnalyticsEventPage, AnalyticsEventQuery};
+use chaos_core::contracts::AnalyticsDestination;
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -8,8 +8,6 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use uuid::Uuid;
 
 use crate::mcp::{
     error::{text_result, tool_error},
@@ -32,38 +30,6 @@ pub struct ConfigureMetaDestinationParams {
     /// Destination-level switch. Enabling is forward-only; retained historical events are not replayed automatically.
     pub enabled: bool,
     pub confirm: bool,
-}
-
-#[derive(Deserialize, JsonSchema)]
-pub struct ListAnalyticsEventsParams {
-    /// The Store UUID to inspect.
-    pub store_id: String,
-    /// Maximum number of events to return, from 1 to 100. Defaults to 20.
-    pub limit: Option<u16>,
-    /// Storage row ID returned by a previous page. Pass it with before_received_at.
-    pub before_id: Option<String>,
-    /// Received timestamp returned by a previous page. Pass it with before_id for partition-aware pagination.
-    pub before_received_at: Option<String>,
-    /// Optional event name filter, such as `page_view`, `purchase`, or a custom event name.
-    pub event_name: Option<String>,
-    /// Optional source filter stored in the normalized event_source column.
-    pub source: Option<String>,
-    /// Optional signed shopper identifier for tracing one consumer journey.
-    pub shopper_id: Option<String>,
-    /// Optional Channel identifier for isolating one storefront's events.
-    pub channel_id: Option<String>,
-    /// Optional browser session identifier for tracing one visit across events.
-    pub session_id: Option<String>,
-    /// Optional UTM source filter, matched against the normalized analytics column.
-    pub utm_source: Option<String>,
-    /// Optional UTM medium filter, matched against the normalized analytics column.
-    pub utm_medium: Option<String>,
-    /// Optional UTM campaign filter, matched against the normalized analytics column.
-    pub utm_campaign: Option<String>,
-    /// Optional UTM term filter, matched against the normalized analytics column.
-    pub utm_term: Option<String>,
-    /// Optional UTM content filter, matched against the normalized analytics column.
-    pub utm_content: Option<String>,
 }
 
 #[tool_router(router = analytics_tool_router, vis = "pub(in crate::mcp::tools)")]
@@ -154,100 +120,6 @@ impl ChaosMcp {
         };
         Ok(text_result(meta_json(destination)))
     }
-
-    #[tool(
-        description = "List behavior events stored in the selected Store. Optional filters include any event name, normalized event source, channel_id, shopper_id, session_id, utm_source, utm_medium, utm_campaign, utm_term, and utm_content. Raw dynamic properties are returned because this tool is intended for internal behavior analysis."
-    )]
-    async fn list_analytics_events(
-        &self,
-        Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<ListAnalyticsEventsParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let actor = match self.store_actor(&parts, &params.store_id).await {
-            Ok(actor) => actor,
-            Err(result) => return Ok(result),
-        };
-        let limit = params.limit.unwrap_or(20);
-        if !(1..=100).contains(&limit) {
-            return Ok(invalid("limit", "must be between 1 and 100"));
-        }
-        let before_id = match params.before_id.as_deref().map(Uuid::parse_str).transpose() {
-            Ok(id) => id,
-            Err(_) => return Ok(invalid("before_id", "must be a UUID")),
-        };
-        let before_received_at = match params
-            .before_received_at
-            .as_deref()
-            .map(|value| OffsetDateTime::parse(value, &Rfc3339))
-            .transpose()
-        {
-            Ok(timestamp) => timestamp,
-            Err(_) => return Ok(invalid("before_received_at", "must be RFC3339")),
-        };
-        if before_id.is_some() != before_received_at.is_some() {
-            return Ok(invalid(
-                "before_id",
-                "before_id and before_received_at must be provided together",
-            ));
-        }
-        let source = params.source;
-        let shopper_id = match params
-            .shopper_id
-            .as_deref()
-            .map(Uuid::parse_str)
-            .transpose()
-        {
-            Ok(id) => id,
-            Err(_) => return Ok(invalid("shopper_id", "must be a UUID")),
-        };
-        let channel_id = match params
-            .channel_id
-            .as_deref()
-            .map(Uuid::parse_str)
-            .transpose()
-        {
-            Ok(id) => id,
-            Err(_) => return Ok(invalid("channel_id", "must be a UUID")),
-        };
-        let session_id = match params
-            .session_id
-            .as_deref()
-            .map(Uuid::parse_str)
-            .transpose()
-        {
-            Ok(id) => id,
-            Err(_) => return Ok(invalid("session_id", "must be a UUID")),
-        };
-        let utm_source = text_filter(params.utm_source);
-        let utm_medium = text_filter(params.utm_medium);
-        let utm_campaign = text_filter(params.utm_campaign);
-        let utm_term = text_filter(params.utm_term);
-        let utm_content = text_filter(params.utm_content);
-        let store_id = actor.store_id();
-        let query = AnalyticsEventQuery {
-            before_id,
-            before_received_at,
-            event_name: params.event_name,
-            source,
-            shopper_id,
-            channel_id,
-            session_id,
-            utm_source,
-            utm_medium,
-            utm_campaign,
-            utm_term,
-            utm_content,
-        };
-        match self
-            .state
-            .analytics_administration
-            .list_events(actor, store_id, query, limit)
-            .await
-        {
-            Ok(page) => Ok(text_result(analytics_events_json(page, limit))),
-            Err(error) => Ok(tool_error(error)),
-        }
-    }
 }
 
 fn meta_json(item: AnalyticsDestination) -> Value {
@@ -266,57 +138,10 @@ fn meta_json(item: AnalyticsDestination) -> Value {
     })
 }
 
-fn analytics_events_json(page: AnalyticsEventPage, limit: u16) -> Value {
-    let next_before_id = page
-        .events
-        .last()
-        .map(|event| event.id)
-        .filter(|_| page.has_more);
-    let next_before_received_at = page
-        .events
-        .last()
-        .map(|event| event.received_at)
-        .filter(|_| page.has_more)
-        .map(format_timestamp);
-    json!({
-        "events": page.events.into_iter().map(|event| json!({
-            "id": event.id,
-            "event_id": event.event_id,
-            "event_name": event.event_name,
-            "event_source": event.event_source,
-            "channel_id": event.channel_id,
-            "shopper_id": event.shopper_id,
-            "session_id": event.session_id,
-            "utm_source": event.utm_source,
-            "utm_medium": event.utm_medium,
-            "utm_campaign": event.utm_campaign,
-            "utm_term": event.utm_term,
-            "utm_content": event.utm_content,
-            "occurred_at": format_timestamp(event.occurred_at),
-            "received_at": format_timestamp(event.received_at),
-            "properties": event.properties,
-        })).collect::<Vec<_>>(),
-        "has_more": page.has_more,
-        "next_before_id": next_before_id,
-        "next_before_received_at": next_before_received_at,
-        "limit": limit,
-    })
-}
-
-fn format_timestamp(value: OffsetDateTime) -> String {
-    value.format(&Rfc3339).unwrap_or_default()
-}
-
 fn invalid(field: &'static str, message: &'static str) -> CallToolResult {
     CallToolResult::structured_error(json!({
         "code": "invalid_params", "message": format!("{field} {message}"),
     }))
-}
-
-fn text_filter(value: Option<String>) -> Option<String> {
-    value
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
 }
 
 fn is_analytics_secret_reference(value: &str) -> bool {

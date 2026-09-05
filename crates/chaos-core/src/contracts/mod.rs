@@ -25,7 +25,6 @@ pub use actor::{AdminActor, ShopperActor, ShopperCredentialCodec};
 pub use analytics::{
     AnalyticsDeliveryCommand, AnalyticsDeliveryError, AnalyticsDeliveryReceipt,
     AnalyticsDestination, AnalyticsDestinationConfiguration, AnalyticsEventDestination,
-    AnalyticsEventPage, AnalyticsEventQuery, AnalyticsEventRecord,
 };
 pub use catalog_management::ProductLifecycleSnapshot;
 pub use catalog_read::{
@@ -48,8 +47,8 @@ pub use identity::{
     ExternalIdentityVerifier, IdentityAuthentication, IdentityRepository, VerifiedExternalIdentity,
 };
 pub use integration::{
-    IntegrationQueue, MAX_INTEGRATION_ATTEMPTS, ProviderAccountReader, QueueJob, TopicEventJob,
-    VerifiedWebhookEvent, WebhookInbox, WebhookProcessingResult,
+    IntegrationQueue, MAX_INTEGRATION_ATTEMPTS, ProviderAccountReader, TopicEventJob,
+    VerifiedWebhookEvent, WebhookInbox,
 };
 pub use inventory::{InventoryAdjustment, VariantInventoryView};
 pub use media::{

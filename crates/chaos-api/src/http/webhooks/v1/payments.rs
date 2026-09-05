@@ -9,7 +9,7 @@ use chaos_core::ApplicationError;
 
 use crate::http::{ApiPath, ApiResponse, ApiState};
 
-use super::{PaymentWebhookPath, WebhookReceiptData};
+use super::PaymentWebhookPath;
 
 pub(super) fn routes() -> Router<ApiState> {
     Router::new().route(
@@ -23,12 +23,12 @@ async fn receive_payment_webhook(
     ApiPath(path): ApiPath<PaymentWebhookPath>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<ApiResponse<WebhookReceiptData>, crate::http::ApiError> {
+) -> Result<ApiResponse<()>, crate::http::ApiError> {
     let signature = headers
         .get("stripe-signature")
         .and_then(|value| value.to_str().ok())
         .ok_or(ApplicationError::Unauthorized)?;
-    let accepted = state
+    state
         .payment_service
         .receive_provider_webhook(
             &path.provider,
@@ -38,8 +38,5 @@ async fn receive_payment_webhook(
             state.clock.now(),
         )
         .await?;
-    Ok(ApiResponse::new(
-        StatusCode::ACCEPTED,
-        WebhookReceiptData { accepted },
-    ))
+    Ok(ApiResponse::new(StatusCode::ACCEPTED, ()))
 }

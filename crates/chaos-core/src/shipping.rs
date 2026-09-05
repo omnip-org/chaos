@@ -6,6 +6,7 @@ use crate::{
     contracts::{IntegrationQueue, ShippingProvider},
 };
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 /// Shipping dispatch is separate from Fulfillment state transitions. A
 /// carrier adapter can acknowledge a shipment here while Commerce remains the
@@ -15,6 +16,8 @@ pub struct ShippingWorkers {
     repository: Arc<PostgresShippingRepository>,
     providers: HashMap<String, Arc<dyn ShippingProvider>>,
 }
+
+const SHIPPING_COMMANDS_QUEUE: &str = "shipping_commands_queue";
 
 impl ShippingWorkers {
     pub fn new(
@@ -39,15 +42,15 @@ impl ShippingWorkers {
     ) -> Result<usize, ApplicationError> {
         let jobs = self
             .queue
-            .claim_outbox("chaos_shipping_commands", limit)
+            .claim_topic(SHIPPING_COMMANDS_QUEUE, limit)
             .await?;
         for job in &jobs {
             let result = self
-                .execute(job, now)
+                .execute(&job.payload, now)
                 .await
                 .map_err(|error| error.to_string());
             self.queue
-                .finish_outbox(job.id, job.attempts, result, now)
+                .finish_topic(SHIPPING_COMMANDS_QUEUE, job.msg_id, job.attempts, result)
                 .await?;
         }
         Ok(jobs.len())
@@ -55,16 +58,14 @@ impl ShippingWorkers {
 
     async fn execute(
         &self,
-        job: &crate::contracts::QueueJob,
+        payload: &serde_json::Value,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
-        if job.internal_event_type.as_deref() != Some("fulfillment.shipped") {
-            return Err(ApplicationError::Unexpected(anyhow::anyhow!(
-                "unsupported shipping event {}",
-                job.internal_event_type.as_deref().unwrap_or("unknown")
-            )));
-        }
-        let (provider_name, command) = self.repository.prepare_shipped_command(job).await?;
+        let store_id = topic_uuid(payload, "store_id")?;
+        let (provider_name, command) = self
+            .repository
+            .prepare_shipped_command(store_id, payload)
+            .await?;
         let provider =
             self.providers
                 .get(&provider_name)
@@ -73,6 +74,20 @@ impl ShippingWorkers {
                     message: "the configured Shipping provider has no adapter",
                 })?;
         let result = provider.execute(command).await?;
-        self.repository.record_result(job, &result, now).await
+        self.repository
+            .record_result(store_id, payload, &result, now)
+            .await
     }
+}
+
+fn topic_uuid(payload: &serde_json::Value, field: &'static str) -> Result<Uuid, ApplicationError> {
+    payload
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or_else(|| {
+            ApplicationError::Unexpected(anyhow::anyhow!(
+                "commerce event message missing or invalid field {field}"
+            ))
+        })
 }

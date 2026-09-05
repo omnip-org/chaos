@@ -1,6 +1,6 @@
 use crate::{
     ApplicationError,
-    contracts::{QueueJob, ShippingCommand, ShippingOperation, ShippingResult},
+    contracts::{ShippingCommand, ShippingOperation, ShippingResult},
     error::database_error,
 };
 use serde_json::Value;
@@ -19,29 +19,27 @@ impl PostgresShippingRepository {
 
     pub async fn prepare_shipped_command(
         &self,
-        job: &QueueJob,
+        store_id: Uuid,
+        payload: &Value,
     ) -> Result<(String, ShippingCommand), ApplicationError> {
-        let fulfillment_id = job
-            .payload
+        let fulfillment_id = payload
             .get("fulfillment_id")
             .and_then(Value::as_str)
             .and_then(|value| Uuid::parse_str(value).ok())
             .ok_or_else(|| invalid_shipping_job("fulfillment_id"))?;
-        let order_id = job
-            .payload
+        let order_id = payload
             .get("order_id")
             .and_then(Value::as_str)
             .and_then(|value| Uuid::parse_str(value).ok())
             .ok_or_else(|| invalid_shipping_job("order_id"))?;
-        let account_id = job
-            .payload
+        let account_id = payload
             .get("shipping_provider_account_id")
             .and_then(Value::as_str)
             .and_then(|value| Uuid::parse_str(value).ok())
             .ok_or_else(|| invalid_shipping_job("shipping_provider_account_id"))?;
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(job.store_id.to_string())
+            .bind(store_id.to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -50,14 +48,13 @@ impl PostgresShippingRepository {
              WHERE id = $1 AND store_id = $2 AND capability = 'shipping' AND enabled",
         )
         .bind(account_id)
-        .bind(job.store_id)
+        .bind(store_id)
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?
         .ok_or_else(shipping_provider_unavailable)?;
         transaction.commit().await.map_err(database_error)?;
-        let operation = match job
-            .payload
+        let operation = match payload
             .get("operation")
             .and_then(Value::as_str)
             .unwrap_or("shipped")
@@ -72,13 +69,11 @@ impl PostgresShippingRepository {
                 provider_account_id: account_id,
                 order_id,
                 fulfillment_id,
-                tracking_number: job
-                    .payload
+                tracking_number: payload
                     .get("tracking_number")
                     .and_then(Value::as_str)
                     .map(str::to_owned),
-                tracking_url: job
-                    .payload
+                tracking_url: payload
                     .get("tracking_url")
                     .and_then(Value::as_str)
                     .map(str::to_owned),
@@ -88,7 +83,8 @@ impl PostgresShippingRepository {
 
     pub async fn record_result(
         &self,
-        job: &QueueJob,
+        store_id: Uuid,
+        payload: &Value,
         result: &ShippingResult,
         now: time::OffsetDateTime,
     ) -> Result<(), ApplicationError> {
@@ -108,20 +104,17 @@ impl PostgresShippingRepository {
                 source: anyhow::anyhow!("Shipping provider returned an invalid reference"),
             });
         }
-        let order_id = job
-            .payload
+        let order_id = payload
             .get("order_id")
             .and_then(Value::as_str)
             .and_then(|value| Uuid::parse_str(value).ok())
             .ok_or_else(|| invalid_shipping_job("order_id"))?;
-        let account_id = job
-            .payload
+        let account_id = payload
             .get("shipping_provider_account_id")
             .and_then(Value::as_str)
             .and_then(|value| Uuid::parse_str(value).ok())
             .ok_or_else(|| invalid_shipping_job("shipping_provider_account_id"))?;
-        let fulfillment_id = job
-            .payload
+        let fulfillment_id = payload
             .get("fulfillment_id")
             .and_then(Value::as_str)
             .and_then(|value| Uuid::parse_str(value).ok())
@@ -141,7 +134,7 @@ impl PostgresShippingRepository {
         }
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(job.store_id.to_string())
+            .bind(store_id.to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -153,7 +146,7 @@ impl PostgresShippingRepository {
                  WHERE store_id = $1 AND id = $2 AND order_id = $6 \
                    AND shipping_provider_account_id = $7",
             )
-            .bind(job.store_id)
+            .bind(store_id)
             .bind(fulfillment_id)
             .bind(result.tracking_number.as_deref())
             .bind(result.tracking_url.as_deref())
@@ -183,7 +176,7 @@ impl PostgresShippingRepository {
              WHERE store_id = $1 AND id = $2 AND order_id = $5 \
                AND shipping_provider_account_id = $6",
         )
-        .bind(job.store_id)
+        .bind(store_id)
         .bind(fulfillment_id)
         .bind(provider_reference_id)
         .bind(now)

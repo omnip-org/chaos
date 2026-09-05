@@ -11,7 +11,7 @@ use crate::{
         StripeAccountDetail, StripeAccountPage,
         PaymentRefundObservation, PaymentRefundStatus, PaymentShippingAddress, PaymentCommand,
         PaymentCommandKind, PaymentCommandResult, StripeWebhookConfiguration,
-        StripeWebhookConfigurationRepository, QueueJob, RefundDetail, ShopperActor,
+        StripeWebhookConfigurationRepository, RefundDetail, ShopperActor,
     },
     store::StoreActor,
 };
@@ -33,8 +33,8 @@ use uuid::Uuid;
 
 use crate::adapters::postgres::{
     analytics::{
-        AnalyticsEventToAppend, OrderIdentityContext, append_event, merge_order_identity,
-        payment_event_payload, publish_commerce_event, splice_attribution,
+        OrderIdentityContext, merge_order_identity, payment_event_payload, publish_commerce_event,
+        splice_attribution,
     },
     sales::{consume_order_inventory, release_order_inventory},
 };
@@ -295,30 +295,30 @@ fn unexpected_conversion(
     ApplicationError::Unexpected(error.into())
 }
 
-fn outbox_aggregate_id(job: &QueueJob) -> Result<Uuid, ApplicationError> {
-    job.payload
+fn outbox_aggregate_id(payload: &Value) -> Result<Uuid, ApplicationError> {
+    payload
         .get("aggregate_id")
         .and_then(Value::as_str)
         .and_then(|value| Uuid::parse_str(value).ok())
         .ok_or_else(invalid_outbox_payload)
 }
 
-fn outbox_amount(job: &QueueJob) -> Result<i64, ApplicationError> {
-    job.payload
+fn outbox_amount(payload: &Value) -> Result<i64, ApplicationError> {
+    payload
         .get("amount_minor")
         .and_then(Value::as_i64)
         .ok_or_else(invalid_outbox_payload)
 }
 
-fn outbox_currency(job: &QueueJob) -> Result<&str, ApplicationError> {
-    job.payload
+fn outbox_currency(payload: &Value) -> Result<&str, ApplicationError> {
+    payload
         .get("currency")
         .and_then(Value::as_str)
         .ok_or_else(invalid_outbox_payload)
 }
 
-fn outbox_return_url(job: &QueueJob) -> Option<String> {
-    job.payload
+fn outbox_return_url(payload: &Value) -> Option<String> {
+    payload
         .get("return_url")
         .and_then(Value::as_str)
         .map(str::to_owned)

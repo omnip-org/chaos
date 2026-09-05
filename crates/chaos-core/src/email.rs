@@ -6,7 +6,7 @@ use crate::{
     contracts::{
         EmailAccountConfiguration, EmailBrandDetail, EmailProvider, EmailProviderAccountDetail,
         EmailProviderAccountPage, EmailWebhookVerifier, IntegrationQueue, ProviderAccountReader,
-        VerifiedWebhookEvent, WebhookProcessingResult,
+        VerifiedWebhookEvent,
     },
     store::StoreActor,
 };
@@ -52,10 +52,7 @@ impl EmailWebhooks {
         }
     }
 
-    pub async fn receive(
-        &self,
-        request: ReceiveEmailWebhook<'_>,
-    ) -> Result<bool, ApplicationError> {
+    pub async fn receive(&self, request: ReceiveEmailWebhook<'_>) -> Result<(), ApplicationError> {
         let (_, secret) = self
             .accounts
             .resolve_webhook_secret("email", request.provider, request.provider_account_id)
@@ -90,8 +87,6 @@ impl EmailWebhooks {
                 provider_event_type: event.provider_event_type,
                 normalized_event_type: event.normalized_event_type,
                 payload: event.payload,
-                aggregate_type: Some("email".into()),
-                aggregate_id: None,
                 verified_at: event.received_at,
             })
             .await
@@ -517,6 +512,7 @@ pub struct EmailWorkers {
 }
 
 const NOTIFICATION_EMAIL_QUEUE: &str = "notification_email_queue";
+const EMAIL_WEBHOOKS_QUEUE: &str = "email_webhooks_queue";
 
 impl EmailWorkers {
     pub fn new(
@@ -551,29 +547,33 @@ impl EmailWorkers {
         Ok(jobs.len())
     }
 
-    pub async fn run_webhook_batch(
-        &self,
-        now: OffsetDateTime,
-        limit: u16,
-    ) -> Result<usize, ApplicationError> {
-        let jobs = self.queue.claim_webhooks("email", limit).await?;
+    pub async fn run_webhook_batch(&self, limit: u16) -> Result<usize, ApplicationError> {
+        let jobs = self.queue.claim_topic(EMAIL_WEBHOOKS_QUEUE, limit).await?;
         for job in &jobs {
-            // Delivery provider events are durably recorded in Integration.
-            // A later notification projection can attach them to a delivery
-            // row without changing the inbox or retry protocol.
-            let result = if job.normalized_event_type.is_some() {
-                WebhookProcessingResult::Processed
-            } else {
-                WebhookProcessingResult::Unsupported {
-                    reason: format!(
-                        "unsupported {} webhook {}",
-                        job.provider.as_deref().unwrap_or("email provider"),
-                        job.provider_event_type.as_deref().unwrap_or("unknown")
-                    ),
-                }
-            };
+            // There is nothing to actively do with a verified email
+            // provider webhook today — no delivery ledger to update. An
+            // event this version doesn't recognize is logged and dropped,
+            // not retried: retrying wouldn't teach Chaos to understand it.
+            if job
+                .payload
+                .get("normalized_event_type")
+                .and_then(serde_json::Value::as_str)
+                .is_none()
+            {
+                let provider = job
+                    .payload
+                    .get("provider")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("email provider");
+                let provider_event_type = job
+                    .payload
+                    .get("provider_event_type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown");
+                tracing::info!(provider, provider_event_type, "unsupported email webhook");
+            }
             self.queue
-                .finish_webhook(job.id, job.attempts, result, now)
+                .finish_topic(EMAIL_WEBHOOKS_QUEUE, job.msg_id, job.attempts, Ok(()))
                 .await?;
         }
         Ok(jobs.len())

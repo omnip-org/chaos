@@ -250,11 +250,6 @@ CREATE TABLE commerce.order_lines (
     quantity                INTEGER     NOT NULL,
     unit_price_amount_minor BIGINT      NOT NULL,
     subtotal_amount_minor   BIGINT      NOT NULL,
-    -- The ready Media asset's public URL, resolved with the exact Variant ->
-    -- Option Value -> Product fallback at order creation: order lines are an
-    -- immutable purchase-time snapshot, so the image the shopper saw at
-    -- checkout is captured here rather than resolved live from the mutable
-    -- catalog.
     image_url               TEXT,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -435,36 +430,6 @@ CREATE TRIGGER fulfillments_shipping_provider_capability_check
     ON commerce.order_shippings
     FOR EACH ROW EXECUTE FUNCTION commerce.validate_shipping_provider_account();
 
-CREATE FUNCTION integration.set_provider_webhook_aggregate (
-    event_id           UUID,
-    resolved_type      TEXT,
-    resolved_aggregate UUID
-)
-RETURNS BOOLEAN
-LANGUAGE SQL
-VOLATILE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    WITH updated AS (
-        UPDATE integration.provider_webhook_inbox AS event
-           SET aggregate_type = resolved_type,
-               aggregate_id = resolved_aggregate
-         WHERE event.id = event_id
-           AND resolved_type = 'order'
-           AND event.processing_status = 'pending'
-           AND event.store_id = nullif(current_setting('app.store_id', true), '')::uuid
-           AND EXISTS (
-               SELECT 1
-               FROM commerce.orders AS order_row
-               WHERE order_row.store_id = event.store_id
-                 AND order_row.id = resolved_aggregate
-           )
-        RETURNING 1
-    )
-    SELECT EXISTS (SELECT 1 FROM updated);
-$$;
-
 ALTER TABLE commerce.carts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.cart_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.orders ENABLE ROW LEVEL SECURITY;
@@ -550,11 +515,9 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
 REVOKE ALL ON FUNCTION commerce.validate_payment_provider_account() FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.validate_shipping_provider_account() FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.prevent_order_identity_change() FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.set_provider_webhook_aggregate (UUID, TEXT, UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION commerce.validate_payment_provider_account() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.validate_shipping_provider_account() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.prevent_order_identity_change() TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION integration.set_provider_webhook_aggregate (UUID, TEXT, UUID) TO chaos_runtime;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA commerce GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA commerce GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;

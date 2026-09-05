@@ -25,8 +25,20 @@ impl PostgresStripeRepository {
         return_url: &str,
     ) -> Result<PaymentCommand, ApplicationError> {
         let return_url = checkout_return_url(return_url, &payment.order_number)?;
-        let job = direct_checkout_job(actor, payment, &return_url);
-        let mut command = self.prepare_payment_command(&job).await?;
+        let payload = json!({
+            "aggregate_id": payment.order_id.as_uuid(),
+            "amount_minor": payment.amount_minor,
+            "currency": payment.currency.as_str(),
+            "return_url": return_url,
+        });
+        let mut command = self
+            .prepare_payment_command(
+                actor.machine.store_id.as_uuid(),
+                false,
+                Some(&payment.provider),
+                &payload,
+            )
+            .await?;
         command.idempotency_key = checkout_provider_idempotency_key(payment.order_id);
         Ok(command)
     }
@@ -227,15 +239,17 @@ impl PostgresStripeRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
-        insert_outbox(
+        publish_commerce_event(
             &mut transaction,
-            store_id,
-            "refund",
-            id.as_uuid(),
             "refund.create_requested",
-            amount_minor,
-            currency,
-            None,
+            json!({
+                "store_id": store_id.as_uuid(),
+                "aggregate_id": id.as_uuid(),
+                "amount_minor": amount_minor,
+                "currency": currency.as_str(),
+                "return_url": None::<&str>,
+                "provider": "stripe",
+            }),
         )
         .await?;
         let detail = RefundDetail {
@@ -255,105 +269,74 @@ impl PostgresStripeRepository {
 
     pub(crate) async fn process_webhook_job(
         &self,
-        job: &QueueJob,
+        store_id: Uuid,
+        normalized_event_type: &str,
+        provider_account_id: Uuid,
+        event_payload: &Value,
         now: OffsetDateTime,
     ) -> Result<Option<RefundReconciliationContext>, ApplicationError> {
-        let mut transaction = self.begin_context(None, job.store_id).await?;
-        let failure_code = job
-            .payload
+        let mut transaction = self.begin_context(None, store_id).await?;
+        let failure_code = event_payload
             .get("failure_code")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let normalized_event_type = job
-            .normalized_event_type
-            .as_deref()
-            .ok_or_else(corrupt_webhook_payload)?;
-        let provider_account_id: Uuid = sqlx::query_scalar(
-            "SELECT provider_account_id FROM integration.provider_webhook_inbox WHERE id = $1",
-        )
-        .bind(job.id)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(database_error)?;
         let mut reconciliation = None;
-        let resolved_order_id = if normalized_event_type.starts_with("payment.") {
-            let order_id = job
-                .payload
+        if normalized_event_type.starts_with("payment.") {
+            let order_id = event_payload
                 .get("order_id")
                 .and_then(Value::as_str)
                 .and_then(|value| Uuid::parse_str(value).ok())
                 .map(OrderId::from_uuid)
                 .ok_or_else(corrupt_webhook_payload)?;
-            Some(
-                apply_payment_event(
-                    &mut transaction,
-                    StoreId::from_uuid(job.store_id),
-                    order_id,
-                    provider_account_id,
-                    normalized_event_type,
-                    failure_code,
-                    &job.payload,
-                    now,
-                )
-                .await?,
+            apply_payment_event(
+                &mut transaction,
+                StoreId::from_uuid(store_id),
+                order_id,
+                provider_account_id,
+                normalized_event_type,
+                failure_code,
+                event_payload,
+                now,
             )
+            .await?;
         } else if normalized_event_type == "refund.reconcile" {
-            let payment_intent = job
-                .payload
+            let payment_intent = event_payload
                 .get("provider_payment_intent")
                 .and_then(Value::as_str)
                 .filter(|value| value.starts_with("pi_"))
                 .ok_or_else(corrupt_webhook_payload)?;
             reconciliation = load_refund_reconciliation_context(
                 &mut transaction,
-                StoreId::from_uuid(job.store_id),
+                StoreId::from_uuid(store_id),
                 provider_account_id,
                 payment_intent,
             )
             .await?;
-            reconciliation.as_ref().map(|context| context.order_id)
         } else if normalized_event_type.starts_with("refund.") {
-            let stripe_object_id = job
-                .payload
+            let stripe_object_id = event_payload
                 .get("object")
                 .and_then(Value::as_str)
                 .ok_or_else(corrupt_webhook_payload)?
                 .to_owned();
-            let refund_id = job
-                .payload
+            let refund_id = event_payload
                 .get("refund_id")
                 .and_then(Value::as_str)
                 .and_then(|value| Uuid::parse_str(value).ok())
                 .map(RefundId::from_uuid);
-            Some(
-                apply_refund_event(
-                    &mut transaction,
-                    StoreId::from_uuid(job.store_id),
-                    refund_id,
-                    provider_account_id,
-                    normalized_event_type,
-                    stripe_object_id,
-                    failure_code,
-                    &job.payload,
-                    now,
-                )
-                .await?,
+            apply_refund_event(
+                &mut transaction,
+                StoreId::from_uuid(store_id),
+                refund_id,
+                provider_account_id,
+                normalized_event_type,
+                stripe_object_id,
+                failure_code,
+                event_payload,
+                now,
             )
+            .await?;
         } else {
             return Err(corrupt_webhook_payload());
-        };
-        if let Some(order_id) = resolved_order_id {
-            let updated: bool = sqlx::query_scalar(
-                "SELECT integration.set_provider_webhook_aggregate($1, 'order', $2)",
-            )
-            .bind(job.id)
-            .bind(order_id.as_uuid())
-            .fetch_one(&mut *transaction)
-            .await
-            .map_err(database_error)?;
-            if !updated {
-                return Err(corrupt_webhook_payload());
-            }
         }
         transaction.commit().await.map_err(database_error)?;
         Ok(reconciliation)
@@ -361,22 +344,14 @@ impl PostgresStripeRepository {
 
     pub(crate) async fn prepare_payment_command(
         &self,
-        job: &QueueJob,
+        store_id: Uuid,
+        is_refund: bool,
+        provider: Option<&str>,
+        payload: &Value,
     ) -> Result<PaymentCommand, ApplicationError> {
-        let provider = job.provider.as_deref().unwrap_or("stripe");
-        let aggregate_id = outbox_aggregate_id(job)?;
-        let mut transaction = self.begin_context(None, job.store_id).await?;
-        let internal_event_type = job
-            .internal_event_type
-            .as_deref()
-            .ok_or_else(invalid_outbox_payload)?;
-        if !matches!(
-            internal_event_type,
-            "payment.checkout_session" | "refund.create_requested"
-        ) {
-            return Err(invalid_outbox_payload());
-        }
-        let is_refund = internal_event_type == "refund.create_requested";
+        let provider = provider.unwrap_or("stripe");
+        let aggregate_id = outbox_aggregate_id(payload)?;
+        let mut transaction = self.begin_context(None, store_id).await?;
         type ContextRow = (
             i64,
             String,
@@ -409,7 +384,7 @@ impl PostgresStripeRepository {
                    AND account.credential_secret_reference IS NOT NULL \
                  ORDER BY account.id LIMIT 1",
             )
-            .bind(job.store_id)
+            .bind(store_id)
             .bind(aggregate_id)
             .bind(provider)
             .fetch_optional(&mut *transaction)
@@ -434,7 +409,7 @@ impl PostgresStripeRepository {
                    AND account.credential_secret_reference IS NOT NULL \
                  ORDER BY account.id LIMIT 1",
             )
-            .bind(job.store_id)
+            .bind(store_id)
             .bind(aggregate_id)
             .bind(provider)
             .fetch_optional(&mut *transaction)
@@ -443,10 +418,11 @@ impl PostgresStripeRepository {
             .ok_or_else(provider_unavailable)?
         };
         let command_amount = row.0;
-        if !is_refund && (command_amount != outbox_amount(job)? || row.1 != outbox_currency(job)?) {
+        if !is_refund && (command_amount != outbox_amount(payload)? || row.1 != outbox_currency(payload)?)
+        {
             return Err(invalid_outbox_payload());
         }
-        if is_refund && command_amount != outbox_amount(job)? {
+        if is_refund && command_amount != outbox_amount(payload)? {
             return Err(invalid_outbox_payload());
         }
         if is_refund && row.4.is_none() {
@@ -477,7 +453,7 @@ impl PostgresStripeRepository {
                         NULLIF(btrim(shipping_country_code::text), '') \
                  FROM commerce.orders WHERE store_id = $1 AND id = $2",
             )
-            .bind(job.store_id)
+            .bind(store_id)
             .bind(order_id)
             .fetch_optional(&mut *transaction)
             .await
@@ -513,7 +489,7 @@ impl PostgresStripeRepository {
                  FROM commerce.order_lines WHERE store_id = $1 AND order_id = $2 \
                  ORDER BY position",
                 )
-                .bind(job.store_id)
+                .bind(store_id)
                 .bind(order_id)
                 .fetch_all(&mut *transaction)
                 .await
@@ -541,7 +517,7 @@ impl PostgresStripeRepository {
                 "SELECT country_code::text FROM commerce.store_shipping_countries \
                  WHERE store_id = $1 AND enabled ORDER BY country_code",
             )
-            .bind(job.store_id)
+            .bind(store_id)
             .fetch_all(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -564,7 +540,7 @@ impl PostgresStripeRepository {
             None
         };
         transaction.commit().await.map_err(database_error)?;
-        let return_url = outbox_return_url(job);
+        let return_url = outbox_return_url(payload);
         Ok(PaymentCommand {
             provider_account_id: row.2,
             kind: if is_refund {
@@ -576,13 +552,16 @@ impl PostgresStripeRepository {
             refund_id: row.9,
             amount_minor: command_amount,
             currency: CurrencyCode::parse(&row.1)?,
-            idempotency_key: job.id.to_string(),
+            // Both callers (prepare_checkout_command, the async refund
+            // consumer in payments/mod.rs) overwrite this with their own
+            // stable identifier immediately after this call returns.
+            idempotency_key: aggregate_id.to_string(),
             credential_secret_reference: row.3,
             provider_payment_reference: row.4,
             checkout_details,
             return_url,
             order_context: OrderMetadataContext {
-                store_id: job.store_id,
+                store_id,
                 shopper_id: row.5,
                 channel_id: row.6,
                 order_number: row.7,
@@ -590,9 +569,14 @@ impl PostgresStripeRepository {
         })
     }
 
+    /// Only ever called for a refund command claimed off
+    /// `payment_commands_queue` — Checkout Session creation is synchronous
+    /// (`prepare_checkout_command`/`record_checkout_result`) and never
+    /// reaches here.
     pub(crate) async fn record_payment_result(
         &self,
-        job: &QueueJob,
+        store_id: Uuid,
+        payload: &Value,
         result: &PaymentCommandResult,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
@@ -601,67 +585,28 @@ impl PostgresStripeRepository {
         {
             return Err(stripe_invalid_response());
         }
-        let aggregate_id = outbox_aggregate_id(job)?;
-        let internal_event_type = job
-            .internal_event_type
-            .as_deref()
-            .ok_or_else(invalid_outbox_payload)?;
-        if internal_event_type == "payment.checkout_session" {
-            // Creating a Checkout Session is not a payment-information
-            // submission. The payment webhook owns the eventual Purchase
-            // event, so there is no analytics write at this stage.
-            return Ok(());
-        }
-        let mut transaction = self.begin_context(None, job.store_id).await?;
-        let rows = if internal_event_type == "refund.create_requested" {
-            sqlx::query(
-                "UPDATE commerce.order_refunds \
-                 SET payment_provider_reference_id = COALESCE(payment_provider_reference_id, $3), \
-                     updated_at = CASE WHEN payment_provider_reference_id IS NULL THEN $4 ELSE updated_at END \
-                 WHERE store_id = $1 AND id = $2 \
-                   AND (payment_provider_reference_id IS NULL OR payment_provider_reference_id = $3)",
-            )
-            .bind(job.store_id)
-            .bind(aggregate_id)
-            .bind(&result.provider_object_id)
-            .bind(now)
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?
-            .rows_affected()
-        } else {
-            return Err(invalid_outbox_payload());
-        };
+        let aggregate_id = outbox_aggregate_id(payload)?;
+        let mut transaction = self.begin_context(None, store_id).await?;
+        let rows = sqlx::query(
+            "UPDATE commerce.order_refunds \
+             SET payment_provider_reference_id = COALESCE(payment_provider_reference_id, $3), \
+                 updated_at = CASE WHEN payment_provider_reference_id IS NULL THEN $4 ELSE updated_at END \
+             WHERE store_id = $1 AND id = $2 \
+               AND (payment_provider_reference_id IS NULL OR payment_provider_reference_id = $3)",
+        )
+        .bind(store_id)
+        .bind(aggregate_id)
+        .bind(&result.provider_object_id)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .rows_affected();
         if rows != 1 {
             return Err(stripe_object_mismatch());
         }
         transaction.commit().await.map_err(database_error)?;
         Ok(())
-    }
-}
-
-fn direct_checkout_job(
-    actor: &ShopperActor,
-    payment: &OrderCheckoutPayment,
-    return_url: &str,
-) -> QueueJob {
-    QueueJob {
-        id: payment.order_id.as_uuid(),
-        store_id: actor.machine.store_id.as_uuid(),
-        queue_name: "chaos_payment_commands".into(),
-        internal_event_type: Some("payment.checkout_session".into()),
-        provider_event_type: None,
-        normalized_event_type: None,
-        payload: json!({
-            "aggregate_id": payment.order_id.as_uuid(),
-            "amount_minor": payment.amount_minor,
-            "currency": payment.currency.as_str(),
-            "return_url": return_url,
-        }),
-        attempts: 1,
-        provider_account_id: None,
-        capability: Some("payment".into()),
-        provider: Some(payment.provider.clone()),
     }
 }
 

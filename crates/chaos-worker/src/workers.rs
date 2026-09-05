@@ -15,7 +15,6 @@ pub async fn run(
     ));
     let email_worker = tokio::spawn(email_worker_loop(
         runtime.email_workers.clone(),
-        runtime.clock.clone(),
         lifecycle.clone(),
     ));
     let shipping_worker = tokio::spawn(shipping_worker_loop(
@@ -50,19 +49,17 @@ pub async fn run(
 
 async fn email_worker_loop(
     workers: std::sync::Arc<chaos_core::email::EmailWorkers>,
-    clock: std::sync::Arc<dyn chaos_core::contracts::Clock>,
     lifecycle: Lifecycle,
 ) {
     let worker_id = Uuid::now_v7();
     let mut backoff = PollBackoff::new();
     while lifecycle.is_accepting_traffic() {
-        let now = clock.now();
         let mut processed = 0;
         match workers.run_outbox_batch(10).await {
             Ok(count) => processed += count,
             Err(error) => tracing::warn!(%worker_id, %error, "email outbox batch failed"),
         }
-        match workers.run_webhook_batch(now, 10).await {
+        match workers.run_webhook_batch(10).await {
             Ok(count) => processed += count,
             Err(error) => tracing::warn!(%worker_id, %error, "email webhook batch failed"),
         }

@@ -5,6 +5,7 @@ use chaos_domain::{
     store::{StoreId, StoreRole},
     stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
 };
+use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -13,9 +14,8 @@ use crate::{
     adapters::postgres::PostgresStripeRepository,
     contracts::{
         AdminActor, IntegrationQueue, MachineActor, PaymentClientAction, PaymentProviderRegistry,
-        PaymentWebhookVerifierRegistry, QueueJob, RefundDetail, ShopperActor,
-        StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage, VerifiedWebhookEvent,
-        WebhookInbox, WebhookProcessingResult,
+        PaymentWebhookVerifierRegistry, RefundDetail, ShopperActor, StripeAccountConfiguration,
+        StripeAccountDetail, StripeAccountPage, VerifiedWebhookEvent, WebhookInbox,
     },
     store::StoreActor,
 };
@@ -301,7 +301,7 @@ impl PaymentService {
         signature: &str,
         payload: &[u8],
         received_at: OffsetDateTime,
-    ) -> Result<bool, ApplicationError> {
+    ) -> Result<(), ApplicationError> {
         let verifier =
             self.webhook_verifiers
                 .get(provider)
@@ -321,8 +321,6 @@ impl PaymentService {
                 provider_event_type: event.provider_event_type,
                 normalized_event_type: event.normalized_event_type,
                 payload: event.payload,
-                aggregate_type: event.order_id.map(|_| "order".into()),
-                aggregate_id: event.order_id,
                 verified_at: event.verified_at,
             })
             .await
@@ -334,6 +332,9 @@ pub struct PaymentWorkers {
     repository: Arc<PostgresStripeRepository>,
     payment_providers: Arc<PaymentProviderRegistry>,
 }
+
+const PAYMENT_COMMANDS_QUEUE: &str = "payment_commands_queue";
+const PAYMENT_WEBHOOKS_QUEUE: &str = "payment_webhooks_queue";
 
 impl PaymentWorkers {
     pub fn new(
@@ -355,15 +356,15 @@ impl PaymentWorkers {
     ) -> Result<usize, ApplicationError> {
         let jobs = self
             .queue
-            .claim_outbox("chaos_payment_commands", limit)
+            .claim_topic(PAYMENT_COMMANDS_QUEUE, limit)
             .await?;
         for job in &jobs {
             let result = self
-                .execute_payment_job(job, now)
+                .execute_payment_job(&job.payload, job.msg_id, now)
                 .await
                 .map_err(|error| error.to_string());
             self.queue
-                .finish_outbox(job.id, job.attempts, result, now)
+                .finish_topic(PAYMENT_COMMANDS_QUEUE, job.msg_id, job.attempts, result)
                 .await?;
         }
         Ok(jobs.len())
@@ -374,73 +375,128 @@ impl PaymentWorkers {
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<usize, ApplicationError> {
-        let jobs = self.queue.claim_webhooks("payment", limit).await?;
+        let jobs = self
+            .queue
+            .claim_topic(PAYMENT_WEBHOOKS_QUEUE, limit)
+            .await?;
         for job in &jobs {
-            let result = if job.normalized_event_type.is_none() {
-                WebhookProcessingResult::Unsupported {
-                    reason: format!(
-                        "unsupported {} webhook {}",
-                        job.provider.as_deref().unwrap_or("payment provider"),
-                        job.provider_event_type.as_deref().unwrap_or("unknown")
-                    ),
-                }
-            } else {
-                match self.repository.process_webhook_job(job, now).await {
-                    Ok(Some(context)) => {
-                        let provider_name = job.provider.as_deref().unwrap_or("stripe");
-                        let result = async {
-                            let provider = self
-                                .payment_providers
-                                .get(provider_name)
-                                .ok_or_else(payment_provider_not_supported)?;
-                            let observations = provider
-                                .list_refunds(
-                                    &context.credential_secret_reference,
-                                    &context.payment_provider_reference,
-                                )
-                                .await?;
-                            self.repository
-                                .apply_refund_reconciliation(&context, &observations, now)
-                                .await
-                        }
-                        .await;
-                        match result {
-                            Ok(_) => WebhookProcessingResult::Processed,
-                            Err(error) => WebhookProcessingResult::Failed {
-                                reason: error.to_string(),
-                            },
-                        }
-                    }
-                    Ok(None) => WebhookProcessingResult::Processed,
-                    Err(error) => WebhookProcessingResult::Failed {
-                        reason: error.to_string(),
-                    },
-                }
-            };
+            let result = self.execute_webhook_job(&job.payload, now).await;
+            if let Err(error) = &result {
+                tracing::warn!(error = %error, "payment webhook processing failed");
+            }
             self.queue
-                .finish_webhook(job.id, job.attempts, result, now)
+                .finish_topic(
+                    PAYMENT_WEBHOOKS_QUEUE,
+                    job.msg_id,
+                    job.attempts,
+                    result.map_err(|error| error.to_string()),
+                )
                 .await?;
         }
         Ok(jobs.len())
     }
 
-    async fn execute_payment_job(
+    async fn execute_webhook_job(
         &self,
-        job: &QueueJob,
+        payload: &Value,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
-        let command = self.repository.prepare_payment_command(job).await?;
-        let provider_name = job.provider.as_deref().unwrap_or("stripe");
+        let Some(normalized_event_type) =
+            payload.get("normalized_event_type").and_then(Value::as_str)
+        else {
+            // An event the provider sent legitimately but this version of
+            // Chaos does not understand. Logged, not retried: retrying
+            // wouldn't teach Chaos to understand it.
+            let provider = payload
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or("payment provider");
+            let provider_event_type = payload
+                .get("provider_event_type")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            tracing::info!(provider, provider_event_type, "unsupported payment webhook");
+            return Ok(());
+        };
+        let store_id = topic_uuid(payload, "store_id")?;
+        let provider_account_id = topic_uuid(payload, "provider_account_id")?;
+        let event_payload = payload
+            .get("payload")
+            .ok_or_else(|| topic_field_error("payload"))?;
+        let Some(context) = self
+            .repository
+            .process_webhook_job(
+                store_id,
+                normalized_event_type,
+                provider_account_id,
+                event_payload,
+                now,
+            )
+            .await?
+        else {
+            return Ok(());
+        };
+        let provider_name = payload
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or("stripe");
+        let provider = self
+            .payment_providers
+            .get(provider_name)
+            .ok_or_else(payment_provider_not_supported)?;
+        let observations = provider
+            .list_refunds(
+                &context.credential_secret_reference,
+                &context.payment_provider_reference,
+            )
+            .await?;
+        self.repository
+            .apply_refund_reconciliation(&context, &observations, now)
+            .await?;
+        Ok(())
+    }
+
+    async fn execute_payment_job(
+        &self,
+        payload: &Value,
+        msg_id: i64,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError> {
+        let store_id = topic_uuid(payload, "store_id")?;
+        let provider = payload.get("provider").and_then(Value::as_str);
+        let mut command = self
+            .repository
+            .prepare_payment_command(store_id, true, provider, payload)
+            .await?;
+        // Stable across a PGMQ retry of this same message (msg_id doesn't
+        // change across set_vt-based redelivery), so a repeated Stripe call
+        // for the same refund reuses the same idempotency key.
+        command.idempotency_key = msg_id.to_string();
+        let provider_name = provider.unwrap_or("stripe");
         let provider = self
             .payment_providers
             .get(provider_name)
             .ok_or_else(payment_provider_not_supported)?;
         let result = provider.execute(command).await?;
         self.repository
-            .record_payment_result(job, &result, now)
+            .record_payment_result(store_id, payload, &result, now)
             .await?;
         Ok(())
     }
+}
+
+fn topic_uuid(payload: &Value, field: &'static str) -> Result<Uuid, ApplicationError> {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or_else(|| topic_field_error(field))
+}
+
+fn topic_field_error(field: &'static str) -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "commerce event message missing or invalid field {field}"
+    ))
 }
 
 fn require_checkout_key(actor: &MachineActor) -> Result<(), ApplicationError> {

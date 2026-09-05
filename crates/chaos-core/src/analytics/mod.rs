@@ -5,31 +5,22 @@ use uuid::Uuid;
 
 use crate::{
     ApplicationError,
-    adapters::postgres::{
-        PostgresAnalyticsDestinationStore, PostgresAnalyticsEventStore, PostgresCapiEventStore,
-    },
+    adapters::postgres::PostgresCapiEventStore,
     contracts::{
-        AnalyticsDestination, AnalyticsDestinationConfiguration, AnalyticsEventDestination,
-        AnalyticsEventPage, AnalyticsEventQuery, IntegrationQueue,
+        AnalyticsDeliveryCommand, AnalyticsDestination, AnalyticsDestinationConfiguration,
+        AnalyticsEventDestination, IntegrationQueue,
     },
     store::StoreActor,
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 pub struct AnalyticsAdministration {
-    destinations: Arc<PostgresAnalyticsDestinationStore>,
-    events: Arc<PostgresAnalyticsEventStore>,
+    repository: Arc<PostgresCapiEventStore>,
 }
 
 impl AnalyticsAdministration {
-    pub fn new(
-        destinations: Arc<PostgresAnalyticsDestinationStore>,
-        events: Arc<PostgresAnalyticsEventStore>,
-    ) -> Self {
-        Self {
-            destinations,
-            events,
-        }
+    pub fn new(repository: Arc<PostgresCapiEventStore>) -> Self {
+        Self { repository }
     }
 
     pub async fn get_destination(
@@ -38,7 +29,7 @@ impl AnalyticsAdministration {
         store_id: chaos_domain::store::StoreId,
         provider: &str,
     ) -> Result<Option<AnalyticsDestination>, ApplicationError> {
-        self.destinations
+        self.repository
             .get_destination(actor, store_id, provider)
             .await
     }
@@ -53,25 +44,9 @@ impl AnalyticsAdministration {
         if actor.role() != chaos_domain::store::StoreRole::Owner {
             return Err(ApplicationError::Forbidden);
         }
-        self.destinations
+        self.repository
             .configure_destination(actor, store_id, configuration, now)
             .await
-    }
-
-    pub async fn list_events(
-        &self,
-        actor: StoreActor,
-        store_id: chaos_domain::store::StoreId,
-        query: AnalyticsEventQuery,
-        limit: u16,
-    ) -> Result<AnalyticsEventPage, ApplicationError> {
-        if query.before_id.is_some() != query.before_received_at.is_some() {
-            return Err(validation(
-                "before_id",
-                "before_id and before_received_at must be provided together",
-            ));
-        }
-        self.events.list_events(actor, store_id, query, limit).await
     }
 }
 
@@ -124,18 +99,36 @@ impl MetaCapiWorker {
 
     async fn deliver(&self, payload: &Value) -> Result<(), ApplicationError> {
         let store_id = topic_uuid(payload, "store_id")?;
-        let analytics_event_id = topic_uuid(payload, "analytics_event_id")?;
-        let received_at = payload
-            .get("received_at")
+        let Some(account) = self.repository.resolve_meta_account(store_id).await? else {
+            return Ok(());
+        };
+        // event_id is always the Order id in this codebase (see
+        // payment_event_payload's doc comment) — the same id chaos-js's own
+        // Pixel projection reuses, so Meta dedupes the two.
+        let event_id = topic_uuid(payload, "order_id")?;
+        let shopper_id = topic_uuid(payload, "shopper_id")?;
+        let event_name = payload
+            .get("event_name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| topic_field_error("event_name"))?
+            .to_owned();
+        let occurred_at = payload
+            .get("occurred_at")
             .and_then(Value::as_str)
             .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
-            .ok_or_else(|| topic_field_error("received_at"))?;
-        let Some(command) = self
-            .repository
-            .load_command(store_id, analytics_event_id, received_at)
-            .await?
-        else {
-            return Ok(());
+            .ok_or_else(|| topic_field_error("occurred_at"))?;
+        let properties = payload.get("properties").cloned().unwrap_or(Value::Null);
+        let command = AnalyticsDeliveryCommand {
+            provider: account.provider,
+            event_id,
+            external_account_reference: account.external_account_reference,
+            credential_secret_reference: account.credential_secret_reference,
+            configuration: account.configuration,
+            event_name,
+            event_source: "server".into(),
+            occurred_at,
+            shopper_id,
+            properties,
         };
         self.destination
             .send(&command)
@@ -157,13 +150,4 @@ fn topic_field_error(field: &'static str) -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!(
         "commerce event message missing or invalid field {field}"
     ))
-}
-
-fn validation(field: &'static str, reason: &'static str) -> ApplicationError {
-    ApplicationError::Validation {
-        violations: vec![chaos_domain::FieldViolation {
-            field,
-            reason: reason.into(),
-        }],
-    }
 }

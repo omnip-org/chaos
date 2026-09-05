@@ -4,47 +4,11 @@ use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AnalyticsEventRecord {
-    pub id: Uuid,
-    pub event_id: Uuid,
-    pub event_name: String,
-    pub event_source: String,
-    pub channel_id: Uuid,
-    pub shopper_id: Uuid,
-    pub session_id: Option<Uuid>,
-    pub utm_source: Option<String>,
-    pub utm_medium: Option<String>,
-    pub utm_campaign: Option<String>,
-    pub utm_term: Option<String>,
-    pub utm_content: Option<String>,
-    pub occurred_at: OffsetDateTime,
-    pub received_at: OffsetDateTime,
-    pub properties: Value,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AnalyticsEventPage {
-    pub events: Vec<AnalyticsEventRecord>,
-    pub has_more: bool,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct AnalyticsEventQuery {
-    pub before_id: Option<Uuid>,
-    pub before_received_at: Option<OffsetDateTime>,
-    pub event_name: Option<String>,
-    pub source: Option<String>,
-    pub shopper_id: Option<Uuid>,
-    pub channel_id: Option<Uuid>,
-    pub session_id: Option<Uuid>,
-    pub utm_source: Option<String>,
-    pub utm_medium: Option<String>,
-    pub utm_campaign: Option<String>,
-    pub utm_term: Option<String>,
-    pub utm_content: Option<String>,
-}
-
+/// Meta's destination config lives in `integration.provider_accounts`
+/// (`capability = 'analytics', provider = 'meta'`) alongside every other
+/// capability's accounts; `external_account_reference` (the Meta Dataset
+/// ID) is stored inside that row's `configuration` JSONB rather than a
+/// dedicated column, since `provider_accounts` doesn't have one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnalyticsDestination {
     pub id: Uuid,

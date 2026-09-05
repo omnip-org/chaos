@@ -6,30 +6,13 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
-const MAX_UTM_VALUE_BYTES: usize = 2_048;
-
-pub struct PostgresAnalyticsEventStore {
-    pool: PgPool,
-}
-
-pub struct PostgresAnalyticsDestinationStore {
-    pool: PgPool,
-}
-
+/// Meta's destination config (`get_destination`/`configure_destination`,
+/// `integration.provider_accounts` with `capability = 'analytics'`) and the
+/// `analytics_capi_queue` consumer's credential lookup
+/// (`resolve_meta_account`) share this store — both just read/write the
+/// same provider account row, no separate analytics-specific table.
 pub struct PostgresCapiEventStore {
     pool: PgPool,
-}
-
-impl PostgresAnalyticsEventStore {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
-    }
-}
-
-impl PostgresAnalyticsDestinationStore {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
-    }
 }
 
 impl PostgresCapiEventStore {
@@ -37,35 +20,6 @@ impl PostgresCapiEventStore {
         Self { pool }
     }
 }
-
-type AnalyticsEventRow = (
-    Uuid,
-    Uuid,
-    String,
-    String,
-    Uuid,
-    Uuid,
-    Option<Uuid>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    OffsetDateTime,
-    OffsetDateTime,
-    Value,
-);
-
-type AnalyticsDestinationRow = (
-    Uuid,
-    String,
-    String,
-    String,
-    Value,
-    bool,
-    OffsetDateTime,
-    OffsetDateTime,
-);
 
 async fn context(
     tx: &mut Transaction<'_, Postgres>,
@@ -86,125 +40,13 @@ async fn context(
     .map_err(db)
 }
 
-/// Append one behavior event. Commerce repositories use the same primitive so
-/// server-side events are written in the business transaction that produced
-/// them; delivery rows are scheduled asynchronously so provider queues cannot
-/// roll back event collection or a commerce transaction.
-pub(crate) struct AnalyticsEventToAppend {
-    pub(crate) store_id: Uuid,
-    pub(crate) channel_id: Uuid,
-    pub(crate) shopper_id: Uuid,
-    pub(crate) event_id: Uuid,
-    pub(crate) event_name: String,
-    pub(crate) event_source: &'static str,
-    pub(crate) properties: Value,
-    pub(crate) occurred_at: OffsetDateTime,
-    pub(crate) received_at: OffsetDateTime,
-}
-
-/// The freshly minted `analytics_events.id`/`received_at` for a newly
-/// inserted event, so the caller can point a `publish_commerce_event` call
-/// at the exact row a CAPI consumer should read back. `None` means the
-/// insert was skipped as a duplicate (`analytics_event_keys`'s idempotency
-/// guard) — the caller should not publish either, since whatever already
-/// published for the original insert already covers it.
-pub(crate) async fn append_event(
-    tx: &mut Transaction<'_, Postgres>,
-    event: AnalyticsEventToAppend,
-) -> Result<Option<(Uuid, OffsetDateTime)>, ApplicationError> {
-    let mut properties = event.properties;
-    let session_id = properties
-        .get("session_id")
-        .and_then(Value::as_str)
-        .and_then(|value| Uuid::parse_str(value).ok());
-    let direct_utm_source = normalized_utm_value(properties.get("utm_source"));
-    let direct_utm_medium = normalized_utm_value(properties.get("utm_medium"));
-    let direct_utm_campaign = normalized_utm_value(properties.get("utm_campaign"));
-    let direct_utm_term = normalized_utm_value(properties.get("utm_term"));
-    let direct_utm_content = normalized_utm_value(properties.get("utm_content"));
-    let utm_source = direct_utm_source
-        .clone()
-        .or_else(|| traffic_utm_value(&properties, "source"));
-    let utm_medium = direct_utm_medium
-        .clone()
-        .or_else(|| traffic_utm_value(&properties, "medium"));
-    let utm_campaign = direct_utm_campaign
-        .clone()
-        .or_else(|| traffic_utm_value(&properties, "campaign"));
-    let utm_term = direct_utm_term
-        .clone()
-        .or_else(|| traffic_utm_value(&properties, "term"));
-    let utm_content = direct_utm_content
-        .clone()
-        .or_else(|| traffic_utm_value(&properties, "content"));
-    if let Some(object) = properties.as_object_mut() {
-        object.remove("session_id");
-        for (key, value) in [
-            ("utm_source", &direct_utm_source),
-            ("utm_medium", &direct_utm_medium),
-            ("utm_campaign", &direct_utm_campaign),
-            ("utm_term", &direct_utm_term),
-            ("utm_content", &direct_utm_content),
-        ] {
-            if value.is_some() {
-                object.remove(key);
-            }
-        }
-    }
-    let analytics_event_id = Uuid::now_v7();
-    let inserted_key: Option<Uuid> = sqlx::query_scalar(
-        "INSERT INTO integration.analytics_event_keys
-            (store_id,event_name,event_id,event_received_at,analytics_event_id)
-         VALUES ($1,$2,$3,$4,$5)
-         ON CONFLICT (store_id,event_name,event_id) DO NOTHING
-         RETURNING analytics_event_id",
-    )
-    .bind(event.store_id)
-    .bind(&event.event_name)
-    .bind(event.event_id)
-    .bind(event.received_at)
-    .bind(analytics_event_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(db)?;
-    if inserted_key.is_none() {
-        return Ok(None);
-    }
-    sqlx::query(
-        "INSERT INTO integration.analytics_events
-            (id,event_id,store_id,channel_id,shopper_id,session_id,utm_source,utm_medium,utm_campaign,utm_term,utm_content,event_name,event_source,properties,occurred_at,received_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
-    )
-    .bind(analytics_event_id)
-    .bind(event.event_id)
-    .bind(event.store_id)
-    .bind(event.channel_id)
-    .bind(event.shopper_id)
-    .bind(session_id)
-    .bind(utm_source)
-    .bind(utm_medium)
-    .bind(utm_campaign)
-    .bind(utm_term)
-    .bind(utm_content)
-    .bind(event.event_name)
-    .bind(event.event_source)
-    .bind(properties)
-    .bind(event.occurred_at)
-    .bind(event.received_at)
-    .execute(&mut **tx)
-    .await
-    .map_err(db)?;
-
-    Ok(Some((analytics_event_id, event.received_at)))
-}
-
 /// Publish a topic-routed commerce event (`integration.publish_commerce_event`)
 /// in the same transaction that produced it, so a rolled-back transaction
 /// never delivers a message a consumer would act on. See
 /// `migrations/0004_integration.sql` for the queue bindings this reaches.
 pub(crate) async fn publish_commerce_event(
     tx: &mut Transaction<'_, Postgres>,
-    routing_key: &'static str,
+    routing_key: &str,
     payload: Value,
 ) -> Result<(), ApplicationError> {
     sqlx::query("SELECT integration.publish_commerce_event($1, $2)")
@@ -218,19 +60,26 @@ pub(crate) async fn publish_commerce_event(
 
 /// Shared payload shape for `payment.initiated`/`payment.completed`: enough
 /// for the notification-email consumer (`order_id`) and the CAPI consumer
-/// (`analytics_event_id`/`received_at`, pointing at the row `append_event`
-/// just wrote, so CAPI's rich `properties` aren't rebuilt a second time).
+/// (`event_name`/`occurred_at`/`shopper_id`/`properties` — everything
+/// `AnalyticsDeliveryCommand` needs to build a Meta CAPI event; `event_id`
+/// is always `order_id` in this codebase, so the CAPI consumer derives it
+/// directly rather than carrying a redundant field, and `event_source` is
+/// always `"server"` for these two routing keys).
 pub(crate) fn payment_event_payload(
     store_id: Uuid,
     order_id: Uuid,
-    analytics_event_id: Uuid,
-    received_at: OffsetDateTime,
+    shopper_id: Uuid,
+    event_name: &'static str,
+    occurred_at: OffsetDateTime,
+    properties: Value,
 ) -> Value {
     serde_json::json!({
         "store_id": store_id,
         "order_id": order_id,
-        "analytics_event_id": analytics_event_id,
-        "received_at": received_at.format(&Rfc3339).unwrap_or_default(),
+        "event_name": event_name,
+        "occurred_at": occurred_at.format(&Rfc3339).unwrap_or_default(),
+        "shopper_id": shopper_id,
+        "properties": properties,
     })
 }
 
@@ -360,128 +209,28 @@ fn sha256_hex(value: &[u8]) -> String {
         .collect()
 }
 
-fn normalized_utm_value(value: Option<&Value>) -> Option<String> {
-    let value = value?.as_str()?.trim();
-    if value.is_empty() || value.len() > MAX_UTM_VALUE_BYTES || value.chars().any(char::is_control)
-    {
-        return None;
-    }
-    Some(value.to_owned())
+/// `id, provider, credentials_configured, configuration, enabled, created_at, updated_at`.
+type ProviderAccountRow = (
+    Uuid,
+    String,
+    bool,
+    Value,
+    bool,
+    OffsetDateTime,
+    OffsetDateTime,
+);
+
+/// The Meta provider account's credentials, as `AnalyticsDeliveryCommand`
+/// needs them — never exposed outside this crate (unlike `AnalyticsDestination`,
+/// which deliberately omits the raw secret reference for MCP responses).
+pub(crate) struct MetaAccountCredentials {
+    pub(crate) provider: String,
+    pub(crate) external_account_reference: String,
+    pub(crate) credential_secret_reference: String,
+    pub(crate) configuration: Value,
 }
 
-fn traffic_utm_value(properties: &Value, key: &str) -> Option<String> {
-    normalized_utm_value(
-        properties
-            .get("traffic")
-            .and_then(Value::as_object)
-            .and_then(|traffic| traffic.get("session"))
-            .and_then(Value::as_object)
-            .and_then(|session| session.get(key)),
-    )
-}
-
-impl PostgresAnalyticsEventStore {
-    pub(crate) async fn list_events(
-        &self,
-        actor: StoreActor,
-        store: StoreId,
-        query: AnalyticsEventQuery,
-        limit: u16,
-    ) -> Result<AnalyticsEventPage, ApplicationError> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        context(&mut tx, store.as_uuid(), Some(actor.user_id().as_uuid())).await?;
-        let query_limit = i32::from(limit) + 1;
-        let rows: Vec<AnalyticsEventRow> = sqlx::query_as(
-            "SELECT e.id,e.event_id,e.event_name,e.event_source,e.channel_id,e.shopper_id,e.session_id,
-                    e.utm_source,e.utm_medium,e.utm_campaign,e.utm_term,e.utm_content,
-                    e.occurred_at,e.received_at,e.properties
-             FROM integration.analytics_events e
-             WHERE e.store_id=$1
-               AND (
-                   ($3::timestamptz IS NULL AND $4::uuid IS NULL)
-                   OR (
-                       $3::timestamptz IS NOT NULL
-                       AND $4::uuid IS NOT NULL
-                       AND (e.received_at, e.id) < ($3, $4)
-                   )
-               )
-               AND ($5::text IS NULL OR e.event_name=$5)
-               AND ($6::text IS NULL OR e.event_source=$6)
-               AND ($7::uuid IS NULL OR e.shopper_id=$7)
-               AND ($8::uuid IS NULL OR e.channel_id=$8)
-               AND ($9::uuid IS NULL OR e.session_id=$9)
-               AND ($10::text IS NULL OR e.utm_source=$10)
-               AND ($11::text IS NULL OR e.utm_medium=$11)
-               AND ($12::text IS NULL OR e.utm_campaign=$12)
-               AND ($13::text IS NULL OR e.utm_term=$13)
-               AND ($14::text IS NULL OR e.utm_content=$14)
-             ORDER BY e.received_at DESC, e.id DESC
-             LIMIT $2",
-        )
-        .bind(store.as_uuid())
-        .bind(query_limit)
-        .bind(query.before_received_at)
-        .bind(query.before_id)
-        .bind(query.event_name)
-        .bind(query.source)
-        .bind(query.shopper_id)
-        .bind(query.channel_id)
-        .bind(query.session_id)
-        .bind(query.utm_source)
-        .bind(query.utm_medium)
-        .bind(query.utm_campaign)
-        .bind(query.utm_term)
-        .bind(query.utm_content)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(db)?;
-        tx.commit().await.map_err(db)?;
-
-        let has_more = rows.len() > usize::from(limit);
-        let events = rows
-            .into_iter()
-            .take(usize::from(limit))
-            .map(
-                |(
-                    id,
-                    event_id,
-                    event_name,
-                    event_source,
-                    channel_id,
-                    shopper_id,
-                    session_id,
-                    utm_source,
-                    utm_medium,
-                    utm_campaign,
-                    utm_term,
-                    utm_content,
-                    occurred_at,
-                    received_at,
-                    properties,
-                )| AnalyticsEventRecord {
-                    id,
-                    event_id,
-                    event_name,
-                    event_source,
-                    channel_id,
-                    shopper_id,
-                    session_id,
-                    utm_source,
-                    utm_medium,
-                    utm_campaign,
-                    utm_term,
-                    utm_content,
-                    occurred_at,
-                    received_at,
-                    properties,
-                },
-            )
-            .collect();
-        Ok(AnalyticsEventPage { events, has_more })
-    }
-}
-
-impl PostgresAnalyticsDestinationStore {
+impl PostgresCapiEventStore {
     pub(crate) async fn get_destination(
         &self,
         actor: StoreActor,
@@ -490,11 +239,10 @@ impl PostgresAnalyticsDestinationStore {
     ) -> Result<Option<AnalyticsDestination>, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         context(&mut tx, store.as_uuid(), Some(actor.user_id().as_uuid())).await?;
-        let row: Option<AnalyticsDestinationRow> = sqlx::query_as(
-            "SELECT id,provider,external_account_reference,credential_secret_reference,
-                        configuration,enabled,created_at,updated_at
-                   FROM integration.analytics_destinations
-                  WHERE store_id=$1 AND provider=$2",
+        let row: Option<ProviderAccountRow> = sqlx::query_as(
+            "SELECT id, provider, credential_secret_reference IS NOT NULL, configuration, enabled, created_at, updated_at \
+               FROM integration.provider_accounts \
+              WHERE store_id=$1 AND capability='analytics' AND provider=$2",
         )
         .bind(store.as_uuid())
         .bind(provider)
@@ -502,17 +250,7 @@ impl PostgresAnalyticsDestinationStore {
         .await
         .map_err(db)?;
         tx.commit().await.map_err(db)?;
-        Ok(row.map(|row| AnalyticsDestination {
-            id: row.0,
-            store_id: store,
-            provider: row.1,
-            external_account_reference: row.2,
-            enabled: row.5,
-            credentials_configured: true,
-            configuration: row.4,
-            created_at: row.6,
-            updated_at: row.7,
-        }))
+        Ok(row.map(|row| provider_account_to_destination(store, row)))
     }
 
     pub(crate) async fn configure_destination(
@@ -524,118 +262,95 @@ impl PostgresAnalyticsDestinationStore {
     ) -> Result<AnalyticsDestination, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         context(&mut tx, store.as_uuid(), Some(actor.user_id().as_uuid())).await?;
-        let row: (
-            Uuid,
-            String,
-            String,
-            Value,
-            bool,
-            OffsetDateTime,
-            OffsetDateTime,
-        ) = sqlx::query_as(
-            "SELECT destination_id,destination_provider,destination_external_account_reference,\
-                        destination_configuration,destination_enabled,destination_created_at,\
-                        destination_updated_at \
-                   FROM integration.configure_analytics_destination($1,$2,$3,$4,$5,$6,$7)",
+        let mut merged_configuration = configuration.configuration;
+        if let Some(object) = merged_configuration.as_object_mut() {
+            object.insert(
+                "dataset_id".into(),
+                Value::String(configuration.external_account_reference),
+            );
+        }
+        let row: ProviderAccountRow = sqlx::query_as(
+            "INSERT INTO integration.provider_accounts \
+                (id, store_id, capability, provider, credential_secret_reference, configuration, enabled, created_at, updated_at) \
+             VALUES (uuidv7(), $1, 'analytics', $2, $3, $4, $5, $6, $6) \
+             ON CONFLICT (store_id, capability, provider) DO UPDATE SET \
+                credential_secret_reference = EXCLUDED.credential_secret_reference, \
+                configuration = EXCLUDED.configuration, \
+                enabled = EXCLUDED.enabled, \
+                updated_at = EXCLUDED.updated_at \
+             RETURNING id, provider, credential_secret_reference IS NOT NULL, configuration, enabled, created_at, updated_at",
         )
         .bind(store.as_uuid())
         .bind(configuration.provider)
-        .bind(configuration.external_account_reference)
         .bind(configuration.credential_secret_reference)
-        .bind(configuration.configuration)
+        .bind(merged_configuration)
         .bind(configuration.enabled)
         .bind(now)
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
-        let result = AnalyticsDestination {
-            id: row.0,
-            store_id: store,
-            provider: row.1,
-            external_account_reference: row.2,
-            enabled: row.4,
-            credentials_configured: true,
-            configuration: row.3,
-            created_at: row.5,
-            updated_at: row.6,
-        };
         tx.commit().await.map_err(db)?;
-        Ok(result)
+        Ok(provider_account_to_destination(store, row))
     }
-}
 
-/// event_id, provider, external_account_reference, credential_secret_reference,
-/// configuration, event_name, event_source, occurred_at, shopper_id, properties.
-type CapiCommandRow = (
-    Uuid,
-    String,
-    String,
-    String,
-    Value,
-    String,
-    String,
-    OffsetDateTime,
-    Uuid,
-    Value,
-);
-
-impl PostgresCapiEventStore {
-    /// Look up the Meta CAPI command for a `payment.initiated`/
-    /// `payment.completed` message claimed off `analytics_capi_queue`.
-    /// `None` means there's nothing to send — the event row is gone (a
-    /// stale message) or the Store has no enabled `meta` destination
-    /// configured. Neither is a failure: CAPI delivery is best-effort
-    /// enrichment, same as attribution capture itself.
-    pub(crate) async fn load_command(
+    /// Look up Meta's credentials for the `analytics_capi_queue` consumer.
+    /// `None` means the Store has no enabled `meta` destination configured
+    /// — not a failure, CAPI delivery is best-effort enrichment, same as
+    /// attribution capture itself.
+    pub(crate) async fn resolve_meta_account(
         &self,
         store_id: Uuid,
-        analytics_event_id: Uuid,
-        received_at: OffsetDateTime,
-    ) -> Result<Option<AnalyticsDeliveryCommand>, ApplicationError> {
+    ) -> Result<Option<MetaAccountCredentials>, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         context(&mut tx, store_id, None).await?;
-        let row: Option<CapiCommandRow> = sqlx::query_as(
-            "SELECT e.event_id,destination.provider,destination.external_account_reference,
-                        destination.credential_secret_reference,destination.configuration,
-                        e.event_name,e.event_source,e.occurred_at,e.shopper_id,e.properties
-                   FROM integration.analytics_events e
-                   JOIN integration.analytics_destinations destination
-                     ON destination.store_id=e.store_id
-                    AND destination.provider='meta' AND destination.enabled
-                  WHERE e.store_id=$1 AND e.received_at=$2 AND e.id=$3",
+        let row: Option<(String, Value)> = sqlx::query_as(
+            "SELECT credential_secret_reference, configuration \
+               FROM integration.provider_accounts \
+              WHERE store_id=$1 AND capability='analytics' AND provider='meta' \
+                AND enabled AND credential_secret_reference IS NOT NULL",
         )
         .bind(store_id)
-        .bind(received_at)
-        .bind(analytics_event_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(db)?;
         tx.commit().await.map_err(db)?;
-        Ok(row.map(
-            |(
-                event_id,
-                provider,
+        Ok(row.map(|(credential_secret_reference, configuration)| {
+            let external_account_reference = configuration
+                .get("dataset_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            MetaAccountCredentials {
+                provider: "meta".into(),
                 external_account_reference,
                 credential_secret_reference,
                 configuration,
-                event_name,
-                event_source,
-                occurred_at,
-                shopper_id,
-                properties,
-            )| AnalyticsDeliveryCommand {
-                provider,
-                event_id,
-                external_account_reference,
-                credential_secret_reference,
-                configuration,
-                event_name,
-                event_source,
-                occurred_at,
-                shopper_id,
-                properties,
-            },
-        ))
+            }
+        }))
+    }
+}
+
+fn provider_account_to_destination(
+    store: StoreId,
+    row: ProviderAccountRow,
+) -> AnalyticsDestination {
+    let (id, provider, credentials_configured, configuration, enabled, created_at, updated_at) =
+        row;
+    let external_account_reference = configuration
+        .get("dataset_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    AnalyticsDestination {
+        id,
+        store_id: store,
+        provider,
+        external_account_reference,
+        enabled,
+        credentials_configured,
+        configuration,
+        created_at,
+        updated_at,
     }
 }
 
@@ -645,37 +360,8 @@ fn db(error: sqlx::Error) -> ApplicationError {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        OrderIdentityContext, merge_order_identity, normalized_utm_value, sha256_hex,
-        splice_attribution, traffic_utm_value,
-    };
+    use super::{OrderIdentityContext, merge_order_identity, sha256_hex, splice_attribution};
     use serde_json::json;
-
-    #[test]
-    fn accepts_flexible_utm_values_without_assigning_semantics() {
-        let value = json!({"utm_source": "  partner/A  "});
-        assert_eq!(
-            normalized_utm_value(value.get("utm_source")),
-            Some("partner/A".into())
-        );
-    }
-
-    #[test]
-    fn reads_session_utm_values_from_traffic_history() {
-        let value = json!({
-            "traffic": {
-                "session": {
-                    "source": "newsletter",
-                    "medium": "email"
-                }
-            }
-        });
-        assert_eq!(
-            traffic_utm_value(&value, "source"),
-            Some("newsletter".into())
-        );
-        assert_eq!(traffic_utm_value(&value, "medium"), Some("email".into()));
-    }
 
     #[test]
     fn hashes_and_splits_shipping_identity_for_meta_matching() {

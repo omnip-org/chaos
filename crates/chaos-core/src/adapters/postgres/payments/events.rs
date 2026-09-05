@@ -24,40 +24,6 @@ type OrderIdentityRow = (
     Option<String>,
 );
 
-#[allow(clippy::too_many_arguments)]
-async fn insert_outbox(
-    transaction: &mut Transaction<'static, Postgres>,
-    store_id: StoreId,
-    aggregate_type: &'static str,
-    aggregate_id: Uuid,
-    event_type: &'static str,
-    amount_minor: i64,
-    currency: CurrencyCode,
-    return_url: Option<&str>,
-) -> Result<(), ApplicationError> {
-    sqlx::query(
-        "INSERT INTO integration.event_outbox \
-         (id, store_id, aggregate_type, aggregate_id, internal_event_type, payload) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
-    )
-    .bind(Uuid::now_v7())
-    .bind(store_id.as_uuid())
-    .bind(aggregate_type)
-    .bind(aggregate_id)
-    .bind(event_type)
-    .bind(json!({
-        "aggregate_id": aggregate_id,
-        "amount_minor": amount_minor,
-        "currency": currency.as_str(),
-        "return_url": return_url,
-        "provider": "stripe",
-    }))
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    Ok(())
-}
-
 /// Updates the Order's `payment_status` summary only when it still matches
 /// one of `from_statuses`, so an out-of-order or replayed webhook cannot
 /// clobber a state that has already moved on (e.g. a late `payment.captured`
@@ -229,7 +195,7 @@ async fn apply_payment_event(
     if !captured && !failed && !expired {
         return Err(corrupt_webhook_payload());
     }
-    let (order_status, payment_status, shopper_id, channel_id, currency, cart_id):
+    let (order_status, payment_status, shopper_id, _channel_id, currency, cart_id):
         (String, String, Uuid, Uuid, String, Uuid) = sqlx::query_as(
             "SELECT status::text, payment_status::text, shopper_id, channel_id, currency::text, \
                     cart_id \
@@ -360,34 +326,19 @@ async fn apply_payment_event(
                 country_code: shipping_country_code.as_deref(),
             },
         );
-        let inserted = append_event(
+        publish_commerce_event(
             transaction,
-            AnalyticsEventToAppend {
-                store_id: store_id.as_uuid(),
-                channel_id,
+            "payment.completed",
+            payment_event_payload(
+                store_id.as_uuid(),
+                order_id.as_uuid(),
                 shopper_id,
-                event_id: order_id.as_uuid(),
-                event_name: "purchase".into(),
-                event_source: "server",
-                properties,
+                "purchase",
                 occurred_at,
-                received_at: now,
-            },
+                properties,
+            ),
         )
         .await?;
-        if let Some((analytics_event_id, received_at)) = inserted {
-            publish_commerce_event(
-                transaction,
-                "payment.completed",
-                payment_event_payload(
-                    store_id.as_uuid(),
-                    order_id.as_uuid(),
-                    analytics_event_id,
-                    received_at,
-                ),
-            )
-            .await?;
-        }
     } else if failed || expired {
         let (payment_status, failure_code) = if expired {
             ("expired", "checkout_expired".to_owned())

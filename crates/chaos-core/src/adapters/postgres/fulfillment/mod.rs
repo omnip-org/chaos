@@ -197,26 +197,20 @@ impl PostgresFulfillmentRepository {
         }
         let order_id = fulfillment.order_id();
         if transitioned {
-            sqlx::query(
-                "INSERT INTO integration.event_outbox \
-                 (id, store_id, aggregate_type, aggregate_id, internal_event_type, payload) \
-                 VALUES ($1, $2, 'fulfillment', $3, 'fulfillment.shipped', $4)",
+            crate::adapters::postgres::analytics::publish_commerce_event(
+                &mut transaction,
+                "fulfillment.shipped",
+                serde_json::json!({
+                    "store_id": store_id.as_uuid(),
+                    "fulfillment_id": id.as_uuid(),
+                    "order_id": order_id.as_uuid(),
+                    "shipping_provider_account_id": fulfillment.shipping_provider_account_id().as_uuid(),
+                    "tracking_number": fulfillment.tracking_number(),
+                    "tracking_url": fulfillment.tracking_url(),
+                    "operation": "shipped",
+                }),
             )
-            .bind(Uuid::now_v7())
-            .bind(store_id.as_uuid())
-            .bind(id.as_uuid())
-            .bind(serde_json::json!({
-                "aggregate_id": id.as_uuid(),
-                "fulfillment_id": id.as_uuid(),
-                "order_id": order_id.as_uuid(),
-                "shipping_provider_account_id": fulfillment.shipping_provider_account_id().as_uuid(),
-                "tracking_number": fulfillment.tracking_number(),
-                "tracking_url": fulfillment.tracking_url(),
-                "operation": "shipped",
-            }))
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
+            .await?;
         }
         recompute_order_shipping_projection(&mut transaction, store_id, order_id).await?;
         let detail = load_fulfillment(&mut transaction, store_id, id)
