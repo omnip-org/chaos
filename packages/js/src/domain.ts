@@ -1,5 +1,11 @@
 import type { PurchaseAnalyticsInput } from "./analytics-types.js";
-import type { ProductOption, ProductVariant, Review, OrderLookup } from "./types.js";
+import type {
+  OrderConfirmationState,
+  OrderLookup,
+  ProductOption,
+  ProductVariant,
+  Review,
+} from "./types.js";
 
 export type SelectedOptions = Record<string, string>;
 
@@ -65,10 +71,17 @@ export function getAverageRating(reviews: readonly Review[]): number | null {
   return Math.round((sum / rated.length) * 10) / 10;
 }
 
+/**
+ * Order lifecycle state for status badges. An order stays "confirmed" here
+ * even after a later refund — `toPurchaseAnalyticsInput` below applies a
+ * stricter, independent check (exactly `payment_status === "paid"`) to gate
+ * whether a Purchase event fires at all, so the two intentionally diverge on
+ * a refunded order.
+ */
 export function getOrderConfirmationState(
   status: string | undefined,
   paymentStatus: string | undefined,
-): "pending" | "confirmed" | "failed" | "expired" | "cancelled" {
+): OrderConfirmationState {
   if (paymentStatus === "expired") return "expired";
   if (paymentStatus === "failed") return "failed";
   if (status === "cancelled") return "cancelled";
@@ -76,7 +89,11 @@ export function getOrderConfirmationState(
   return "pending";
 }
 
-/** Builds the provider-neutral Purchase input only for a confirmed, paid order. */
+/**
+ * Builds the provider-neutral Purchase input only for a confirmed, paid
+ * order — stricter than `getOrderConfirmationState` above, which still
+ * reports "confirmed" for a later-refunded order.
+ */
 export function toPurchaseAnalyticsInput(
   order: Pick<
     OrderLookup,

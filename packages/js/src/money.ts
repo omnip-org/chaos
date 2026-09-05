@@ -19,6 +19,10 @@ const ZERO_DECIMAL_CURRENCIES = new Set([
   "XPF",
 ]);
 
+// Stripe's supported three-decimal presentment currencies — not the full ISO
+// 4217 three-decimal set, which also lists IQD and LYD. Stripe (this SDK's
+// only payment provider) doesn't support either as a presentment currency,
+// so they're intentionally left out here too.
 const THREE_DECIMAL_CURRENCIES = new Set(["BHD", "JOD", "KWD", "OMR", "TND"]);
 
 export interface DisplayPrice {

@@ -63,6 +63,7 @@ interface StripeInstance {
 type StripeConstructor = (publishableKey: string) => StripeInstance;
 
 const STRIPE_JS_URL = "https://js.stripe.com/v3/";
+const STRIPE_JS_LOAD_TIMEOUT_MS = 20_000;
 
 /** Reads `window.Stripe` without a global `Window` augmentation that could clash
  * with a consumer that also has `@stripe/stripe-js` types loaded. */
@@ -96,7 +97,16 @@ function loadStripeJs(): Promise<StripeConstructor | null> {
     );
     const script = existing ?? document.createElement("script");
 
+    // Guards against a script tag (ours or one already on the page) whose
+    // load/error event fired before these listeners were attached, which
+    // would otherwise leave this promise pending forever.
+    const timeoutId = setTimeout(() => {
+      stripeJs = null;
+      reject(new Error("Timed out waiting for Stripe.js to load"));
+    }, STRIPE_JS_LOAD_TIMEOUT_MS);
+
     script.addEventListener("load", () => {
+      clearTimeout(timeoutId);
       const loaded = readStripeGlobal();
       if (loaded) {
         resolve(loaded);
@@ -106,18 +116,20 @@ function loadStripeJs(): Promise<StripeConstructor | null> {
       }
     });
     script.addEventListener("error", () => {
+      clearTimeout(timeoutId);
       stripeJs = null;
       reject(new Error("Failed to load Stripe.js"));
     });
 
     if (existing) {
       // A script tag is already present; if it has finished loading the guard
-      // above returned, otherwise the listeners handle it.
+      // above returned, otherwise the listeners (and the timeout) handle it.
       return;
     }
 
     const parent = document.head ?? document.body;
     if (!parent) {
+      clearTimeout(timeoutId);
       stripeJs = null;
       reject(new Error("Cannot load Stripe.js before <head> or <body> exists"));
       return;

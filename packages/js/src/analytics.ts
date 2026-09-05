@@ -45,6 +45,16 @@ export interface AnalyticsOptions {
   };
   /** Starts lifecycle and SPA page tracking. Defaults to true. */
   autoStart?: boolean;
+  /**
+   * Best-effort delivery-failure hook: called when a browser provider call
+   * (Pixel/GA4) throws, so a store can log or alert instead of failing
+   * silently. Never awaited and never allowed to throw back into the caller
+   * — mirrors `MetaCapiConfig.onError` for the server-side CAPI sender.
+   */
+  onError?: (
+    error: unknown,
+    event: { eventName: string; eventId?: string | undefined },
+  ) => void;
 }
 
 export class ChaosStorefrontAnalytics {
@@ -85,6 +95,7 @@ export class ChaosStorefrontAnalytics {
       this.windowRef,
       this.documentRef,
       options.providers,
+      options.onError,
     );
 
     const storageNamespace = analyticsStorageNamespace(this.publishableKey);
@@ -152,8 +163,8 @@ export class ChaosStorefrontAnalytics {
     if (input.cartId !== undefined && !isUuid(input.cartId))
       throw new TypeError("cartId must be a valid UUID");
 
+    const resolvedId = canonicalEventId(eventId, this.randomUUID());
     try {
-      const resolvedId = canonicalEventId(eventId, this.randomUUID());
       return this.recordOnce("add_to_cart", resolvedId, () => {
         const currency = input.currency.toUpperCase();
         const value = toMajorUnits(input.valueMinor, currency);
@@ -177,7 +188,7 @@ export class ChaosStorefrontAnalytics {
         });
       });
     } catch {
-      // eventId/provider problems are best-effort; bad input above already threw.
+      // Provider/storage problems are best-effort; bad input above already threw.
       return null;
     }
   }
@@ -205,8 +216,8 @@ export class ChaosStorefrontAnalytics {
         throw new RangeError("priceMinor must be a non-negative safe integer");
     }
 
+    const resolvedId = canonicalEventId(eventId, this.randomUUID());
     try {
-      const resolvedId = canonicalEventId(eventId, this.randomUUID());
       return this.recordOnce("initiate_checkout", resolvedId, () => {
         const currency = input.currency.toUpperCase();
         const value = toMajorUnits(input.valueMinor, currency);
@@ -240,6 +251,7 @@ export class ChaosStorefrontAnalytics {
         });
       });
     } catch {
+      // Provider/storage problems are best-effort; bad input above already threw.
       return null;
     }
   }
@@ -329,37 +341,42 @@ export class ChaosStorefrontAnalytics {
       throw new TypeError("orderId must be a valid UUID");
     const orderId = input.orderId.toLowerCase();
 
-    return this.recordOnce("purchase", orderId, () => {
-      const value = toMajorUnits(input.valueMinor, currency);
-      const items = input.items.map((item) => ({
-        id: item.productVariantId,
-        quantity: item.quantity,
-        price: toMajorUnits(item.priceMinor, currency),
-      }));
-      this.destinations.pixel("Purchase", orderId, {
-        content_ids: items.map((item) => item.id),
-        content_type: "product",
-        value,
-        currency,
-        contents: items.map((item) => ({
-          id: item.id,
+    try {
+      return this.recordOnce("purchase", orderId, () => {
+        const value = toMajorUnits(input.valueMinor, currency);
+        const items = input.items.map((item) => ({
+          id: item.productVariantId,
           quantity: item.quantity,
-          item_price: item.price,
-        })),
-        num_items: items.reduce((total, item) => total + item.quantity, 0),
+          price: toMajorUnits(item.priceMinor, currency),
+        }));
+        this.destinations.pixel("Purchase", orderId, {
+          content_ids: items.map((item) => item.id),
+          content_type: "product",
+          value,
+          currency,
+          contents: items.map((item) => ({
+            id: item.id,
+            quantity: item.quantity,
+            item_price: item.price,
+          })),
+          num_items: items.reduce((total, item) => total + item.quantity, 0),
+        });
+        this.destinations.ga4("purchase", {
+          event_id: orderId,
+          transaction_id: orderId,
+          value,
+          currency,
+          items: items.map((item) => ({
+            item_id: item.id,
+            quantity: item.quantity,
+            price: item.price,
+          })),
+        });
       });
-      this.destinations.ga4("purchase", {
-        event_id: orderId,
-        transaction_id: orderId,
-        value,
-        currency,
-        items: items.map((item) => ({
-          item_id: item.id,
-          quantity: item.quantity,
-          price: item.price,
-        })),
-      });
-    });
+    } catch {
+      // Provider/storage problems are best-effort; bad input above already threw.
+      return null;
+    }
   }
 
   /** Projects a confirmed, paid order without making the caller rebuild event fields. */
@@ -492,6 +509,7 @@ class AnalyticsDestinations {
   private readonly windowRef: AnalyticsWindow;
   private readonly documentRef: Document;
   private readonly options: DestinationOptions;
+  private readonly onError: AnalyticsOptions["onError"];
   private metaStarted = false;
   private ga4Started = false;
 
@@ -499,10 +517,12 @@ class AnalyticsDestinations {
     windowRef: Window & typeof globalThis,
     documentRef: Document,
     options: DestinationOptions,
+    onError: AnalyticsOptions["onError"],
   ) {
     this.windowRef = windowRef as AnalyticsWindow;
     this.documentRef = documentRef;
     this.options = options;
+    this.onError = onError;
     validateDestinationOptions(options);
     if (this.options?.ga4) this.startGa4();
     if (this.options?.metaPixel) this.startMeta();
@@ -512,8 +532,8 @@ class AnalyticsDestinations {
     if (!this.metaStarted) return;
     try {
       this.windowRef.fbq?.("track", eventName, params, { eventID: eventId });
-    } catch {
-      // Best-effort, independent of ga4() below.
+    } catch (error) {
+      this.reportError(error, eventName, eventId);
     }
   }
 
@@ -521,8 +541,24 @@ class AnalyticsDestinations {
     if (!this.ga4Started) return;
     try {
       this.windowRef.gtag?.("event", eventName, params);
+    } catch (error) {
+      this.reportError(
+        error,
+        eventName,
+        typeof params.event_id === "string" ? params.event_id : undefined,
+      );
+    }
+  }
+
+  private reportError(
+    error: unknown,
+    eventName: string,
+    eventId: string | undefined,
+  ): void {
+    try {
+      this.onError?.(error, { eventName, eventId });
     } catch {
-      // Best-effort, independent of pixel() above.
+      // onError must never break delivery — see AnalyticsOptions.onError.
     }
   }
 
