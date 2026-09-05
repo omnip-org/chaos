@@ -507,13 +507,16 @@ fn validation(field: &'static str, reason: &'static str) -> ApplicationError {
 }
 
 /// Email is an integration consumer, not an Order state machine. It consumes
-/// `order.confirmed` events and owns provider retries through the shared
-/// integration outbox lease.
+/// `payment.completed` (`notification_email_queue`, see
+/// `migrations/0011_topic_routing.sql`) and owns provider retries through
+/// PGMQ's own message lifecycle.
 pub struct EmailWorkers {
     queue: Arc<dyn IntegrationQueue>,
     repository: Arc<PostgresEmailRepository>,
     providers: HashMap<String, Arc<dyn EmailProvider>>,
 }
+
+const NOTIFICATION_EMAIL_QUEUE: &str = "notification_email_queue";
 
 impl EmailWorkers {
     pub fn new(
@@ -531,19 +534,18 @@ impl EmailWorkers {
         }
     }
 
-    pub async fn run_outbox_batch(
-        &self,
-        now: OffsetDateTime,
-        limit: u16,
-    ) -> Result<usize, ApplicationError> {
+    pub async fn run_outbox_batch(&self, limit: u16) -> Result<usize, ApplicationError> {
         let jobs = self
             .queue
-            .claim_outbox("chaos_email_commands", limit)
+            .claim_topic(NOTIFICATION_EMAIL_QUEUE, limit)
             .await?;
         for job in &jobs {
-            let result = self.execute(job).await.map_err(|error| error.to_string());
+            let result = self
+                .execute(&job.payload)
+                .await
+                .map_err(|error| error.to_string());
             self.queue
-                .finish_outbox(job.id, job.attempts, result, now)
+                .finish_topic(NOTIFICATION_EMAIL_QUEUE, job.msg_id, job.attempts, result)
                 .await?;
         }
         Ok(jobs.len())
@@ -577,15 +579,13 @@ impl EmailWorkers {
         Ok(jobs.len())
     }
 
-    async fn execute(&self, job: &crate::contracts::QueueJob) -> Result<(), ApplicationError> {
-        if job.internal_event_type.as_deref() != Some("order.confirmed") {
-            return Err(ApplicationError::Unexpected(anyhow::anyhow!(
-                "unsupported email event {}",
-                job.internal_event_type.as_deref().unwrap_or("unknown")
-            )));
-        }
-        let Some((provider, reference, message)) =
-            self.repository.prepare_order_confirmation(job).await?
+    async fn execute(&self, payload: &serde_json::Value) -> Result<(), ApplicationError> {
+        let store_id = topic_uuid(payload, "store_id")?;
+        let order_id = topic_uuid(payload, "order_id")?;
+        let Some((provider, reference, message)) = self
+            .repository
+            .prepare_order_confirmation(store_id, order_id)
+            .await?
         else {
             // No contact email to send to (yet). This is a terminal outcome,
             // not a transient failure: nothing will change on retry.
@@ -600,6 +600,18 @@ impl EmailWorkers {
             })?;
         provider.send(&reference, message).await.map(|_| ())
     }
+}
+
+fn topic_uuid(payload: &serde_json::Value, field: &'static str) -> Result<Uuid, ApplicationError> {
+    payload
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or_else(|| {
+            ApplicationError::Unexpected(anyhow::anyhow!(
+                "commerce event message missing or invalid field {field}"
+            ))
+        })
 }
 
 #[cfg(test)]

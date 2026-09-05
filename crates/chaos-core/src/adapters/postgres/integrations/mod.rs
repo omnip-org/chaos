@@ -1,6 +1,9 @@
 use crate::{
     ApplicationError,
-    contracts::{IntegrationQueue, MAX_INTEGRATION_ATTEMPTS, QueueJob, WebhookProcessingResult},
+    contracts::{
+        IntegrationQueue, MAX_INTEGRATION_ATTEMPTS, QueueJob, TopicEventJob,
+        WebhookProcessingResult,
+    },
     error::database_error,
 };
 use async_trait::async_trait;
@@ -119,6 +122,51 @@ impl IntegrationQueue for PostgresIntegrationQueue {
     ) -> Result<(), ApplicationError> {
         finish_webhook_job(&self.pool, job_id, attempts, result, now).await
     }
+
+    async fn claim_topic(
+        &self,
+        queue_name: &str,
+        limit: u16,
+    ) -> Result<Vec<TopicEventJob>, ApplicationError> {
+        sqlx::query_as::<_, (i64, Value, i32)>(
+            "SELECT msg_id, payload, attempts FROM integration.claim_topic_queue($1, $2)",
+        )
+        .bind(queue_name)
+        .bind(i32::from(limit.clamp(1, 100)))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(database_error)?
+        .into_iter()
+        .map(|(msg_id, payload, attempts)| {
+            Ok(TopicEventJob {
+                msg_id,
+                payload,
+                attempts: u32::try_from(attempts)
+                    .map_err(|error| ApplicationError::Unexpected(error.into()))?,
+            })
+        })
+        .collect()
+    }
+
+    async fn finish_topic(
+        &self,
+        queue_name: &str,
+        msg_id: i64,
+        attempts: u32,
+        result: Result<(), String>,
+    ) -> Result<(), ApplicationError> {
+        let (succeeded, _failure) = finish_result(result);
+        sqlx::query("SELECT integration.finish_topic_event($1, $2, $3, $4, $5)")
+            .bind(queue_name)
+            .bind(msg_id)
+            .bind(i32::try_from(attempts).unwrap_or(i32::MAX))
+            .bind(succeeded)
+            .bind(MAX_INTEGRATION_ATTEMPTS)
+            .execute(&self.pool)
+            .await
+            .map_err(database_error)?;
+        Ok(())
+    }
 }
 
 async fn finish_webhook_job(
@@ -206,7 +254,6 @@ fn queue_job(
 ) -> Result<QueueJob, ApplicationError> {
     let inferred_capability = metadata.capability.or_else(|| match queue_name.as_str() {
         "chaos_payment_commands" => Some("payment".to_owned()),
-        "chaos_email_commands" => Some("email".to_owned()),
         "chaos_shipping_commands" => Some("shipping".to_owned()),
         _ => None,
     });

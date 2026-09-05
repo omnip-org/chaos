@@ -58,29 +58,6 @@ async fn insert_outbox(
     Ok(())
 }
 
-async fn insert_order_confirmed_event(
-    transaction: &mut Transaction<'static, Postgres>,
-    store_id: StoreId,
-    order_id: OrderId,
-) -> Result<(), ApplicationError> {
-    sqlx::query(
-        "INSERT INTO integration.event_outbox \
-         (id, store_id, aggregate_type, aggregate_id, internal_event_type, payload) \
-         VALUES ($1, $2, 'order', $3, 'order.confirmed', $4)",
-    )
-    .bind(Uuid::now_v7())
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .bind(json!({
-        "aggregate_id": order_id.as_uuid(),
-        "order_id": order_id.as_uuid(),
-    }))
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    Ok(())
-}
-
 /// Updates the Order's `payment_status` summary only when it still matches
 /// one of `from_statuses`, so an out-of-order or replayed webhook cannot
 /// clobber a state that has already moved on (e.g. a late `payment.captured`
@@ -383,7 +360,7 @@ async fn apply_payment_event(
                 country_code: shipping_country_code.as_deref(),
             },
         );
-        append_event(
+        let inserted = append_event(
             transaction,
             AnalyticsEventToAppend {
                 store_id: store_id.as_uuid(),
@@ -398,6 +375,19 @@ async fn apply_payment_event(
             },
         )
         .await?;
+        if let Some((analytics_event_id, received_at)) = inserted {
+            publish_commerce_event(
+                transaction,
+                "payment.completed",
+                payment_event_payload(
+                    store_id.as_uuid(),
+                    order_id.as_uuid(),
+                    analytics_event_id,
+                    received_at,
+                ),
+            )
+            .await?;
+        }
     } else if failed || expired {
         let (payment_status, failure_code) = if expired {
             ("expired", "checkout_expired".to_owned())
@@ -857,7 +847,6 @@ async fn confirm_paid_order(
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
-    insert_order_confirmed_event(transaction, store_id, order_id).await?;
     let cart_id: Option<Uuid> = sqlx::query_scalar(
         "SELECT cart_id FROM commerce.orders WHERE store_id = $1 AND id = $2",
     )

@@ -16,7 +16,7 @@ pub struct PostgresAnalyticsDestinationStore {
     pool: PgPool,
 }
 
-pub struct PostgresAnalyticsDeliveryStore {
+pub struct PostgresCapiEventStore {
     pool: PgPool,
 }
 
@@ -32,20 +32,10 @@ impl PostgresAnalyticsDestinationStore {
     }
 }
 
-impl PostgresAnalyticsDeliveryStore {
+impl PostgresCapiEventStore {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
-}
-
-#[derive(serde::Deserialize)]
-struct DeliverySnapshot {
-    provider: String,
-    status: String,
-    // jsonb_build_object serializes PostgreSQL timestamps as RFC3339 strings.
-    delivered_at: Option<String>,
-    provider_reference: Option<String>,
-    last_error: Option<String>,
 }
 
 type AnalyticsEventRow = (
@@ -64,7 +54,6 @@ type AnalyticsEventRow = (
     OffsetDateTime,
     OffsetDateTime,
     Value,
-    sqlx::types::Json<Vec<DeliverySnapshot>>,
 );
 
 type AnalyticsDestinationRow = (
@@ -113,10 +102,16 @@ pub(crate) struct AnalyticsEventToAppend {
     pub(crate) received_at: OffsetDateTime,
 }
 
+/// The freshly minted `analytics_events.id`/`received_at` for a newly
+/// inserted event, so the caller can point a `publish_commerce_event` call
+/// at the exact row a CAPI consumer should read back. `None` means the
+/// insert was skipped as a duplicate (`analytics_event_keys`'s idempotency
+/// guard) — the caller should not publish either, since whatever already
+/// published for the original insert already covers it.
 pub(crate) async fn append_event(
     tx: &mut Transaction<'_, Postgres>,
     event: AnalyticsEventToAppend,
-) -> Result<bool, ApplicationError> {
+) -> Result<Option<(Uuid, OffsetDateTime)>, ApplicationError> {
     let mut properties = event.properties;
     let session_id = properties
         .get("session_id")
@@ -173,7 +168,7 @@ pub(crate) async fn append_event(
     .await
     .map_err(db)?;
     if inserted_key.is_none() {
-        return Ok(false);
+        return Ok(None);
     }
     sqlx::query(
         "INSERT INTO integration.analytics_events
@@ -200,7 +195,43 @@ pub(crate) async fn append_event(
     .await
     .map_err(db)?;
 
-    Ok(true)
+    Ok(Some((analytics_event_id, event.received_at)))
+}
+
+/// Publish a topic-routed commerce event (`integration.publish_commerce_event`)
+/// in the same transaction that produced it, so a rolled-back transaction
+/// never delivers a message a consumer would act on. See
+/// `migrations/0011_topic_routing.sql` for the queue bindings this reaches.
+pub(crate) async fn publish_commerce_event(
+    tx: &mut Transaction<'_, Postgres>,
+    routing_key: &'static str,
+    payload: Value,
+) -> Result<(), ApplicationError> {
+    sqlx::query("SELECT integration.publish_commerce_event($1, $2)")
+        .bind(routing_key)
+        .bind(payload)
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+    Ok(())
+}
+
+/// Shared payload shape for `payment.initiated`/`payment.completed`: enough
+/// for the notification-email consumer (`order_id`) and the CAPI consumer
+/// (`analytics_event_id`/`received_at`, pointing at the row `append_event`
+/// just wrote, so CAPI's rich `properties` aren't rebuilt a second time).
+pub(crate) fn payment_event_payload(
+    store_id: Uuid,
+    order_id: Uuid,
+    analytics_event_id: Uuid,
+    received_at: OffsetDateTime,
+) -> Value {
+    serde_json::json!({
+        "store_id": store_id,
+        "order_id": order_id,
+        "analytics_event_id": analytics_event_id,
+        "received_at": received_at.format(&Rfc3339).unwrap_or_default(),
+    })
 }
 
 /// Splice the ad-platform attribution captured on `commerce.carts` at
@@ -363,25 +394,8 @@ impl PostgresAnalyticsEventStore {
         let rows: Vec<AnalyticsEventRow> = sqlx::query_as(
             "SELECT e.id,e.event_id,e.event_name,e.event_source,e.channel_id,e.shopper_id,e.session_id,
                     e.utm_source,e.utm_medium,e.utm_campaign,e.utm_term,e.utm_content,
-                    e.occurred_at,e.received_at,e.properties,
-                    COALESCE(delivery_snapshot.deliveries, '[]'::jsonb)
+                    e.occurred_at,e.received_at,e.properties
              FROM integration.analytics_events e
-             LEFT JOIN LATERAL (
-                 SELECT jsonb_agg(jsonb_build_object(
-                            'provider', destination.provider,
-                            'status', delivery.delivery_status::text,
-                            'delivered_at', delivery.delivered_at,
-                            'provider_reference', delivery.provider_reference,
-                            'last_error', delivery.last_error
-                        ) ORDER BY destination.provider) AS deliveries
-                 FROM integration.analytics_deliveries AS delivery
-                 INNER JOIN integration.analytics_destinations AS destination
-                    ON destination.store_id = delivery.store_id
-                   AND destination.id = delivery.destination_id
-                 WHERE delivery.store_id = e.store_id
-                   AND delivery.analytics_event_received_at = e.received_at
-                   AND delivery.analytics_event_id = e.id
-             ) AS delivery_snapshot ON true
              WHERE e.store_id=$1
                AND (
                    ($3::timestamptz IS NULL AND $4::uuid IS NULL)
@@ -393,21 +407,14 @@ impl PostgresAnalyticsEventStore {
                )
                AND ($5::text IS NULL OR e.event_name=$5)
                AND ($6::text IS NULL OR e.event_source=$6)
-               AND ($7::text IS NULL OR EXISTS (
-                   SELECT 1 FROM integration.analytics_deliveries filter_delivery
-                    WHERE filter_delivery.store_id=e.store_id
-                      AND filter_delivery.analytics_event_received_at=e.received_at
-                      AND filter_delivery.analytics_event_id=e.id
-                      AND filter_delivery.delivery_status=$7::integration.delivery_status
-               ))
-               AND ($8::uuid IS NULL OR e.shopper_id=$8)
-               AND ($9::uuid IS NULL OR e.channel_id=$9)
-               AND ($10::uuid IS NULL OR e.session_id=$10)
-               AND ($11::text IS NULL OR e.utm_source=$11)
-               AND ($12::text IS NULL OR e.utm_medium=$12)
-               AND ($13::text IS NULL OR e.utm_campaign=$13)
-               AND ($14::text IS NULL OR e.utm_term=$14)
-               AND ($15::text IS NULL OR e.utm_content=$15)
+               AND ($7::uuid IS NULL OR e.shopper_id=$7)
+               AND ($8::uuid IS NULL OR e.channel_id=$8)
+               AND ($9::uuid IS NULL OR e.session_id=$9)
+               AND ($10::text IS NULL OR e.utm_source=$10)
+               AND ($11::text IS NULL OR e.utm_medium=$11)
+               AND ($12::text IS NULL OR e.utm_campaign=$12)
+               AND ($13::text IS NULL OR e.utm_term=$13)
+               AND ($14::text IS NULL OR e.utm_content=$14)
              ORDER BY e.received_at DESC, e.id DESC
              LIMIT $2",
         )
@@ -417,7 +424,6 @@ impl PostgresAnalyticsEventStore {
         .bind(query.before_id)
         .bind(query.event_name)
         .bind(query.source)
-        .bind(query.delivery_status)
         .bind(query.shopper_id)
         .bind(query.channel_id)
         .bind(query.session_id)
@@ -452,59 +458,26 @@ impl PostgresAnalyticsEventStore {
                     occurred_at,
                     received_at,
                     properties,
-                    deliveries,
-                )|
-                 -> Result<AnalyticsEventRecord, ApplicationError> {
-                    let deliveries = deliveries
-                        .0
-                        .into_iter()
-                        .map(|delivery| {
-                            Ok(AnalyticsEventDelivery {
-                                provider: delivery.provider,
-                                status: delivery.status,
-                                delivered_at: parse_optional_rfc3339(delivery.delivered_at)?,
-                                provider_reference: delivery.provider_reference,
-                                last_error: delivery.last_error,
-                            })
-                        })
-                        .collect::<Result<Vec<_>, ApplicationError>>()?;
-                    Ok(AnalyticsEventRecord {
-                        id,
-                        event_id,
-                        event_name,
-                        event_source,
-                        channel_id,
-                        shopper_id,
-                        session_id,
-                        utm_source,
-                        utm_medium,
-                        utm_campaign,
-                        utm_term,
-                        utm_content,
-                        occurred_at,
-                        received_at,
-                        properties,
-                        deliveries,
-                    })
+                )| AnalyticsEventRecord {
+                    id,
+                    event_id,
+                    event_name,
+                    event_source,
+                    channel_id,
+                    shopper_id,
+                    session_id,
+                    utm_source,
+                    utm_medium,
+                    utm_campaign,
+                    utm_term,
+                    utm_content,
+                    occurred_at,
+                    received_at,
+                    properties,
                 },
             )
-            .collect::<Result<Vec<_>, ApplicationError>>()?;
+            .collect();
         Ok(AnalyticsEventPage { events, has_more })
-    }
-}
-
-fn parse_optional_rfc3339(
-    value: Option<String>,
-) -> Result<Option<OffsetDateTime>, ApplicationError> {
-    match value {
-        Some(value) => OffsetDateTime::parse(&value, &Rfc3339)
-            .map(Some)
-            .map_err(|error| {
-                ApplicationError::Unexpected(anyhow::anyhow!(
-                    "invalid analytics delivery timestamp {value:?}: {error}"
-                ))
-            }),
-        None => Ok(None),
     }
 }
 
@@ -591,116 +564,78 @@ impl PostgresAnalyticsDestinationStore {
     }
 }
 
-impl PostgresAnalyticsDeliveryStore {
-    pub(crate) async fn schedule_deliveries(&self, limit: u16) -> Result<usize, ApplicationError> {
-        let scheduled: Option<i64> =
-            sqlx::query_scalar("SELECT integration.schedule_analytics_deliveries($1)")
-                .bind(i32::from(limit))
-                .fetch_one(&self.pool)
-                .await
-                .map_err(db)?;
-        Ok(usize::try_from(scheduled.unwrap_or_default()).unwrap_or(usize::MAX))
-    }
+/// event_id, provider, external_account_reference, credential_secret_reference,
+/// configuration, event_name, event_source, occurred_at, shopper_id, properties.
+type CapiCommandRow = (
+    Uuid,
+    String,
+    String,
+    String,
+    Value,
+    String,
+    String,
+    OffsetDateTime,
+    Uuid,
+    Value,
+);
 
-    pub(crate) async fn claim_deliveries(
+impl PostgresCapiEventStore {
+    /// Look up the Meta CAPI command for a `payment.initiated`/
+    /// `payment.completed` message claimed off `analytics_capi_queue`.
+    /// `None` means there's nothing to send — the event row is gone (a
+    /// stale message) or the Store has no enabled `meta` destination
+    /// configured. Neither is a failure: CAPI delivery is best-effort
+    /// enrichment, same as attribution capture itself.
+    pub(crate) async fn load_command(
         &self,
-        limit: u16,
-    ) -> Result<Vec<AnalyticsDeliveryJob>, ApplicationError> {
-        let rows: Vec<(Uuid, Uuid, Uuid, Uuid, i32)> = sqlx::query_as(
-            "SELECT id,store_id,destination_id,analytics_event_id,attempts
-               FROM integration.claim_analytics_deliveries($1)",
-        )
-        .bind(i32::from(limit))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-        Ok(rows
-            .into_iter()
-            .map(|row| AnalyticsDeliveryJob {
-                id: row.0,
-                store_id: StoreId::from_uuid(row.1),
-                destination_id: row.2,
-                analytics_event_id: row.3,
-                attempts: u32::try_from(row.4).unwrap_or(u32::MAX),
-            })
-            .collect())
-    }
-
-    pub(crate) async fn load_delivery(
-        &self,
-        job: &AnalyticsDeliveryJob,
-    ) -> Result<AnalyticsDeliveryCommand, ApplicationError> {
+        store_id: Uuid,
+        analytics_event_id: Uuid,
+        received_at: OffsetDateTime,
+    ) -> Result<Option<AnalyticsDeliveryCommand>, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
-        context(&mut tx, job.store_id.as_uuid(), None).await?;
-        let row: (Uuid, String, String, String, Value, String, String, OffsetDateTime, Uuid, Value) =
-            sqlx::query_as(
-                "SELECT e.event_id,destination.provider,destination.external_account_reference,
+        context(&mut tx, store_id, None).await?;
+        let row: Option<CapiCommandRow> = sqlx::query_as(
+            "SELECT e.event_id,destination.provider,destination.external_account_reference,
                         destination.credential_secret_reference,destination.configuration,
                         e.event_name,e.event_source,e.occurred_at,e.shopper_id,e.properties
-                   FROM integration.analytics_deliveries delivery
-                   JOIN integration.analytics_events e
-                     ON e.store_id=delivery.store_id
-                    AND e.received_at=delivery.analytics_event_received_at
-                    AND e.id=delivery.analytics_event_id
+                   FROM integration.analytics_events e
                    JOIN integration.analytics_destinations destination
-                     ON destination.store_id=delivery.store_id AND destination.id=delivery.destination_id
-                  WHERE delivery.store_id=$1 AND delivery.id=$2
-                    AND delivery.delivery_status='pending' AND destination.enabled",
-            )
-            .bind(job.store_id.as_uuid())
-            .bind(job.id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db)?;
-        let properties = row.9;
-        tx.commit().await.map_err(db)?;
-        Ok(AnalyticsDeliveryCommand {
-            delivery_id: job.id,
-            provider: row.1,
-            event_id: row.0,
-            external_account_reference: row.2,
-            credential_secret_reference: row.3,
-            configuration: row.4,
-            event_name: row.5,
-            event_source: row.6,
-            occurred_at: row.7,
-            shopper_id: row.8,
-            properties,
-        })
-    }
-
-    pub(crate) async fn finish_delivery(
-        &self,
-        job: &AnalyticsDeliveryJob,
-        result: Result<AnalyticsDeliveryReceipt, AnalyticsDeliveryError>,
-        now: OffsetDateTime,
-    ) -> Result<(), ApplicationError> {
-        let (succeeded, reference, error, retryable) = match result {
-            Ok(receipt) => (true, receipt.provider_reference, None, false),
-            Err(error) => (false, None, Some(error.message), error.retryable),
-        };
-        let finished: Option<bool> = sqlx::query_scalar(
-            "SELECT integration.finish_analytics_event_delivery($1,$2,$3,$4,$5,$6,$7,$8)",
+                     ON destination.store_id=e.store_id
+                    AND destination.provider='meta' AND destination.enabled
+                  WHERE e.store_id=$1 AND e.received_at=$2 AND e.id=$3",
         )
-        .bind(job.id)
-        .bind(i32::try_from(job.attempts).unwrap_or(i32::MAX))
-        .bind(MAX_INTEGRATION_ATTEMPTS)
-        .bind(succeeded)
-        .bind(retryable)
-        .bind(reference)
-        .bind(error)
-        .bind(now)
-        .fetch_one(&self.pool)
+        .bind(store_id)
+        .bind(received_at)
+        .bind(analytics_event_id)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(db)?;
-        if finished == Some(true) {
-            Ok(())
-        } else {
-            Err(ApplicationError::Conflict {
-                code: "analytics_delivery_not_pending",
-                message: "the Analytics delivery is no longer pending",
-            })
-        }
+        tx.commit().await.map_err(db)?;
+        Ok(row.map(
+            |(
+                event_id,
+                provider,
+                external_account_reference,
+                credential_secret_reference,
+                configuration,
+                event_name,
+                event_source,
+                occurred_at,
+                shopper_id,
+                properties,
+            )| AnalyticsDeliveryCommand {
+                provider,
+                event_id,
+                external_account_reference,
+                credential_secret_reference,
+                configuration,
+                event_name,
+                event_source,
+                occurred_at,
+                shopper_id,
+                properties,
+            },
+        ))
     }
 }
 
@@ -711,24 +646,10 @@ fn db(error: sqlx::Error) -> ApplicationError {
 #[cfg(test)]
 mod tests {
     use super::{
-        OrderIdentityContext, merge_order_identity, normalized_utm_value, parse_optional_rfc3339,
-        sha256_hex, splice_attribution, traffic_utm_value,
+        OrderIdentityContext, merge_order_identity, normalized_utm_value, sha256_hex,
+        splice_attribution, traffic_utm_value,
     };
     use serde_json::json;
-
-    #[test]
-    fn parses_json_delivery_timestamps() {
-        let timestamp = parse_optional_rfc3339(Some("2026-08-27T09:15:53.535416+00:00".into()))
-            .expect("timestamp should parse")
-            .expect("timestamp should be present");
-        assert_eq!(timestamp.year(), 2026);
-        assert_eq!(timestamp.hour(), 9);
-        assert_eq!(timestamp.minute(), 15);
-        assert_eq!(
-            parse_optional_rfc3339(None).expect("null should parse"),
-            None
-        );
-    }
 
     #[test]
     fn accepts_flexible_utm_values_without_assigning_semantics() {

@@ -14,7 +14,7 @@ mod search;
 mod store;
 
 pub use analytics::{
-    PostgresAnalyticsDeliveryStore, PostgresAnalyticsDestinationStore, PostgresAnalyticsEventStore,
+    PostgresAnalyticsDestinationStore, PostgresAnalyticsEventStore, PostgresCapiEventStore,
 };
 pub use catalog::{
     PostgresCatalogConfigurationRepository, PostgresCatalogManagementRepository,

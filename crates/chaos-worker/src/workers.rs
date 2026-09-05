@@ -23,9 +23,8 @@ pub async fn run(
         runtime.clock.clone(),
         lifecycle.clone(),
     ));
-    let analytics_worker = tokio::spawn(analytics_worker_loop(
-        runtime.analytics_delivery_worker.clone(),
-        runtime.clock.clone(),
+    let capi_worker = tokio::spawn(capi_worker_loop(
+        runtime.capi_worker.clone(),
         lifecycle.clone(),
     ));
     let search_worker = tokio::spawn(search_worker_loop(
@@ -43,7 +42,7 @@ pub async fn run(
         drain_worker("payment", payment_worker, worker_shutdown_timeout),
         drain_worker("email", email_worker, worker_shutdown_timeout),
         drain_worker("shipping", shipping_worker, worker_shutdown_timeout),
-        drain_worker("analytics", analytics_worker, worker_shutdown_timeout),
+        drain_worker("capi", capi_worker, worker_shutdown_timeout),
         drain_worker("search", search_worker, worker_shutdown_timeout),
         drain_worker("maintenance", maintenance_worker, worker_shutdown_timeout),
     );
@@ -59,7 +58,7 @@ async fn email_worker_loop(
     while lifecycle.is_accepting_traffic() {
         let now = clock.now();
         let mut processed = 0;
-        match workers.run_outbox_batch(now, 10).await {
+        match workers.run_outbox_batch(10).await {
             Ok(count) => processed += count,
             Err(error) => tracing::warn!(%worker_id, %error, "email outbox batch failed"),
         }
@@ -120,24 +119,20 @@ impl PollBackoff {
     }
 }
 
-async fn analytics_worker_loop(
-    delivery: std::sync::Arc<chaos_core::analytics::AnalyticsDeliveryWorker>,
-    clock: std::sync::Arc<dyn chaos_core::contracts::Clock>,
+async fn capi_worker_loop(
+    worker: std::sync::Arc<chaos_core::analytics::MetaCapiWorker>,
     lifecycle: Lifecycle,
 ) {
     let worker_id = Uuid::now_v7();
     let mut backoff = PollBackoff::new();
     while lifecycle.is_accepting_traffic() {
-        let now = clock.now();
-        let mut processed = 0usize;
-        match delivery.run_delivery_batch(now, 10).await {
-            Ok(count) => {
-                processed += count;
-            }
+        let processed = match worker.run_batch(10).await {
+            Ok(count) => count,
             Err(error) => {
-                tracing::warn!(%worker_id, error = ?error, "analytics provider delivery batch failed");
+                tracing::warn!(%worker_id, error = ?error, "capi delivery batch failed");
+                0
             }
-        }
+        };
         tokio::time::sleep(backoff.observe(processed)).await;
     }
 }

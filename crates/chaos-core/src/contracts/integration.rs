@@ -76,6 +76,16 @@ pub struct QueueJob {
     pub provider: Option<String>,
 }
 
+/// A message claimed off a PGMQ topic-routed queue (`integration.claim_topic_queue`).
+/// Unlike `QueueJob`, there is no backing row: the message body carries
+/// everything the consumer needs, and completion (`finish_topic`) only ever
+/// acts on the PGMQ message itself (delete, retry backoff, or archive).
+pub struct TopicEventJob {
+    pub msg_id: i64,
+    pub payload: Value,
+    pub attempts: u32,
+}
+
 #[async_trait]
 pub trait IntegrationQueue: Send + Sync {
     async fn claim_outbox(
@@ -104,5 +114,19 @@ pub trait IntegrationQueue: Send + Sync {
         attempts: u32,
         result: WebhookProcessingResult,
         now: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
+
+    async fn claim_topic(
+        &self,
+        queue_name: &str,
+        limit: u16,
+    ) -> Result<Vec<TopicEventJob>, ApplicationError>;
+
+    async fn finish_topic(
+        &self,
+        queue_name: &str,
+        msg_id: i64,
+        attempts: u32,
+        result: Result<(), String>,
     ) -> Result<(), ApplicationError>;
 }

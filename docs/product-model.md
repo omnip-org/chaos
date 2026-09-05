@@ -80,10 +80,11 @@ InitiateCheckout (which reuses that same id from the checkout response) can
 be deduplicated against it. Payment confirmation appends one server-side
 `purchase` event per Order, reading that same Cart's `attribution` directly
 (no browser-event correlation) plus the confirmed Order's contact and
-shipping details (hashed for Meta matching). Both events deliver to a
-Store-configured Meta destination (`configure_meta_destination`) through the
-Worker's analytics delivery loop — the only Meta Conversions API calls
-Chaos or chaos-js ever makes. chaos-js reads Meta's own `_fbc`/`_fbp`
+shipping details (hashed for Meta matching). Both events publish to a PGMQ
+topic (`payment.initiated`/`payment.completed`) in the same transaction that
+wrote them, routed to a dedicated queue a Worker drains and delivers to a
+Store-configured Meta destination (`configure_meta_destination`) — the only
+Meta Conversions API calls Chaos or chaos-js ever makes. chaos-js reads Meta's own `_fbc`/`_fbp`
 cookies and the current page URL and sends them on the checkout call by
 default; a caller can override or omit this per checkout.
 

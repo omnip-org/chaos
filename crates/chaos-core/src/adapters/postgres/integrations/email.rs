@@ -2,7 +2,7 @@ use crate::{
     ApplicationError,
     contracts::{
         EmailAccountConfiguration, EmailBrandConfiguration, EmailBrandDetail, EmailMessage,
-        EmailOrderLineItem, EmailProviderAccountDetail, EmailProviderAccountPage, QueueJob,
+        EmailOrderLineItem, EmailProviderAccountDetail, EmailProviderAccountPage,
     },
     email_templates::{
         OrderConfirmationTemplateData, default_order_confirmation_template,
@@ -255,17 +255,12 @@ impl PostgresEmailRepository {
     /// has settled without an email.
     pub async fn prepare_order_confirmation(
         &self,
-        job: &QueueJob,
+        store_id: Uuid,
+        order_id: Uuid,
     ) -> Result<Option<(String, String, EmailMessage)>, ApplicationError> {
-        let order_id = job
-            .payload
-            .get("aggregate_id")
-            .and_then(Value::as_str)
-            .and_then(|value| Uuid::parse_str(value).ok())
-            .ok_or_else(|| invalid_email_job("aggregate_id"))?;
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(job.store_id.to_string())
+            .bind(store_id.to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -302,7 +297,7 @@ impl PostgresEmailRepository {
              WHERE order_row.store_id = $1 AND order_row.id = $2 \
              ORDER BY account.id LIMIT 1",
         )
-        .bind(job.store_id)
+        .bind(store_id)
         .bind(order_id)
         .fetch_optional(&mut *transaction)
         .await
@@ -344,7 +339,7 @@ impl PostgresEmailRepository {
         )?;
         let sender = parse_email_account_configuration(account_configuration)?.sender();
         let lookup_url = order_lookup_url(&origin, &order_number, &contact_email)?;
-        let brand = load_email_brand(&mut transaction, StoreId::from_uuid(job.store_id))
+        let brand = load_email_brand(&mut transaction, StoreId::from_uuid(store_id))
             .await?
             .ok_or_else(email_provider_account_not_found_for_brand)
             .and_then(email_brand_detail)?
@@ -356,7 +351,7 @@ impl PostgresEmailRepository {
              WHERE store_id = $1 AND order_id = $2 \
              ORDER BY position",
         )
-        .bind(job.store_id)
+        .bind(store_id)
         .bind(order_id)
         .fetch_all(&mut *transaction)
         .await
@@ -777,10 +772,6 @@ fn order_lookup_url(
         .append_pair("order_number", order_number)
         .append_pair("email", email);
     Ok(lookup_url)
-}
-
-fn invalid_email_job(field: &'static str) -> ApplicationError {
-    ApplicationError::Unexpected(anyhow::anyhow!("email outbox payload is missing {field}"))
 }
 
 fn email_provider_unavailable() -> ApplicationError {

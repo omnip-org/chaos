@@ -503,7 +503,6 @@ mod tests {
 
     fn command(value_minor: i64, currency: &str) -> AnalyticsDeliveryCommand {
         AnalyticsDeliveryCommand {
-            delivery_id: Uuid::now_v7(),
             provider: "meta".into(),
             event_id: Uuid::now_v7(),
             external_account_reference: "12345".into(),

@@ -404,7 +404,7 @@ impl PostgresStorefrontSalesRepository {
         if let Some(attribution) = &request.attribution {
             splice_attribution(&mut initiate_checkout_properties, attribution);
         }
-        append_event(
+        let inserted = append_event(
             &mut transaction,
             AnalyticsEventToAppend {
                 store_id: actor.store_id.as_uuid(),
@@ -419,6 +419,19 @@ impl PostgresStorefrontSalesRepository {
             },
         )
         .await?;
+        if let Some((analytics_event_id, received_at)) = inserted {
+            publish_commerce_event(
+                &mut transaction,
+                "payment.initiated",
+                payment_event_payload(
+                    actor.store_id.as_uuid(),
+                    order_id.as_uuid(),
+                    analytics_event_id,
+                    received_at,
+                ),
+            )
+            .await?;
+        }
 
         let draft = CheckoutDraft {
             order_id,

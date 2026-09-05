@@ -21,16 +21,6 @@ pub struct AnalyticsEventRecord {
     pub occurred_at: OffsetDateTime,
     pub received_at: OffsetDateTime,
     pub properties: Value,
-    pub deliveries: Vec<AnalyticsEventDelivery>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AnalyticsEventDelivery {
-    pub provider: String,
-    pub status: String,
-    pub delivered_at: Option<OffsetDateTime>,
-    pub provider_reference: Option<String>,
-    pub last_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -45,7 +35,6 @@ pub struct AnalyticsEventQuery {
     pub before_received_at: Option<OffsetDateTime>,
     pub event_name: Option<String>,
     pub source: Option<String>,
-    pub delivery_status: Option<String>,
     pub shopper_id: Option<Uuid>,
     pub channel_id: Option<Uuid>,
     pub session_id: Option<Uuid>,
@@ -79,17 +68,7 @@ pub struct AnalyticsDestinationConfiguration {
 }
 
 #[derive(Clone, Debug)]
-pub struct AnalyticsDeliveryJob {
-    pub id: Uuid,
-    pub store_id: StoreId,
-    pub destination_id: Uuid,
-    pub analytics_event_id: Uuid,
-    pub attempts: u32,
-}
-
-#[derive(Clone, Debug)]
 pub struct AnalyticsDeliveryCommand {
-    pub delivery_id: Uuid,
     pub provider: String,
     pub event_id: Uuid,
     pub external_account_reference: String,

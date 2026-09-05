@@ -1,6 +1,9 @@
 use crate::{
     ApplicationError,
-    adapters::postgres::sales::{consume_order_inventory, release_order_inventory},
+    adapters::postgres::{
+        analytics::publish_commerce_event,
+        sales::{consume_order_inventory, release_order_inventory},
+    },
     contracts::{AdminActor, OrderDetail, OrderListFilter, OrderPage},
     error::database_error,
 };
@@ -164,21 +167,15 @@ impl PostgresOrderManagementRepository {
         .await
         .map_err(database_error)?;
         if target_status == OrderStatus::Confirmed {
-            sqlx::query(
-                "INSERT INTO integration.event_outbox \
-                 (id, store_id, aggregate_type, aggregate_id, internal_event_type, payload) \
-                 VALUES ($1, $2, 'order', $3, 'order.confirmed', $4)",
+            publish_commerce_event(
+                &mut transaction,
+                "order.confirmed",
+                serde_json::json!({
+                    "store_id": store_id.as_uuid(),
+                    "order_id": order_id.as_uuid(),
+                }),
             )
-            .bind(Uuid::now_v7())
-            .bind(store_id.as_uuid())
-            .bind(order_id.as_uuid())
-            .bind(serde_json::json!({
-                "aggregate_id": order_id.as_uuid(),
-                "order_id": order_id.as_uuid(),
-            }))
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
+            .await?;
         }
         let detail = super::order_detail::load(&mut transaction, store_id, None, order_id)
             .await?

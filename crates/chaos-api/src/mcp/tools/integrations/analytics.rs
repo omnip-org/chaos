@@ -48,8 +48,6 @@ pub struct ListAnalyticsEventsParams {
     pub event_name: Option<String>,
     /// Optional source filter stored in the normalized event_source column.
     pub source: Option<String>,
-    /// Optional external provider delivery status filter.
-    pub delivery_status: Option<AnalyticsDeliveryStatusParam>,
     /// Optional signed shopper identifier for tracing one consumer journey.
     pub shopper_id: Option<String>,
     /// Optional Channel identifier for isolating one storefront's events.
@@ -66,14 +64,6 @@ pub struct ListAnalyticsEventsParams {
     pub utm_term: Option<String>,
     /// Optional UTM content filter, matched against the normalized analytics column.
     pub utm_content: Option<String>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum AnalyticsDeliveryStatusParam {
-    Pending,
-    Processed,
-    DeadLetter,
 }
 
 #[tool_router(router = analytics_tool_router, vis = "pub(in crate::mcp::tools)")]
@@ -166,7 +156,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "List behavior events stored in the selected Store and their external delivery observations. Optional filters include any event name, normalized event source, delivery status, channel_id, shopper_id, session_id, utm_source, utm_medium, utm_campaign, utm_term, and utm_content. Raw dynamic properties are returned because this tool is intended for internal behavior analysis."
+        description = "List behavior events stored in the selected Store. Optional filters include any event name, normalized event source, channel_id, shopper_id, session_id, utm_source, utm_medium, utm_campaign, utm_term, and utm_content. Raw dynamic properties are returned because this tool is intended for internal behavior analysis."
     )]
     async fn list_analytics_events(
         &self,
@@ -201,11 +191,6 @@ impl ChaosMcp {
             ));
         }
         let source = params.source;
-        let delivery_status = params.delivery_status.map(|status| match status {
-            AnalyticsDeliveryStatusParam::Pending => "pending".to_owned(),
-            AnalyticsDeliveryStatusParam::Processed => "processed".to_owned(),
-            AnalyticsDeliveryStatusParam::DeadLetter => "dead_letter".to_owned(),
-        });
         let shopper_id = match params
             .shopper_id
             .as_deref()
@@ -244,7 +229,6 @@ impl ChaosMcp {
             before_received_at,
             event_name: params.event_name,
             source,
-            delivery_status,
             shopper_id,
             channel_id,
             session_id,
@@ -311,13 +295,6 @@ fn analytics_events_json(page: AnalyticsEventPage, limit: u16) -> Value {
             "occurred_at": format_timestamp(event.occurred_at),
             "received_at": format_timestamp(event.received_at),
             "properties": event.properties,
-            "deliveries": event.deliveries.into_iter().map(|delivery| json!({
-                "provider": delivery.provider,
-                "status": delivery.status,
-                "delivered_at": delivery.delivered_at.map(format_timestamp),
-                "provider_reference": delivery.provider_reference,
-                "last_error": delivery.last_error,
-            })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "has_more": page.has_more,
         "next_before_id": next_before_id,

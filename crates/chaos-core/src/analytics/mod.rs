@@ -1,18 +1,20 @@
 use std::sync::Arc;
 
+use serde_json::Value;
+use uuid::Uuid;
+
 use crate::{
     ApplicationError,
     adapters::postgres::{
-        PostgresAnalyticsDeliveryStore, PostgresAnalyticsDestinationStore,
-        PostgresAnalyticsEventStore,
+        PostgresAnalyticsDestinationStore, PostgresAnalyticsEventStore, PostgresCapiEventStore,
     },
     contracts::{
-        AnalyticsDeliveryError, AnalyticsDestination, AnalyticsDestinationConfiguration,
-        AnalyticsEventDestination, AnalyticsEventPage, AnalyticsEventQuery,
+        AnalyticsDestination, AnalyticsDestinationConfiguration, AnalyticsEventDestination,
+        AnalyticsEventPage, AnalyticsEventQuery, IntegrationQueue,
     },
     store::StoreActor,
 };
-use time::OffsetDateTime;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 pub struct AnalyticsAdministration {
     destinations: Arc<PostgresAnalyticsDestinationStore>,
@@ -73,53 +75,88 @@ impl AnalyticsAdministration {
     }
 }
 
-pub struct AnalyticsDeliveryWorker {
-    repository: Arc<PostgresAnalyticsDeliveryStore>,
-    destinations: std::collections::HashMap<String, Arc<dyn AnalyticsEventDestination>>,
+/// Consumes `analytics_capi_queue` (bound to the `payment.initiated`/
+/// `payment.completed` routing keys — see `migrations/0011_topic_routing.sql`)
+/// and delivers to the one configured Meta CAPI destination. Topic routing
+/// already picked this consumer, so there's no provider-name dispatch here
+/// the way a shared queue would need; a second ad-platform destination
+/// would get its own queue, binding, and worker instance instead of joining
+/// this one.
+pub struct MetaCapiWorker {
+    queue: Arc<dyn IntegrationQueue>,
+    repository: Arc<PostgresCapiEventStore>,
+    destination: Arc<dyn AnalyticsEventDestination>,
 }
 
-impl AnalyticsDeliveryWorker {
+const CAPI_QUEUE: &str = "analytics_capi_queue";
+
+impl MetaCapiWorker {
     pub fn new(
-        repository: Arc<PostgresAnalyticsDeliveryStore>,
-        destinations: impl IntoIterator<Item = Arc<dyn AnalyticsEventDestination>>,
+        queue: Arc<dyn IntegrationQueue>,
+        repository: Arc<PostgresCapiEventStore>,
+        destination: Arc<dyn AnalyticsEventDestination>,
     ) -> Self {
         Self {
+            queue,
             repository,
-            destinations: destinations
-                .into_iter()
-                .map(|destination| (destination.provider().to_owned(), destination))
-                .collect(),
+            destination,
         }
     }
 
-    pub async fn run_delivery_batch(
-        &self,
-        now: OffsetDateTime,
-        limit: u16,
-    ) -> Result<usize, ApplicationError> {
-        let scheduled = self.repository.schedule_deliveries(limit).await?;
-        let jobs = self.repository.claim_deliveries(limit).await?;
+    pub async fn run_batch(&self, limit: u16) -> Result<usize, ApplicationError> {
+        let jobs = self.queue.claim_topic(CAPI_QUEUE, limit).await?;
         for job in &jobs {
-            let result = match self.repository.load_delivery(job).await {
-                Ok(command) => match self.destinations.get(&command.provider) {
-                    Some(destination) => destination.send(&command).await,
-                    None => Err(AnalyticsDeliveryError {
-                        retryable: false,
-                        message: format!(
-                            "analytics provider {} is not configured",
-                            command.provider
-                        ),
-                    }),
-                },
-                Err(error) => Err(AnalyticsDeliveryError {
-                    retryable: false,
-                    message: error.to_string(),
-                }),
-            };
-            self.repository.finish_delivery(job, result, now).await?;
+            let result = self.deliver(&job.payload).await;
+            if let Err(error) = &result {
+                tracing::warn!(error = %error, "capi delivery failed");
+            }
+            self.queue
+                .finish_topic(
+                    CAPI_QUEUE,
+                    job.msg_id,
+                    job.attempts,
+                    result.map_err(|error| error.to_string()),
+                )
+                .await?;
         }
-        Ok(scheduled + jobs.len())
+        Ok(jobs.len())
     }
+
+    async fn deliver(&self, payload: &Value) -> Result<(), ApplicationError> {
+        let store_id = topic_uuid(payload, "store_id")?;
+        let analytics_event_id = topic_uuid(payload, "analytics_event_id")?;
+        let received_at = payload
+            .get("received_at")
+            .and_then(Value::as_str)
+            .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
+            .ok_or_else(|| topic_field_error("received_at"))?;
+        let Some(command) = self
+            .repository
+            .load_command(store_id, analytics_event_id, received_at)
+            .await?
+        else {
+            return Ok(());
+        };
+        self.destination
+            .send(&command)
+            .await
+            .map_err(|error| ApplicationError::Unexpected(anyhow::anyhow!(error.message)))?;
+        Ok(())
+    }
+}
+
+fn topic_uuid(payload: &Value, field: &'static str) -> Result<Uuid, ApplicationError> {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or_else(|| topic_field_error(field))
+}
+
+fn topic_field_error(field: &'static str) -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "commerce event message missing or invalid field {field}"
+    ))
 }
 
 fn validation(field: &'static str, reason: &'static str) -> ApplicationError {
