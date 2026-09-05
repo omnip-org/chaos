@@ -97,6 +97,7 @@ export class CartResource {
         productVariantId,
         body,
         expectedVersion ?? current!.data.version,
+        current?.data,
       );
     });
   }
@@ -122,6 +123,7 @@ export class CartResource {
           quantity: (existing?.quantity ?? 0) + quantity,
         },
         current.data.version,
+        current.data,
       );
     });
   }
@@ -132,7 +134,10 @@ export class CartResource {
   ): Promise<DataEnvelope<Cart>> {
     return this.enqueueMutation(cartId, async () => {
       const current = await this.get(cartId);
-      return this.client.request(
+      const previousQuantity = current.data.lines.find(
+        (line) => line.product_variant_id === productVariantId,
+      )?.quantity;
+      const response = await this.client.request<DataEnvelope<Cart>>(
         `/carts/${encodeURIComponent(cartId)}/lines/${encodeURIComponent(productVariantId)}`,
         {
           method: "DELETE",
@@ -140,16 +145,28 @@ export class CartResource {
           ifMatch: String(current.data.version),
         },
       );
+      this.client.recordCartMutation({
+        cart: response.data,
+        product_variant_id: productVariantId,
+        previous_quantity: previousQuantity ?? 0,
+        new_quantity: 0,
+        removed: true,
+      });
+      return response;
     });
   }
 
-  private setLineRequest(
+  private async setLineRequest(
     cartId: string,
     productVariantId: string,
     body: SetCartLineRequest,
     expectedVersion: number,
+    previousCart: Cart | undefined,
   ): Promise<DataEnvelope<Cart>> {
-    return this.client.request<DataEnvelope<Cart>>(
+    const previousQuantity = previousCart?.lines.find(
+      (line) => line.product_variant_id === productVariantId,
+    )?.quantity;
+    const response = await this.client.request<DataEnvelope<Cart>>(
       `/carts/${encodeURIComponent(cartId)}/lines/${encodeURIComponent(productVariantId)}`,
       {
         method: "PUT",
@@ -158,6 +175,17 @@ export class CartResource {
         ifMatch: String(expectedVersion),
       },
     );
+    const newQuantity = response.data.lines.find(
+      (line) => line.product_variant_id === productVariantId,
+    )?.quantity ?? 0;
+    this.client.recordCartMutation({
+      cart: response.data,
+      product_variant_id: productVariantId,
+      previous_quantity: previousQuantity ?? 0,
+      new_quantity: newQuantity,
+      removed: newQuantity === 0,
+    });
+    return response;
   }
 
   /**

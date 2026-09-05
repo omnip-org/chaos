@@ -50,7 +50,7 @@ preserve the dependency direction in
 | Shipping and fulfillment | `fulfillment` | MCP fulfillment tools and manual shipping adapter | `commerce` |
 | Payment webhooks and payment queues | core payment workflows | Stripe adapters and Worker loops | `commerce` |
 | Generic outbox and event routing | core event workflows | Worker loops and integration repositories | `integration` |
-| Commerce events and external provider delivery | `analytics` | MCP settings and Worker delivery of the server-side Purchase event written at payment confirmation (no browser collection endpoint; chaos-js projects directly to Pixel/GA4/CAPI instead) | `integration` |
+| Commerce events and external provider delivery | `analytics` | MCP settings and Worker delivery of the server-side InitiateCheckout and Purchase events (written at checkout creation and payment confirmation), using ad-platform attribution captured on `commerce.carts` at checkout (no browser collection endpoint; chaos-js projects every other event directly to Pixel/GA4 instead) | `integration` |
 
 Rust business modules remain useful navigation boundaries; they do not require
 matching PostgreSQL schemas.

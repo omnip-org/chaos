@@ -1,4 +1,8 @@
 import { ChaosApiError, throwForResponse } from "./errors.js";
+import {
+  ChaosStorefrontAnalytics,
+  type AnalyticsOptions,
+} from "./events/browser.js";
 import { fnv1a32 } from "./internal/hash.js";
 import { CartResource } from "./resources/cart.js";
 import { CatalogResource } from "./resources/catalog.js";
@@ -6,26 +10,34 @@ import { OrdersResource } from "./resources/orders.js";
 import { PaymentsResource } from "./resources/payments.js";
 import { ReviewsResource } from "./resources/reviews.js";
 import { ShopperSessionResource } from "./resources/shopper-session.js";
-import type { ShopperSession } from "./types.js";
+import type {
+  CartLineMutation,
+  EmbeddedCheckoutCreation,
+  OrderLookup,
+  ShopperSession,
+} from "./types.js";
 
 const SHOPPER_TOKEN_STORAGE_PREFIX = "chaos.storefront.shopper_token";
-const CLOUDFLARE_CLIENT_IP_HEADER = "CF-Connecting-IP";
-const MAX_CLIENT_IP_LENGTH = 128;
+
+/**
+ * Meta Pixel/GA4 event delivery, keyed by destination: pass `metaPixel` to
+ * turn on Pixel, `ga4` to turn on GA4, omit either to leave it off — there
+ * is no separate enable flag.
+ */
+export type StorefrontEventsOptions = Omit<AnalyticsOptions, "publishableKey">;
 
 export interface ClientOptions {
   publishableKey: string;
-  /** Public channel API origin + prefix, e.g. "https://shop.example.com/api/v1". Defaults to same-origin "/api/v1". */
+  /** Chaos API origin + prefix, e.g. "https://chaos.example.com/api/v1". */
   baseUrl?: string;
   fetch?: typeof fetch;
-  /** Incoming request used to enrich server-side Meta CAPI calls with the edge-observed client IP and user agent. */
-  request?: Pick<Request, "headers">;
   /** Where the shopper token is persisted between requests. Defaults to window.localStorage when available. */
   storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
   randomUUID?: () => string;
   /**
-   * Disables implicit shopper-session creation for server-side callers that
-   * need to distinguish a missing token from a new anonymous session.
-   * Defaults to true for browser compatibility.
+   * Disables implicit shopper-session creation for callers that need to
+   * distinguish a missing token from a new anonymous session. Defaults to
+   * true for browser compatibility.
    */
   autoAcquireShopperToken?: boolean;
   /**
@@ -34,6 +46,8 @@ export interface ClientOptions {
    * order; use CartResource.getOrCreate for explicit cart recovery.
    */
   retryInvalidShopperToken?: boolean;
+  /** Turns on client-side Meta Pixel/GA4 event delivery; omit to leave it off. */
+  events?: StorefrontEventsOptions;
 }
 
 /** @internal */
@@ -62,9 +76,7 @@ export class ChaosStorefrontClient {
   private readonly shopperTokenStorageKey: string;
   private readonly autoAcquireShopperToken: boolean;
   private readonly retryInvalidShopperToken: boolean;
-  private readonly analyticsRequest:
-    | Pick<Request, "headers">
-    | undefined;
+  private readonly analytics: ChaosStorefrontAnalytics | null;
   readonly randomUUID: () => string;
   private shopperTokenCache: string | null = null;
   private pendingShopperSession: Promise<string> | null = null;
@@ -93,7 +105,14 @@ export class ChaosStorefrontClient {
     );
     this.autoAcquireShopperToken = options.autoAcquireShopperToken ?? true;
     this.retryInvalidShopperToken = options.retryInvalidShopperToken ?? false;
-    this.analyticsRequest = options.request;
+    this.analytics = options.events
+      ? new ChaosStorefrontAnalytics({
+          // `publishableKey` here only namespaces the analytics module's own
+          // local-storage keys; it doesn't need to be a real Chaos key.
+          publishableKey: `${this.baseUrl}\0${this.publishableKey}`,
+          ...options.events,
+        })
+      : null;
     this.randomUUID =
       options.randomUUID ??
       globalThis.crypto?.randomUUID.bind(globalThis.crypto);
@@ -186,23 +205,58 @@ export class ChaosStorefrontClient {
     );
   }
 
+  /** @internal Used by CartResource after a successful line mutation. */
+  recordCartMutation(mutation: CartLineMutation): void {
+    try {
+      this.analytics?.recordCartMutation(mutation);
+    } catch {
+      // The cart mutation already succeeded; analytics must remain best-effort.
+    }
+  }
+
+  /** @internal Used by PaymentsResource after a successful checkout creation. */
+  recordCheckoutCreation(creation: EmbeddedCheckoutCreation): void {
+    try {
+      this.analytics?.recordCheckoutCreation(creation);
+    } catch {
+      // The checkout already exists; analytics must remain best-effort.
+    }
+  }
+
   /**
-   * Reads the edge-observed client IP and user agent from the request passed
-   * to `StorefrontServerClient`, for a server-side Meta CAPI call to
-   * include in `user_data`. Returns an empty object outside a request-scoped
-   * server client.
-   * @internal
+   * Projects a confirmed, paid order to Meta Pixel/GA4 — never inferred from
+   * browser activity. Typically called on a return page right after
+   * `orders.lookupOrder`. No-op unless the order is confirmed and paid.
    */
-  edgeRequestContext(): { clientIpAddress?: string; clientUserAgent?: string } {
-    const headers = this.analyticsRequest?.headers;
-    const clientIpAddress = headers?.get(CLOUDFLARE_CLIENT_IP_HEADER)?.trim();
-    const clientUserAgent = headers?.get("user-agent")?.trim();
-    return {
-      ...(clientIpAddress && clientIpAddress.length <= MAX_CLIENT_IP_LENGTH
-        ? { clientIpAddress }
-        : {}),
-      ...(clientUserAgent ? { clientUserAgent } : {}),
-    };
+  recordConfirmedPurchase(
+    order: Pick<
+      OrderLookup,
+      "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines"
+    >,
+  ): void {
+    try {
+      this.analytics?.recordConfirmedPurchase(order);
+    } catch {
+      // The order is already confirmed; analytics must remain best-effort.
+    }
+  }
+
+  /** @internal Used by CatalogResource.listProducts when `q` is set. */
+  recordSearch(input: { query: string }): void {
+    try {
+      this.analytics?.search(input);
+    } catch {
+      // The search already ran; analytics must remain best-effort.
+    }
+  }
+
+  /** @internal Used by CatalogResource.getProduct. */
+  recordViewContent(input: { productId: string; productVariantId?: string }): void {
+    try {
+      this.analytics?.viewContent(input);
+    } catch {
+      // The product already loaded; analytics must remain best-effort.
+    }
   }
 
   private async requestWithShopperTokenRetry<

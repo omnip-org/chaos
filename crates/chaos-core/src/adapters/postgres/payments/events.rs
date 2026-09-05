@@ -10,6 +10,20 @@ type RefundDetailRow = (
     OffsetDateTime,
 );
 
+/// contact_email, contact_phone, channel.origin, shipping_full_name,
+/// shipping_locality, shipping_administrative_area, shipping_postal_code,
+/// shipping_country_code.
+type OrderIdentityRow = (
+    Option<String>,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 #[allow(clippy::too_many_arguments)]
 async fn insert_outbox(
     transaction: &mut Transaction<'static, Postgres>,
@@ -238,10 +252,10 @@ async fn apply_payment_event(
     if !captured && !failed && !expired {
         return Err(corrupt_webhook_payload());
     }
-    let (order_status, payment_status, shopper_id, channel_id, currency, order_number, cart_id):
-        (String, String, Uuid, Uuid, String, String, Uuid) = sqlx::query_as(
+    let (order_status, payment_status, shopper_id, channel_id, currency, cart_id):
+        (String, String, Uuid, Uuid, String, Uuid) = sqlx::query_as(
             "SELECT status::text, payment_status::text, shopper_id, channel_id, currency::text, \
-                    order_number, cart_id \
+                    cart_id \
              FROM commerce.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -312,22 +326,28 @@ async fn apply_payment_event(
             order_id.as_uuid(),
         )
         .await?;
-        let checkout_attribution = load_checkout_attribution(
-            transaction,
-            store_id.as_uuid(),
-            channel_id,
-            shopper_id,
-            cart_id,
-            &order_number,
+        let cart_attribution: Option<Value> = sqlx::query_scalar(
+            "SELECT attribution FROM commerce.carts WHERE store_id = $1 AND id = $2",
         )
-        .await?;
-        let (contact_email, contact_phone, origin): (
-            Option<String>,
-            Option<String>,
-            String,
-        ) = sqlx::query_as(
+        .bind(store_id.as_uuid())
+        .bind(cart_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        let (
+            contact_email,
+            contact_phone,
+            origin,
+            shipping_full_name,
+            shipping_locality,
+            shipping_administrative_area,
+            shipping_postal_code,
+            shipping_country_code,
+        ): OrderIdentityRow = sqlx::query_as(
             "SELECT order_row.contact_email::text, order_row.contact_phone, \
-                    channel.origin \
+                    channel.origin, order_row.shipping_full_name, \
+                    order_row.shipping_locality, order_row.shipping_administrative_area, \
+                    order_row.shipping_postal_code, order_row.shipping_country_code::text \
              FROM commerce.orders AS order_row \
              JOIN commerce.channels AS channel \
                ON channel.store_id = order_row.store_id \
@@ -347,12 +367,21 @@ async fn apply_payment_event(
             "currency": currency,
             "items": items,
         });
-        merge_attribution(&mut properties, &checkout_attribution);
+        if let Some(attribution) = &cart_attribution {
+            splice_attribution(&mut properties, attribution);
+        }
         merge_order_identity(
             &mut properties,
-            contact_email.as_deref(),
-            contact_phone.as_deref(),
-            Some(&origin),
+            OrderIdentityContext {
+                email: contact_email.as_deref(),
+                phone: contact_phone.as_deref(),
+                origin: Some(&origin),
+                full_name: shipping_full_name.as_deref(),
+                locality: shipping_locality.as_deref(),
+                administrative_area: shipping_administrative_area.as_deref(),
+                postal_code: shipping_postal_code.as_deref(),
+                country_code: shipping_country_code.as_deref(),
+            },
         );
         append_event(
             transaction,

@@ -1,27 +1,11 @@
-// Browser: one class, `new` it directly and dot into cart/catalog/checkout/
-// orders. Event delivery (Pixel/GA4) is wired up internally from
-// `StorefrontBrowserOptions.events` — there is no separate analytics class
-// to construct or export.
-export { StorefrontBrowserClient } from "./ssr/browser.js";
-export type { StorefrontBrowserOptions, StorefrontEventsOptions } from "./ssr/browser.js";
-
-// Server: one class, `new` it directly and dot into cart/checkout/orders/
-// reviews (cookie- and event-aware) plus catalog/payments/shopperSession
-// (pass-through). Meta CAPI (`events` below) is likewise wired up internally
-// by the class the caller constructs from `@omnip-org/chaos-js/meta-capi` —
-// see that subpath's `ChaosServerEvents`.
-export { StorefrontServerClient } from "./ssr/server.js";
-export type {
-  AddCartLineInput,
-  CommerceEventContext,
-  ServerClientOptions,
-  ServerEventsPort,
-  StorefrontCookieJar,
-  StorefrontCookieOptions,
-  StorefrontSession,
-  StorefrontSessionOptions,
-  UpdateCartLineInput,
-} from "./ssr/server.js";
+// One class, `new` it directly and dot into cart/catalog/checkout/orders/
+// reviews/shopperSession. Event delivery (Pixel/GA4) is wired up internally
+// from `ClientOptions.events` — there is no separate analytics class to
+// construct or export; `chaos.recordConfirmedPurchase` (also reachable as
+// `chaos.orders.recordConfirmedPurchase`) projects a confirmed, paid order
+// after `orders.lookupOrder`.
+export { ChaosStorefrontClient } from "./client.js";
+export type { ClientOptions, RequestOptions, StorefrontEventsOptions } from "./client.js";
 
 export { ChaosApiError } from "./errors.js";
 

@@ -33,8 +33,8 @@ use uuid::Uuid;
 
 use crate::adapters::postgres::{
     analytics::{
-        AnalyticsEventToAppend, append_event, load_checkout_attribution, merge_attribution,
-        merge_order_identity,
+        AnalyticsEventToAppend, OrderIdentityContext, append_event, merge_order_identity,
+        splice_attribution,
     },
     sales::{consume_order_inventory, release_order_inventory},
 };

@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    FieldViolation,
-    catalog::ProductVariantId,
-    integration::PaymentProvider,
-    sales::{CartId, OrderContact},
+    FieldViolation, catalog::ProductVariantId, integration::PaymentProvider, sales::CartId,
 };
+use serde_json::Value;
 use time::OffsetDateTime;
 
 use crate::{
@@ -39,14 +37,32 @@ pub struct RemoveCartLineInput {
 pub struct CreateStripeCheckoutInput {
     pub actor: ShopperActor,
     pub cart_id: CartId,
-    /// Optional: Stripe Embedded Checkout collects the shopper's email
-    /// directly when the storefront does not already have one, and a
-    /// verified payment webhook backfills it onto the Order afterward.
-    pub email: Option<String>,
     pub return_url: String,
     pub payment_provider: PaymentProvider,
     pub now: OffsetDateTime,
     pub idempotency_key: uuid::Uuid,
+    /// Ad-platform attribution the browser read off its own cookies at
+    /// checkout time (e.g. Meta's `fbc`/`fbp`). Stored on the Cart so the
+    /// payment webhook can attach it to the server-side Purchase event later
+    /// without correlating a separate browser-recorded event.
+    pub attribution: Option<CheckoutAttributionInput>,
+}
+
+/// Namespaced by ad platform so a future platform is an additive field, not a
+/// schema or contract change. Only Meta is wired up today: it's the only
+/// platform Chaos sends a server-side conversion event for.
+#[derive(Default)]
+pub struct CheckoutAttributionInput {
+    pub meta_fbc: Option<String>,
+    pub meta_fbp: Option<String>,
+    /// Captured by the API layer from the checkout request itself (not
+    /// trusted from the client) — see `carts.rs`'s handler.
+    pub client_ip_address: Option<String>,
+    pub client_user_agent: Option<String>,
+    /// The checkout page's own URL, read by the browser from
+    /// `window.location`. Not platform-specific, so it sits alongside
+    /// `meta_*` rather than inside a platform namespace.
+    pub source_url: Option<String>,
 }
 
 pub(crate) struct StripeCheckoutRequest {
@@ -54,6 +70,7 @@ pub(crate) struct StripeCheckoutRequest {
     pub now: OffsetDateTime,
     pub idempotency_key: uuid::Uuid,
     pub return_url: String,
+    pub attribution: Option<Value>,
 }
 
 pub struct StorefrontSales {
@@ -132,17 +149,16 @@ impl StorefrontSales {
         input: CreateStripeCheckoutInput,
     ) -> Result<CheckoutDraft, ApplicationError> {
         input.actor.machine.require_sales_channel()?;
-        let contact = OrderContact::new(input.email, None)?;
         self.repository
             .create_stripe_checkout(
                 &input.actor,
                 input.cart_id,
-                contact.email(),
                 StripeCheckoutRequest {
                     payment_provider: input.payment_provider,
                     now: input.now,
                     idempotency_key: input.idempotency_key,
                     return_url: input.return_url,
+                    attribution: checkout_attribution_value(input.attribution),
                 },
             )
             .await
@@ -167,6 +183,39 @@ impl StorefrontSales {
                 id: order_number.to_owned(),
             })
     }
+}
+
+/// Drop invalid or oversized attribution rather than fail checkout over it —
+/// this is enrichment for a later Meta CAPI call, not something a shopper's
+/// purchase should ever block on. The Meta adapter re-checks `fbc`/`fbp`
+/// format itself before sending, so this only needs to bound what's stored.
+fn checkout_attribution_value(input: Option<CheckoutAttributionInput>) -> Option<Value> {
+    let input = input?;
+    let mut meta = serde_json::Map::new();
+    for (key, value) in [
+        ("fbc", input.meta_fbc),
+        ("fbp", input.meta_fbp),
+        ("client_ip_address", input.client_ip_address),
+        ("client_user_agent", input.client_user_agent),
+    ] {
+        if let Some(value) = sanitized_attribution_string(value) {
+            meta.insert(key.into(), Value::String(value));
+        }
+    }
+    let mut attribution = serde_json::Map::new();
+    if let Some(source_url) = sanitized_attribution_string(input.source_url) {
+        attribution.insert("source_url".into(), Value::String(source_url));
+    }
+    if !meta.is_empty() {
+        attribution.insert("meta".into(), Value::Object(meta));
+    }
+    (!attribution.is_empty()).then_some(Value::Object(attribution))
+}
+
+fn sanitized_attribution_string(value: Option<String>) -> Option<String> {
+    value.filter(|value| {
+        !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
+    })
 }
 
 fn cart_not_found(cart_id: CartId) -> ApplicationError {

@@ -139,35 +139,6 @@ test("explicit shopper sessions update the client token", async () => {
   assert.equal(client.getShopperToken(), "manual-token");
 });
 
-test("edgeRequestContext reads the edge-observed client IP and user agent", () => {
-  const client = new ChaosStorefrontClient({
-    publishableKey: "public_test",
-    storage: null,
-    request: new Request("https://shop.example.com/api/checkout", {
-      headers: {
-        "CF-Connecting-IP": "2001:db8::8",
-        "User-Agent": "Worker/1.0",
-      },
-    }),
-    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
-  });
-
-  assert.deepEqual(client.edgeRequestContext(), {
-    clientIpAddress: "2001:db8::8",
-    clientUserAgent: "Worker/1.0",
-  });
-});
-
-test("edgeRequestContext is empty without a request-scoped server client", () => {
-  const client = new ChaosStorefrontClient({
-    publishableKey: "public_test",
-    storage: null,
-    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
-  });
-
-  assert.deepEqual(client.edgeRequestContext(), {});
-});
-
 test("refreshes a stale shopper token once and retries the request", async () => {
   const storage = new MemoryStorage();
   const requests: Array<{ url: string; token: string | undefined }> = [];
@@ -434,6 +405,7 @@ test("payments create an embedded Checkout session with SDK-owned request detail
         return jsonResponse(201, {
           data: {
             order_number: "W-20260830-00000001",
+            event_id: "W-20260830-00000001",
             client_action: {
               type: "mount_embedded_checkout",
               public_key: "pk_test_stripe",
@@ -449,7 +421,6 @@ test("payments create an embedded Checkout session with SDK-owned request detail
   });
 
   const session = await client.payments.createEmbeddedCheckout("cart-1", {
-    email: "shopper@example.com",
     returnUrl: "https://shop.example.com/checkout/success",
   });
 
@@ -462,7 +433,6 @@ test("payments create an embedded Checkout session with SDK-owned request detail
     /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
   );
   assert.deepEqual(JSON.parse(requests[2]?.body ?? "{}"), {
-    email: "shopper@example.com",
     payment_provider: "stripe",
     return_url: "https://shop.example.com/checkout/success",
   });
@@ -471,6 +441,173 @@ test("payments create an embedded Checkout session with SDK-owned request detail
     public_key: "pk_test_stripe",
     client_token: "cs_test_secret",
   });
+});
+
+test("checkout attaches explicit attribution and excludes it from the idempotency key", async () => {
+  const requests: Array<{ url: string; headers: Headers; body: string | undefined }> = [];
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async (url: string, init: RequestInit) => {
+      requests.push({
+        url,
+        headers: new Headers(init.headers),
+        body: typeof init.body === "string" ? init.body : undefined,
+      });
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+      }
+      if (url.endsWith("/carts/cart-1")) {
+        return jsonResponse(200, {
+          data: { id: "cart-1", version: 4, currency: "USD", subtotal_amount_minor: 2_000, lines: [] },
+        });
+      }
+      if (url.endsWith("/checkout")) {
+        return jsonResponse(201, {
+          data: {
+            order_number: "W-20260830-00000001",
+            event_id: "W-20260830-00000001",
+            client_action: {
+              type: "mount_embedded_checkout",
+              public_key: "pk_test_stripe",
+              client_token: "cs_test_secret",
+            },
+          },
+        });
+      }
+      return jsonResponse(404, { error: { code: "not_found", message: "not found" } });
+    }) as unknown as typeof fetch,
+  });
+
+  await client.payments.createEmbeddedCheckout("cart-1", {
+    returnUrl: "https://shop.example.com/checkout/success",
+    attribution: { meta: { fbc: "fb.1.1699999999999.click" } },
+  });
+  const firstCheckout = requests.find((request) => request.url.endsWith("/checkout"));
+  assert.deepEqual(JSON.parse(firstCheckout?.body ?? "{}"), {
+    payment_provider: "stripe",
+    return_url: "https://shop.example.com/checkout/success",
+    attribution: { meta: { fbc: "fb.1.1699999999999.click" } },
+  });
+
+  requests.length = 0;
+  await client.payments.createEmbeddedCheckout("cart-1", {
+    returnUrl: "https://shop.example.com/checkout/success",
+    attribution: { meta: { fbc: "fb.1.1699999999999.a-different-click" } },
+  });
+  const secondCheckout = requests.find((request) => request.url.endsWith("/checkout"));
+  assert.equal(
+    secondCheckout?.headers.get("idempotency-key"),
+    firstCheckout?.headers.get("idempotency-key"),
+    "attribution must not change the idempotency key, or a retry with fresh attribution would mint a second checkout",
+  );
+});
+
+test("checkout defaults source_url to the current page in a browser", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    value: { location: { href: "https://shop.example.com/checkout" } },
+    configurable: true,
+  });
+  try {
+    let checkoutBody: string | undefined;
+    const client = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      storage: null,
+      fetch: (async (url: string, init: RequestInit) => {
+        if (url.endsWith("/shopper/sessions")) {
+          return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+        }
+        if (url.endsWith("/carts/cart-1")) {
+          return jsonResponse(200, {
+            data: { id: "cart-1", version: 4, currency: "USD", subtotal_amount_minor: 2_000, lines: [] },
+          });
+        }
+        if (url.endsWith("/checkout")) {
+          checkoutBody = typeof init.body === "string" ? init.body : undefined;
+          return jsonResponse(201, {
+            data: {
+              order_number: "W-20260830-00000001",
+              event_id: "W-20260830-00000001",
+              client_action: {
+                type: "mount_embedded_checkout",
+                public_key: "pk_test_stripe",
+                client_token: "cs_test_secret",
+              },
+            },
+          });
+        }
+        return jsonResponse(404, { error: { code: "not_found", message: "not found" } });
+      }) as unknown as typeof fetch,
+    });
+
+    await client.payments.createEmbeddedCheckout("cart-1", {
+      returnUrl: "https://shop.example.com/checkout/success",
+    });
+
+    assert.deepEqual(JSON.parse(checkoutBody ?? "{}").attribution, {
+      source_url: "https://shop.example.com/checkout",
+    });
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(globalThis, "window", descriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+  }
+});
+
+test("cart line mutations report the resulting quantity delta to analytics", async () => {
+  const mutations: unknown[] = [];
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async (url: string) => {
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+      }
+      if (url.endsWith("/carts/cart-1") ) {
+        return jsonResponse(200, {
+          data: {
+            id: "cart-1",
+            version: 4,
+            currency: "USD",
+            subtotal_amount_minor: 2_000,
+            lines: [{ product_id: "p-1", product_variant_id: "v-1", quantity: 1, unit_price_amount_minor: 500 }],
+          },
+        });
+      }
+      // The PUT/DELETE line mutation itself.
+      return jsonResponse(200, {
+        data: {
+          id: "cart-1",
+          version: 5,
+          currency: "USD",
+          subtotal_amount_minor: 1_500,
+          lines: [{ product_id: "p-1", product_variant_id: "v-1", quantity: 3, unit_price_amount_minor: 500 }],
+        },
+      });
+    }) as unknown as typeof fetch,
+  });
+  client.recordCartMutation = (mutation) => mutations.push(mutation);
+
+  await client.cart.addLine("cart-1", "v-1", 2);
+
+  assert.deepEqual(mutations, [
+    {
+      cart: {
+        id: "cart-1",
+        version: 5,
+        currency: "USD",
+        subtotal_amount_minor: 1_500,
+        lines: [{ product_id: "p-1", product_variant_id: "v-1", quantity: 3, unit_price_amount_minor: 500 }],
+      },
+      product_variant_id: "v-1",
+      previous_quantity: 1,
+      new_quantity: 3,
+      removed: false,
+    },
+  ]);
 });
 
 test("checkout creation keeps the source Cart snapshot when rotating the Cart", async () => {
@@ -515,6 +652,7 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
         return jsonResponse(201, {
           data: {
             order_number: "W-20260830-00000001",
+            event_id: "W-20260830-00000001",
             client_action: {
               type: "mount_embedded_checkout",
               public_key: "pk_test_stripe",
@@ -532,6 +670,9 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
     }) as unknown as typeof fetch,
   });
 
+  const recordedCreations: unknown[] = [];
+  client.recordCheckoutCreation = (input) => recordedCreations.push(input);
+
   const creation = await client.payments.createEmbeddedCheckoutWithCart(
     "cart-1",
     { returnUrl: "https://shop.example.com/checkout/success" },
@@ -539,6 +680,12 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
 
   assert.deepEqual(creation.data.source_cart, sourceCart);
   assert.deepEqual(creation.data.cart, nextCart);
+  assert.equal(
+    creation.data.event_id,
+    "W-20260830-00000001",
+    "the server's InitiateCheckout CAPI event id must round-trip so the browser Pixel can reuse it",
+  );
+  assert.deepEqual(recordedCreations, [creation.data]);
 });
 
 test("payments reject a checkout response that is missing required fields", async () => {
@@ -577,7 +724,7 @@ test("payments reject a checkout response that is missing required fields", asyn
   );
 });
 
-test("payments create an embedded Checkout session without an email", async () => {
+test("payments create an embedded Checkout session with no attribution outside a browser", async () => {
   const requests: Array<{ url: string; body: string | undefined }> = [];
   let sequence = 0;
   const client = new ChaosStorefrontClient({
@@ -607,6 +754,7 @@ test("payments create an embedded Checkout session without an email", async () =
         return jsonResponse(201, {
           data: {
             order_number: "W-20260830-00000001",
+            event_id: "W-20260830-00000001",
             client_action: {
               type: "mount_embedded_checkout",
               public_key: "pk_test_stripe",
@@ -671,6 +819,7 @@ test("checkout idempotency follows the cart snapshot instead of the cart id", as
       return jsonResponse(201, {
         data: {
           order_number: "W-20260830-55555555",
+          event_id: "W-20260830-55555555",
           client_action: {
             type: "mount_embedded_checkout",
             public_key: "pk_test_stripe",

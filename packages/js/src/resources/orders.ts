@@ -15,4 +15,17 @@ export class OrdersResource {
       body: { order_number: params.orderNumber, email: params.email },
     });
   }
+
+  /**
+   * Projects a confirmed, paid order to Meta Pixel/GA4 — never inferred from
+   * browser activity. Call this on a return page right after `lookupOrder`.
+   */
+  recordConfirmedPurchase(
+    order: Pick<
+      OrderLookup,
+      "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines"
+    >,
+  ): void {
+    this.client.recordConfirmedPurchase(order);
+  }
 }

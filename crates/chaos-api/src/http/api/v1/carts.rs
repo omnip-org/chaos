@@ -10,7 +10,10 @@ use chaos_core::{
         CartDetail, CartLineItem, PaymentClientAction, StorefrontMediaAsset, StorefrontMediaScope,
     },
     payments::CreateEmbeddedCheckoutInput,
-    sales::{CreateCartInput, CreateStripeCheckoutInput, RemoveCartLineInput, SetCartLineInput},
+    sales::{
+        CheckoutAttributionInput, CreateCartInput, CreateStripeCheckoutInput, RemoveCartLineInput,
+        SetCartLineInput,
+    },
 };
 use chaos_domain::{catalog::ProductVariantId, integration::PaymentProvider, sales::CartId};
 use secrecy::ExposeSecret;
@@ -43,12 +46,33 @@ struct SetCartLineBody {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CreateEmbeddedCheckoutBody {
-    /// Optional: Stripe Embedded Checkout collects the shopper's email
-    /// directly when the channel does not already have one.
-    #[serde(default)]
-    email: Option<String>,
     return_url: String,
     payment_provider: String,
+    /// Ad-platform attribution the browser read off its own cookies, keyed
+    /// by platform. Optional and best-effort: dropped rather than rejected
+    /// if malformed, since it must never block checkout.
+    #[serde(default)]
+    attribution: Option<CheckoutAttributionBody>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CheckoutAttributionBody {
+    /// The checkout page's own URL — not platform-specific, so it sits
+    /// alongside `meta` rather than inside it.
+    #[serde(default)]
+    source_url: Option<String>,
+    #[serde(default)]
+    meta: Option<MetaAttributionBody>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MetaAttributionBody {
+    #[serde(default)]
+    fbc: Option<String>,
+    #[serde(default)]
+    fbp: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -109,6 +133,9 @@ struct CartData {
 struct EmbeddedCheckoutData {
     order_number: String,
     client_action: PaymentClientActionData,
+    /// Shared with the browser Pixel's own InitiateCheckout call so Meta can
+    /// deduplicate it against the server-side CAPI copy Chaos already sent.
+    event_id: Uuid,
 }
 
 #[derive(Serialize)]
@@ -207,11 +234,11 @@ async fn create_embedded_checkout(
         .create_stripe_checkout(CreateStripeCheckoutInput {
             actor: actor.clone(),
             cart_id: CartId::from_uuid(path.cart_id),
-            email: body.email.clone().filter(|value| !value.trim().is_empty()),
             return_url: body.return_url.clone(),
             payment_provider,
             now: state.clock.now(),
             idempotency_key,
+            attribution: checkout_attribution_input(&body, &headers),
         })
         .await?;
     let checkout = state
@@ -223,7 +250,10 @@ async fn create_embedded_checkout(
             now: state.clock.now(),
         })
         .await?;
-    Ok(ApiResponse::created(embedded_checkout_data(checkout)))
+    Ok(ApiResponse::created(embedded_checkout_data(
+        checkout,
+        draft.event_id,
+    )))
 }
 
 fn cart_data(cart: CartDetail) -> Result<CartData, ApplicationError> {
@@ -285,10 +315,12 @@ fn cart_media_data(media: StorefrontMediaAsset) -> CartMediaData {
 
 fn embedded_checkout_data(
     checkout: chaos_core::payments::EmbeddedCheckoutResult,
+    event_id: Uuid,
 ) -> EmbeddedCheckoutData {
     EmbeddedCheckoutData {
         order_number: checkout.order_number,
         client_action: client_action_data(checkout.client_action),
+        event_id,
     }
 }
 
@@ -331,6 +363,38 @@ fn expected_cart_version(headers: &HeaderMap) -> Result<u64, ApiError> {
     Ok(value)
 }
 
+/// `client_ip_address`/`client_user_agent` come from this request itself
+/// (`X-Real-IP` is set by `deploy/nginx` from the real client address, behind
+/// Cloudflare's realip module), never from the request body — the browser
+/// has no trustworthy way to report either.
+fn checkout_attribution_input(
+    body: &CreateEmbeddedCheckoutBody,
+    headers: &HeaderMap,
+) -> Option<CheckoutAttributionInput> {
+    let client_ip_address = headers
+        .get("x-real-ip")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let client_user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let meta = body
+        .attribution
+        .as_ref()
+        .and_then(|value| value.meta.as_ref());
+    Some(CheckoutAttributionInput {
+        meta_fbc: meta.and_then(|meta| meta.fbc.clone()),
+        meta_fbp: meta.and_then(|meta| meta.fbp.clone()),
+        client_ip_address,
+        client_user_agent,
+        source_url: body
+            .attribution
+            .as_ref()
+            .and_then(|value| value.source_url.clone()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use chaos_core::{contracts::PaymentClientAction, payments::EmbeddedCheckoutResult};
@@ -365,19 +429,24 @@ mod tests {
     }
 
     #[test]
-    fn embedded_checkout_response_exposes_order_number_only() {
-        let response = embedded_checkout_data(EmbeddedCheckoutResult {
-            order_number: "W-20260830-7K4M9Q2D".into(),
-            source_cart_id: chaos_domain::sales::CartId::from_uuid(uuid::Uuid::now_v7()),
-            client_action: PaymentClientAction {
-                kind: "mount_embedded_checkout",
-                public_key: SecretString::from("pk_test_stripe"),
-                client_token: SecretString::from("cs_test_secret"),
+    fn embedded_checkout_response_exposes_order_number_and_event_id_only() {
+        let event_id = uuid::Uuid::now_v7();
+        let response = embedded_checkout_data(
+            EmbeddedCheckoutResult {
+                order_number: "W-20260830-7K4M9Q2D".into(),
+                source_cart_id: chaos_domain::sales::CartId::from_uuid(uuid::Uuid::now_v7()),
+                client_action: PaymentClientAction {
+                    kind: "mount_embedded_checkout",
+                    public_key: SecretString::from("pk_test_stripe"),
+                    client_token: SecretString::from("cs_test_secret"),
+                },
             },
-        });
+            event_id,
+        );
         let value = serde_json::to_value(response).unwrap();
 
         assert_eq!(value["order_number"], "W-20260830-7K4M9Q2D");
+        assert_eq!(value["event_id"], event_id.to_string());
         assert!(value.get("order_id").is_none());
         assert!(value.get("source_cart_id").is_none());
     }

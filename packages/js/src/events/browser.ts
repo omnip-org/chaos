@@ -22,18 +22,17 @@ import type {
 /**
  * First-party behavior collection. Events project directly to the
  * configured browser providers (Meta Pixel, GA4) — there is no chaos-owned
- * ledger or delivery queue; a store that also wants server-side Meta
- * Conversions API delivery uses `ChaosServerEvents` from the separate
- * `@omnip-org/chaos-js/meta-capi` subpath, from its own server-side code
- * (see `../ssr/server.ts`'s `events` option).
+ * ledger or delivery queue. Purchase is the only event Chaos itself ever
+ * sends anywhere: chaos-rust delivers it to Meta CAPI server-side, from the
+ * ad-platform attribution captured at checkout (see `resources/payments.js`
+ * and `PaymentsResource.createEmbeddedCheckout*`'s `attribution` option).
  *
  * There are exactly six events (page_view, view_content, search,
  * add_to_cart, initiate_checkout, purchase); every one of them is emitted by
- * this SDK, never by store-supplied names or properties. The three commerce
- * events share their Meta `custom_data` shape with the CAPI sender via
- * `./meta-payload.js`; GA4's field names differ enough per event that they
- * stay inlined below instead of adding a second shared mapper for one caller
- * each.
+ * this SDK, never by store-supplied names or properties. The commerce events
+ * share their Meta `custom_data` shape via `./meta-payload.js`; GA4's field
+ * names differ enough per event that they stay inlined below instead of
+ * adding a second shared mapper for one caller each.
  */
 
 const META_FBC_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
@@ -149,16 +148,10 @@ export class ChaosStorefrontAnalytics {
   }
 
   /**
-   * Records a successful cart addition. `eventId` lets a caller that already
-   * sent this event through server-side Meta CAPI (see
-   * `@omnip-org/chaos-js/meta-capi`) share the same event ID for Meta's
-   * Pixel+CAPI deduplication, instead of minting a second one.
-   *
-   * Warning: if the matching server-side CAPI call already ran through the
-   * server cart facade, always pass its `eventId` here. Calling this without
-   * it while CAPI is also configured sends Meta two independent events for
-   * one action, which it cannot deduplicate — `recordCartMutation` does this
-   * pairing for the `ssr/server.ts` + `StorefrontBrowserClient` pair.
+   * Records a successful cart addition. `eventId` is a caller-supplied dedup
+   * id for Meta's Pixel+CAPI deduplication; chaos-js itself never sends
+   * AddToCart through CAPI (only `purchase` goes through chaos-rust's
+   * server-side CAPI call), so this is unset by every SDK code path today.
    */
   recordAddToCart(input: AddToCartAnalyticsInput, eventId?: string): string | null {
     validateMoney(input.valueMinor, input.currency);
@@ -218,9 +211,8 @@ export class ChaosStorefrontAnalytics {
   }
 
   /**
-   * Records the increase produced by a successful shared cart mutation.
-   * Reuses `input.event_id` when the mutation carries one (set by a
-   * server-side helper that already sent this event through Meta CAPI).
+   * Records the increase produced by a successful cart mutation. See
+   * `recordAddToCart` for `input.event_id`.
    */
   recordCartMutation(input: CartLineMutation): string | null {
     const quantity = input.new_quantity - input.previous_quantity;

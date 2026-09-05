@@ -45,6 +45,10 @@ pub struct CheckoutDraft {
     pub source_cart_id: CartId,
     pub currency: CurrencyCode,
     pub subtotal_amount_minor: i64,
+    /// The InitiateCheckout Meta CAPI event id (== `order_id`, see
+    /// `sales_commands.rs`), returned so the browser Pixel projection can
+    /// reuse it and let Meta deduplicate the two copies.
+    pub event_id: uuid::Uuid,
 }
 
 pub struct OrderLineItem {

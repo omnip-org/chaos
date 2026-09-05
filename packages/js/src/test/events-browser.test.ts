@@ -364,6 +364,7 @@ test("attributes server checkout creation to the source Cart", () => {
   const eventId = environment.analytics.recordCheckoutCreation({
     checkout: {
       order_number: "W-20260830-7K4M9Q2D",
+      event_id: "W-20260830-7K4M9Q2D",
       client_action: {
         type: "mount_embedded_checkout",
         public_key: "pk_test_stripe",

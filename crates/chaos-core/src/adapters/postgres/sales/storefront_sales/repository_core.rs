@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use crate::{
     ApplicationError,
     error::database_error,
+    adapters::postgres::analytics::{AnalyticsEventToAppend, append_event, splice_attribution},
     contracts::{
         CartDetail, CartLineItem, MachineActor, OrderDetail, ShopperActor,
         StorefrontMediaAsset, StorefrontMediaScope, StorefrontSelectedOption,
@@ -13,6 +14,7 @@ use crate::{
     },
     sales::StripeCheckoutRequest,
 };
+use serde_json::{Value, json};
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductOptionId, ProductOptionValueId, ProductVariantId},
@@ -169,17 +171,13 @@ fn fingerprint_part(hasher: &mut Sha256, value: &[u8]) {
     hasher.update(value);
 }
 
-fn checkout_request_fingerprint(
-    actor: &MachineActor,
-    email: Option<&str>,
-    request: &StripeCheckoutRequest,
-) -> [u8; 32] {
+fn checkout_request_fingerprint(actor: &MachineActor, request: &StripeCheckoutRequest) -> [u8; 32] {
     let mut hasher = Sha256::new();
     // This fingerprint covers only the immutable request contract. Cart
     // contents are already snapshotted into the Order, and the return URL is
     // intentionally not persisted anywhere else, so changing any of these
     // inputs while reusing the client idempotency key must be rejected.
-    hasher.update(b"chaos-checkout-request-v3");
+    hasher.update(b"chaos-checkout-request-v4");
     fingerprint_part(&mut hasher, actor.store_id.as_uuid().as_bytes());
     fingerprint_part(
         &mut hasher,
@@ -191,7 +189,6 @@ fn checkout_request_fingerprint(
     );
     fingerprint_part(&mut hasher, request.payment_provider.as_str().as_bytes());
     fingerprint_part(&mut hasher, request.return_url.as_bytes());
-    fingerprint_part(&mut hasher, email.unwrap_or_default().as_bytes());
     hasher.finalize().into()
 }
 

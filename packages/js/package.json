@@ -1,7 +1,7 @@
 {
   "name": "@omnip-org/chaos-js",
   "version": "0.1.0",
-  "description": "Typed client and browser analytics (Meta Pixel/GA4, optional server-side Meta CAPI) for Chaos Commerce storefronts, built on the public-key-authenticated Storefront API.",
+  "description": "Typed browser client and Meta Pixel/GA4 event delivery for Chaos Commerce storefronts, built directly on the public-key-authenticated Storefront API.",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
@@ -14,10 +14,6 @@
     "./stripe": {
       "types": "./dist/providers/stripe.d.ts",
       "default": "./dist/providers/stripe.js"
-    },
-    "./meta-capi": {
-      "types": "./dist/events/server.d.ts",
-      "default": "./dist/events/server.js"
     }
   },
   "files": ["dist", "!dist/test", "README.md"],

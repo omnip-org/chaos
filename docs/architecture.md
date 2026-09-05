@@ -175,9 +175,9 @@ the form and stores final provider facts on the Order after a verified webhook.
 The browser may lose the response, unmount Stripe, or return from Stripe without
 paying. All of those paths retry the same Cart checkout request with the same
 Cart-derived idempotency key, so the pending Order and stored client action are
-reused without a second Order or Provider Session. The server checkout bridge
-uses the Cart cookie as the recovery key; it creates a replacement active Cart
-only after the source Cart is no longer eligible for checkout. There is no
+reused without a second Order or Provider Session. The storefront's persisted
+shopper token and Cart id are the recovery key; it creates a replacement active
+Cart only after the source Cart is no longer eligible for checkout. There is no
 pending-order lookup or Order-ID recovery endpoint. A successful payment
 confirms the Order, consumes the reservation, and clears the action; a provider
 failure, cancellation, or expiry cancels the Order, releases the reservation,

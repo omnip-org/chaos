@@ -4,6 +4,7 @@ import { fnv1a32 } from "../internal/hash.js";
 import { isRecord, requireData } from "../internal/response.js";
 import type {
   Cart,
+  CheckoutAttribution,
   DataEnvelope,
   EmbeddedCheckoutOptions,
   EmbeddedCheckoutCreation,
@@ -11,9 +12,9 @@ import type {
 } from "../types.js";
 
 interface EmbeddedCheckoutRequest {
-  email?: string;
   payment_provider: "stripe";
   return_url: string;
+  attribution?: CheckoutAttribution;
 }
 
 export class PaymentsResource {
@@ -42,13 +43,14 @@ export class PaymentsResource {
       },
     );
     const nextCart = await this.client.cart.getOrCreate();
-    return {
-      data: {
-        checkout: checkout.data,
-        source_cart: sourceCart,
-        cart: nextCart.data,
-      },
+    const creation: EmbeddedCheckoutCreation = {
+      checkout: checkout.data,
+      source_cart: sourceCart,
+      cart: nextCart.data,
+      event_id: checkout.data.event_id,
     };
+    this.client.recordCheckoutCreation(creation);
+    return { data: creation };
   }
 
   private async createEmbeddedCheckoutForCart(
@@ -93,6 +95,7 @@ function isEmbeddedCheckoutSession(
   if (!isRecord(value) || !isRecord(value.client_action)) return false;
   return (
     isNonEmptyString(value.order_number) &&
+    isNonEmptyString(value.event_id) &&
     value.client_action.type === "mount_embedded_checkout" &&
     isNonEmptyString(value.client_action.public_key) &&
     isNonEmptyString(value.client_action.client_token)
@@ -106,8 +109,36 @@ function toEmbeddedCheckoutRequest(
     payment_provider: "stripe",
     return_url: options.returnUrl,
   };
-  if (options.email) body.email = options.email;
+  const attribution = options.attribution ?? defaultAttribution();
+  const hasAttribution = attribution.source_url || (attribution.meta && (attribution.meta.fbc || attribution.meta.fbp));
+  if (hasAttribution) {
+    body.attribution = attribution;
+  }
   return body;
+}
+
+/** Meta's Pixel install sets `_fbp` itself; `_fbc` is chaos-js's own copy of
+ * the `fbclid` URL param (see `events/browser.ts`'s `maintainFbcCookie`).
+ * Both are plain, non-HttpOnly cookies by Meta's own design, so reading them
+ * here needs no extra wiring. `source_url` is the checkout page's own URL —
+ * this is Meta CAPI InitiateCheckout's `event_source_url`. */
+function defaultAttribution(): CheckoutAttribution {
+  const fbc = readCookie("_fbc");
+  const fbp = readCookie("_fbp");
+  const sourceUrl = typeof window === "undefined" ? undefined : window.location.href;
+  return {
+    ...(sourceUrl && { source_url: sourceUrl }),
+    ...((fbc || fbp) && { meta: { ...(fbc && { fbc }), ...(fbp && { fbp }) } }),
+  };
+}
+
+function readCookie(name: string): string | undefined {
+  const cookie =
+    typeof document === "undefined" ? undefined : document.cookie;
+  if (typeof cookie !== "string") return undefined;
+  const prefix = `${name}=`;
+  const entry = cookie.split("; ").find((value) => value.startsWith(prefix));
+  return entry ? decodeURIComponent(entry.slice(prefix.length)) : undefined;
 }
 
 function checkoutIdempotencyKey(
@@ -117,7 +148,10 @@ function checkoutIdempotencyKey(
   // The source Cart changes status and version when checkout starts. Exclude
   // those server-side lifecycle fields so a lost response can safely retry
   // with the same key; include the actual cart snapshot so a real cart edit
-  // receives a new key.
+  // receives a new key. `attribution` is best-effort enrichment (it can
+  // legitimately differ between an initial call and a retry, e.g. a cookie
+  // that finishes writing in between) and must not mint a second checkout.
+  const { attribution: _attribution, ...fingerprintedRequest } = request;
   return stableUuid(
     JSON.stringify([
       "embedded-checkout-v3",
@@ -132,7 +166,7 @@ function checkoutIdempotencyKey(
         line.quantity,
         line.unit_price_amount_minor,
       ]),
-      request,
+      fingerprintedRequest,
     ]),
   );
 }

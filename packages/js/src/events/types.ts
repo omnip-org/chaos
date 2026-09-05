@@ -1,8 +1,7 @@
 /**
  * SDK-invented commerce event input shapes — camelCase, not the Storefront
  * API's snake_case wire contract (see `../types.ts`). These are what a
- * caller builds to hand to `ChaosStorefrontAnalytics` (events/browser.ts) or
- * `ChaosServerEvents` (events/server.ts, `@omnip-org/chaos-js/meta-capi`),
+ * caller builds to hand to `ChaosStorefrontAnalytics` (events/browser.ts),
  * kept separate from `../types.ts` so that file's wire-format contract stays
  * exactly that.
  */

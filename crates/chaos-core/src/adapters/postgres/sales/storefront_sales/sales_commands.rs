@@ -221,7 +221,6 @@ impl PostgresStorefrontSalesRepository {
         &self,
         shopper: &ShopperActor,
         cart_id: CartId,
-        email: Option<&str>,
         request: StripeCheckoutRequest,
     ) -> Result<CheckoutDraft, ApplicationError> {
         let actor = &shopper.machine;
@@ -234,7 +233,6 @@ impl PostgresStorefrontSalesRepository {
             actor,
             shopper.shopper_id,
             cart_id,
-            email,
             &request,
         )
         .await?
@@ -254,7 +252,6 @@ impl PostgresStorefrontSalesRepository {
                 actor,
                 shopper.shopper_id,
                 cart_id,
-                email,
                 &request,
             )
             .await?
@@ -312,11 +309,7 @@ impl PostgresStorefrontSalesRepository {
         cart.begin_checkout()?;
         let requested_order_id = OrderId::new();
         let subtotal = cart.total()?.amount_minor();
-        let request_fingerprint = checkout_request_fingerprint(
-            actor,
-            email,
-            &request,
-        );
+        let request_fingerprint = checkout_request_fingerprint(actor, &request);
 
         let order_number = generate_order_number(request.now)?;
         let payment_provider_account_id: Uuid = sqlx::query_scalar(
@@ -339,12 +332,13 @@ impl PostgresStorefrontSalesRepository {
         // line snapshot. Any later failure rolls the whole handoff back.
         let cart_locked = sqlx::query(
             "UPDATE commerce.carts SET status = 'locked'::commerce.cart_status, \
-                    version = version + 1, updated_at = $3 \
+                    version = version + 1, updated_at = $3, attribution = $4 \
              WHERE store_id = $1 AND id = $2 AND status = 'active'",
         )
         .bind(actor.store_id.as_uuid())
         .bind(cart_id.as_uuid())
         .bind(request.now)
+        .bind(&request.attribution)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?
@@ -372,7 +366,7 @@ impl PostgresStorefrontSalesRepository {
         .bind(header.1)
         .bind(currency.as_str())
         .bind(payment_provider_account_id)
-        .bind(email)
+        .bind(None::<&str>)
         .bind(request_fingerprint.as_slice())
         .bind(subtotal)
         .bind(request.now)
@@ -381,11 +375,57 @@ impl PostgresStorefrontSalesRepository {
         .map_err(checkout_insert_error)?;
         let order_id = requested_order_id;
         insert_order_lines(&mut transaction, actor, order_id, &cart, request.now).await?;
+
+        // Reuses the Order id as the Meta CAPI event id (same convention as
+        // Purchase, see `payments/events.rs`): stable across a checkout
+        // retry for free, since a retry always resolves the same Order
+        // through `existing_checkout_draft` above rather than reaching here
+        // again, and it's what the browser Pixel projection reuses to
+        // dedup its own InitiateCheckout against this one.
+        let items: Vec<Value> = cart
+            .lines()
+            .iter()
+            .map(|line| {
+                json!({
+                    "product_id": line.product_id().as_uuid(),
+                    "product_variant_id": line.product_variant_id().as_uuid(),
+                    "quantity": i64::from(line.quantity()),
+                    "price_minor": line.unit_price().amount_minor(),
+                })
+            })
+            .collect();
+        let mut initiate_checkout_properties = json!({
+            "_source": "server",
+            "order_id": order_id.as_uuid(),
+            "value_minor": subtotal,
+            "currency": currency.as_str(),
+            "items": items,
+        });
+        if let Some(attribution) = &request.attribution {
+            splice_attribution(&mut initiate_checkout_properties, attribution);
+        }
+        append_event(
+            &mut transaction,
+            AnalyticsEventToAppend {
+                store_id: actor.store_id.as_uuid(),
+                channel_id: channel_id.as_uuid(),
+                shopper_id: shopper.shopper_id.as_uuid(),
+                event_id: order_id.as_uuid(),
+                event_name: "initiate_checkout".into(),
+                event_source: "server",
+                properties: initiate_checkout_properties,
+                occurred_at: request.now,
+                received_at: request.now,
+            },
+        )
+        .await?;
+
         let draft = CheckoutDraft {
             order_id,
             source_cart_id: cart_id,
             currency,
             subtotal_amount_minor: subtotal,
+            event_id: order_id.as_uuid(),
         };
         transaction.commit().await.map_err(database_error)?;
         Ok(draft)
@@ -441,7 +481,6 @@ async fn existing_checkout_draft(
     actor: &MachineActor,
     shopper_id: ShopperId,
     cart_id: CartId,
-    email: Option<&str>,
     request: &StripeCheckoutRequest,
 ) -> Result<Option<CheckoutDraft>, ApplicationError> {
     let row = sqlx::query_as::<
@@ -479,7 +518,7 @@ async fn existing_checkout_draft(
         return Err(checkout_cart_already_started());
     }
     if let Some(stored_fingerprint) = row.6 {
-        let requested_fingerprint = checkout_request_fingerprint(actor, email, request);
+        let requested_fingerprint = checkout_request_fingerprint(actor, request);
         if stored_fingerprint.as_slice() != requested_fingerprint.as_slice() {
             return Err(idempotency_key_reused());
         }
@@ -492,6 +531,7 @@ async fn existing_checkout_draft(
         source_cart_id: cart_id,
         currency: parse_currency(&row.4)?,
         subtotal_amount_minor: row.5,
+        event_id: row.0,
     }))
 }
 

@@ -158,11 +158,7 @@ export interface CartLineMutation {
   previous_quantity: number;
   new_quantity: number;
   removed: boolean;
-  /**
-   * Set when a server-side helper already sent this event through Meta CAPI
-   * (`@omnip-org/chaos-js/meta-capi`), so the browser-side Pixel projection
-   * reuses the same ID instead of minting a second one.
-   */
+  /** Reserved for a caller-supplied dedup id; unset by every SDK code path today. */
   event_id?: string;
 }
 
@@ -221,19 +217,33 @@ export interface OrderLookup {
 
 /** Storefront-facing options for creating an embedded checkout. */
 export interface EmbeddedCheckoutOptions {
-  /**
-   * Optional: omit to let Stripe Embedded Checkout collect the shopper's
-   * email directly. Pass it only if the storefront already has a verified
-   * value to prefill.
-   */
-  email?: string;
   /** Stripe appends the public order number to this URL before redirecting the shopper. */
   returnUrl: string;
+  /**
+   * Ad-platform attribution read off the browser's own cookies/URL,
+   * namespaced by platform. Defaults to reading Meta's `_fbc`/`_fbp`
+   * cookies and the current page URL when omitted; pass an explicit empty
+   * object to send none.
+   */
+  attribution?: CheckoutAttribution;
+}
+
+/** Namespaced by ad platform so a future platform is an additive field;
+ * `source_url` isn't platform-specific, so it sits alongside `meta`. */
+export interface CheckoutAttribution {
+  source_url?: string;
+  meta?: { fbc?: string; fbp?: string };
 }
 
 export interface EmbeddedCheckoutSession {
   order_number: string;
   client_action: PaymentClientAction;
+  /**
+   * Chaos's own server-side Meta CAPI InitiateCheckout call already used
+   * this as its event id — reuse it for the browser Pixel's own
+   * InitiateCheckout so Meta can deduplicate the two.
+   */
+  event_id: string;
 }
 
 /** Browser-facing result of creating or recovering a checkout by Cart. */
@@ -243,7 +253,7 @@ export interface EmbeddedCheckoutCreation {
   source_cart: Cart;
   /** The newly obtained active Cart for subsequent shopping. */
   cart: Cart;
-  /** Set when a server-side helper already sent this event through Meta CAPI — see `CartLineMutation.event_id`. */
+  /** Reserved for a caller-supplied dedup id; unset by every SDK code path today. */
   event_id?: string;
 }
 

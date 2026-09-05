@@ -162,6 +162,19 @@ struct MetaUserData {
     client_ip_address: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     client_user_agent: Option<String>,
+    // `fn`/`ln` are Rust keywords, hence the rename.
+    #[serde(rename = "fn", skip_serializing_if = "Vec::is_empty")]
+    first_name: Vec<String>,
+    #[serde(rename = "ln", skip_serializing_if = "Vec::is_empty")]
+    last_name: Vec<String>,
+    #[serde(rename = "ct", skip_serializing_if = "Vec::is_empty")]
+    city: Vec<String>,
+    #[serde(rename = "st", skip_serializing_if = "Vec::is_empty")]
+    state: Vec<String>,
+    #[serde(rename = "zp", skip_serializing_if = "Vec::is_empty")]
+    zip: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    country: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -170,38 +183,23 @@ struct MetaResponse {
     fbtrace_id: Option<String>,
 }
 
-#[cfg(test)]
-fn is_supported_meta_event(name: &str) -> bool {
-    matches!(
-        name,
-        "view_content" | "search" | "add_to_cart" | "initiate_checkout" | "purchase"
-    )
-}
-
+/// `purchase` and `initiate_checkout` are the only events Chaos sends
+/// through Meta CAPI: they're the only ones with a server-confirmed source
+/// (a locked Cart handed off to Stripe, and a paid Order). Every other Meta
+/// event (ViewContent, AddToCart, Search) is fired client-side only, straight
+/// from the storefront's Pixel install — Chaos never sees it.
 fn is_meta_event(command: &AnalyticsDeliveryCommand) -> bool {
-    let source = command.event_source.as_str();
-    match command.event_name.as_str() {
-        // PageView remains a first-party/browser observation and is not sent
-        // through the server-side Meta CAPI projection for now.
-        "page_view" => false,
-        // Browser event and Pixel use the same queued UUID for these events.
-        "view_content" | "search" => source != "server",
-        // AddToCart and InitiateCheckout are collected by the browser SDK only
-        // after the matching business request succeeds. Purchase remains a
-        // server-confirmed payment event.
-        "add_to_cart" | "initiate_checkout" => source == "browser",
-        "purchase" => source == "server",
-        _ => false,
-    }
+    command.event_source == "server"
+        && matches!(
+            command.event_name.as_str(),
+            "purchase" | "initiate_checkout"
+        )
 }
 
 fn meta_event_name(name: &str) -> &str {
     match name {
-        "view_content" => "ViewContent",
-        "search" => "Search",
-        "add_to_cart" => "AddToCart",
-        "initiate_checkout" => "InitiateCheckout",
         "purchase" => "Purchase",
+        "initiate_checkout" => "InitiateCheckout",
         _ => name,
     }
 }
@@ -212,16 +210,8 @@ fn meta_user_data(command: &AnalyticsDeliveryCommand) -> MetaUserData {
         // Hash the stable Chaos shopper identifier in its canonical textual
         // form so it remains stable across retries and destinations.
         external_id: vec![sha256_hex(command.shopper_id.to_string().as_bytes())],
-        em: context_value(properties, "em")
-            .filter(|value| is_sha256(value))
-            .map(str::to_owned)
-            .into_iter()
-            .collect(),
-        ph: context_value(properties, "ph")
-            .filter(|value| is_sha256(value))
-            .map(str::to_owned)
-            .into_iter()
-            .collect(),
+        em: hashed_context_value(properties, "em"),
+        ph: hashed_context_value(properties, "ph"),
         fbc: context_value(properties, "fbc")
             .filter(|value| valid_meta_browser_id(value))
             .map(str::to_owned),
@@ -230,6 +220,12 @@ fn meta_user_data(command: &AnalyticsDeliveryCommand) -> MetaUserData {
             .map(str::to_owned),
         client_ip_address: context_value(properties, "client_ip_address").map(str::to_owned),
         client_user_agent: context_value(properties, "client_user_agent").map(str::to_owned),
+        first_name: hashed_context_value(properties, "fn"),
+        last_name: hashed_context_value(properties, "ln"),
+        city: hashed_context_value(properties, "ct"),
+        state: hashed_context_value(properties, "st"),
+        zip: hashed_context_value(properties, "zp"),
+        country: hashed_context_value(properties, "country"),
     }
 }
 
@@ -303,7 +299,11 @@ fn custom_data(command: &AnalyticsDeliveryCommand) -> Value {
         object.insert("contents".into(), contents);
         object.insert("content_ids".into(), json!(content_ids));
         object.insert("content_type".into(), json!("product"));
-        object.insert("num_items".into(), json!(num_items));
+        // Meta documents num_items as an InitiateCheckout-specific field;
+        // Purchase already carries per-line quantity in `contents`.
+        if command.event_name == "initiate_checkout" {
+            object.insert("num_items".into(), json!(num_items));
+        }
     }
     if !has_contents
         && let Some(ids) = content_ids_from_single_product(
@@ -338,6 +338,17 @@ fn context_value<'a>(properties: &'a Value, key: &str) -> Option<&'a str> {
                 .and_then(Value::as_str)
                 .filter(|value| !value.trim().is_empty())
         })
+}
+
+/// `fn`/`ln`/`ct`/`st`/`zp`/`country` are only ever trusted from `_meta` as
+/// already-hashed values (`OrderIdentityContext` hashes them before they're
+/// stored) — same guard `em`/`ph` already use.
+fn hashed_context_value(properties: &Value, key: &str) -> Vec<String> {
+    context_value(properties, key)
+        .filter(|value| is_sha256(value))
+        .map(str::to_owned)
+        .into_iter()
+        .collect()
 }
 
 fn meta_contents(
@@ -542,7 +553,10 @@ mod tests {
     #[test]
     fn maps_items_and_search_to_meta_standard_fields() {
         let mut input = command(1_299, "USD");
-        input.event_name = "search".into();
+        // num_items is InitiateCheckout-specific (see the Purchase contract
+        // test below, which asserts it's absent there); use a realistic
+        // event name here so this test's num_items assertion means something.
+        input.event_name = "initiate_checkout".into();
         input.properties = json!({
             "query": "shoes",
             "items": [{"product_id": "product-1", "product_variant_id": "variant-1", "quantity": 2, "price_minor": 650}],
@@ -584,41 +598,28 @@ mod tests {
     }
 
     #[test]
-    fn only_standard_conversion_events_are_sent_to_meta() {
-        assert!(is_supported_meta_event("purchase"));
-        assert!(!is_supported_meta_event("page_view"));
-        assert!(!is_supported_meta_event("view_duration"));
-        assert!(!is_supported_meta_event("store_defined_event"));
-    }
-
-    #[test]
-    fn routes_meta_events_by_authoritative_source() {
+    fn only_server_confirmed_purchase_and_initiate_checkout_are_sent_to_meta() {
         let mut browser = command(1_299, "USD");
         browser.event_source = "browser".into();
-        for event_name in ["view_content", "search"] {
+        for event_name in [
+            "page_view",
+            "view_content",
+            "search",
+            "add_to_cart",
+            "initiate_checkout",
+            "purchase",
+        ] {
             browser.event_name = event_name.into();
-            assert!(is_meta_event(&browser), "browser {event_name}");
-        }
-        browser.event_name = "page_view".into();
-        assert!(!is_meta_event(&browser), "browser page_view");
-        for event_name in ["add_to_cart", "initiate_checkout", "purchase"] {
-            browser.event_name = event_name.into();
-            assert_eq!(
-                is_meta_event(&browser),
-                event_name != "purchase",
-                "browser {event_name}"
-            );
+            assert!(!is_meta_event(&browser), "browser {event_name}");
         }
 
         let mut server = browser;
         server.event_source = "server".into();
-        server.event_name = "purchase".into();
-        assert!(is_meta_event(&server), "server purchase");
-        for event_name in ["add_to_cart", "initiate_checkout"] {
+        for event_name in ["purchase", "initiate_checkout"] {
             server.event_name = event_name.into();
-            assert!(!is_meta_event(&server), "server {event_name}");
+            assert!(is_meta_event(&server), "server {event_name}");
         }
-        for event_name in ["page_view", "view_content", "search"] {
+        for event_name in ["page_view", "view_content", "search", "add_to_cart"] {
             server.event_name = event_name.into();
             assert!(!is_meta_event(&server), "server {event_name}");
         }
@@ -685,7 +686,9 @@ mod tests {
             payload["data"][0]["custom_data"]["content_type"],
             json!("product")
         );
-        assert_eq!(payload["data"][0]["custom_data"]["num_items"], json!(2));
+        // num_items is InitiateCheckout-specific; Purchase carries per-line
+        // quantity in `contents` instead.
+        assert!(payload["data"][0]["custom_data"].get("num_items").is_none());
         assert!(payload["data"][0]["custom_data"].get("_source").is_none());
         assert!(payload["data"][0]["custom_data"].get("_meta").is_none());
     }
@@ -700,7 +703,13 @@ mod tests {
                 "fbc": "fb.1.1234567890123.click",
                 "fbp": "fb.1.1234567890123.browser",
                 "client_ip_address": "203.0.113.10",
-                "client_user_agent": "test-agent"
+                "client_user_agent": "test-agent",
+                "fn": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "ln": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "ct": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "st": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "zp": "1111111111111111111111111111111111111111111111111111111111111111",
+                "country": "2222222222222222222222222222222222222222222222222222222222222222"
             }
         });
         let user_data = meta_user_data(&input);
@@ -710,6 +719,12 @@ mod tests {
         assert_eq!(user_data.fbp.as_deref(), Some("fb.1.1234567890123.browser"));
         assert_eq!(user_data.client_ip_address.as_deref(), Some("203.0.113.10"));
         assert_eq!(user_data.client_user_agent.as_deref(), Some("test-agent"));
+        assert_eq!(user_data.first_name.len(), 1);
+        assert_eq!(user_data.last_name.len(), 1);
+        assert_eq!(user_data.city.len(), 1);
+        assert_eq!(user_data.state.len(), 1);
+        assert_eq!(user_data.zip.len(), 1);
+        assert_eq!(user_data.country.len(), 1);
     }
 
     #[test]

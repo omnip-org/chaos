@@ -7,11 +7,11 @@ import type {
 } from "./types.js";
 
 /**
- * Meta's shared commerce event shape (`custom_data` on Meta CAPI, the third
- * `track()` argument on Meta Pixel — the two are wire-identical). Built here
- * once so `events/browser.ts` (Pixel) and `events/capi.ts` (CAPI) always
- * project the same fields for the same event, instead of each maintaining
- * its own near-duplicate mapping.
+ * Meta's commerce event `custom_data` shape, shared by Pixel's `track()`
+ * third argument and Meta's server-side Conversions API — the two are
+ * wire-identical, which is what lets chaos-rust's own Purchase CAPI call
+ * (sent at payment confirmation) reuse the exact fields this SDK's Pixel
+ * calls already send.
  * @internal
  */
 export interface MetaCommerceEventData {

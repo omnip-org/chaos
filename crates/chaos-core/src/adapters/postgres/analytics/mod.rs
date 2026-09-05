@@ -6,7 +6,6 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
-const MAX_META_BROWSER_ID_BYTES: usize = 2_048;
 const MAX_UTM_VALUE_BYTES: usize = 2_048;
 
 pub struct PostgresAnalyticsEventStore {
@@ -77,16 +76,6 @@ type AnalyticsDestinationRow = (
     bool,
     OffsetDateTime,
     OffsetDateTime,
-);
-
-type CheckoutAttributionRow = (
-    Value,
-    Option<Uuid>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
 );
 
 async fn context(
@@ -214,165 +203,12 @@ pub(crate) async fn append_event(
     Ok(true)
 }
 
-/// Keep only the attribution context that is safe and useful to carry from the
-/// exact browser checkout event into a server-authoritative Purchase. In
-/// particular, this never queries another browser event: the event associated
-/// with the Order is the sole source of fbc/fbp, session, traffic, URL, UA, and
-/// IP.
-pub(crate) fn attribution_from_properties(properties: &Value) -> Value {
-    let Some(object) = properties.as_object() else {
-        return Value::Object(Map::new());
-    };
-    let mut snapshot = Map::new();
-    if let Some(Value::Object(meta)) = object.get("_meta") {
-        let mut selected = Map::new();
-        for key in [
-            "source_url",
-            "fbc",
-            "fbp",
-            "client_ip_address",
-            "client_user_agent",
-        ] {
-            if let Some(value) = meta
-                .get(key)
-                .filter(|value| attribution_value_is_safe(key, value))
-            {
-                selected.insert(key.into(), value.clone());
-            }
-        }
-        if !selected.is_empty() {
-            snapshot.insert("_meta".into(), Value::Object(selected));
-        }
-    }
-    for key in [
-        "session_id",
-        "traffic",
-        "utm_source",
-        "utm_medium",
-        "utm_campaign",
-        "utm_term",
-        "utm_content",
-    ] {
-        if let Some(value) = object
-            .get(key)
-            .filter(|value| attribution_value_is_safe(key, value))
-        {
-            snapshot.insert(key.into(), value.clone());
-        }
-    }
-    let result = Value::Object(snapshot);
-    if serde_json::to_vec(&result)
-        .map(|value| value.len() <= 32_768)
-        .unwrap_or(false)
-    {
-        result
-    } else {
-        Value::Object(Map::new())
-    }
-}
-
-/// Merge an event's captured attribution into a server-authoritative event.
-/// Existing server values win, so request-derived network context and order
-/// identity cannot be overwritten by a browser payload.
-pub(crate) fn merge_attribution(properties: &mut Value, attribution: &Value) {
-    let (Some(target), Some(source)) = (properties.as_object_mut(), attribution.as_object()) else {
-        return;
-    };
-    if let Some(Value::Object(source_meta)) = source.get("_meta") {
-        let target_meta = target
-            .entry("_meta")
-            .or_insert_with(|| Value::Object(Map::new()));
-        if let Some(target_meta) = target_meta.as_object_mut() {
-            for (key, value) in source_meta {
-                target_meta
-                    .entry(key.clone())
-                    .or_insert_with(|| value.clone());
-            }
-        }
-    }
-    for key in [
-        "session_id",
-        "traffic",
-        "utm_source",
-        "utm_medium",
-        "utm_campaign",
-        "utm_term",
-        "utm_content",
-    ] {
-        if let Some(value) = source.get(key) {
-            target.entry(key).or_insert_with(|| value.clone());
-        }
-    }
-}
-
-/// Load attribution from the exact browser-side InitiateCheckout event that
-/// the SDK records after an Order is created. A later payment webhook can
-/// correlate by the public order_number without using the latest browser event
-/// or adding attribution columns to commerce.orders.
-pub(crate) async fn load_checkout_attribution(
-    tx: &mut Transaction<'_, Postgres>,
-    store_id: Uuid,
-    channel_id: Uuid,
-    shopper_id: Uuid,
-    cart_id: Uuid,
-    order_number: &str,
-) -> Result<Value, ApplicationError> {
-    let row: Option<CheckoutAttributionRow> = sqlx::query_as(
-        "SELECT properties,session_id,utm_source,utm_medium,utm_campaign,utm_term,utm_content
-            FROM integration.analytics_events
-          WHERE store_id = $1
-            AND channel_id = $2
-            AND shopper_id = $3
-            AND event_name = 'initiate_checkout'
-            AND event_source = 'browser'
-            AND properties ? 'cart_id'
-            AND properties->>'cart_id' = $4
-            AND properties ? 'order_number'
-            AND properties->>'order_number' = $5
-          ORDER BY occurred_at DESC, received_at DESC, id DESC
-          LIMIT 1",
-    )
-    .bind(store_id)
-    .bind(channel_id)
-    .bind(shopper_id)
-    .bind(cart_id.to_string())
-    .bind(order_number)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(db)?;
-    let Some((properties, session_id, utm_source, utm_medium, utm_campaign, utm_term, utm_content)) =
-        row
-    else {
-        return Ok(Value::Object(Map::new()));
-    };
-    let mut attribution = attribution_from_properties(&properties);
-    if let Some(object) = attribution.as_object_mut() {
-        if let Some(session_id) = session_id {
-            object.insert("session_id".into(), Value::String(session_id.to_string()));
-        }
-        for (key, value) in [
-            ("utm_source", utm_source),
-            ("utm_medium", utm_medium),
-            ("utm_campaign", utm_campaign),
-            ("utm_term", utm_term),
-            ("utm_content", utm_content),
-        ] {
-            if let Some(value) = value {
-                object.insert(key.into(), Value::String(value));
-            }
-        }
-    }
-    Ok(attribution)
-}
-
-/// Add server-owned order contact identity and the canonical storefront origin
-/// without coupling conversion delivery to an arbitrary browser ledger row.
-pub(crate) fn merge_order_identity(
-    properties: &mut Value,
-    email: Option<&str>,
-    phone: Option<&str>,
-    origin: Option<&str>,
-) {
+/// Splice the ad-platform attribution captured on `commerce.carts` at
+/// checkout time (`checkout_attribution_value` in `crate::sales`) into a
+/// server-authoritative event's `_meta`. Shared by the InitiateCheckout
+/// append at checkout creation and the Purchase append at payment
+/// confirmation, so both read the exact same stored snapshot.
+pub(crate) fn splice_attribution(properties: &mut Value, attribution: &Value) {
     let Some(object) = properties.as_object_mut() else {
         return;
     };
@@ -382,63 +218,102 @@ pub(crate) fn merge_order_identity(
     let Some(meta) = meta.as_object_mut() else {
         return;
     };
-    if let Some(origin) = origin.filter(|value| !value.trim().is_empty()) {
+    if let Some(source_url) = attribution.get("source_url") {
+        meta.insert("source_url".into(), source_url.clone());
+    }
+    if let Some(platform_meta) = attribution.get("meta").and_then(Value::as_object) {
+        for (key, value) in platform_meta {
+            meta.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+/// Server-owned Order contact and shipping identity, hashed into a
+/// server-authoritative event's Meta CAPI `user_data`. Shipping fields are
+/// only ever known once Stripe has collected them, so they're `None` at
+/// checkout creation and populated by the time payment is confirmed.
+pub(crate) struct OrderIdentityContext<'a> {
+    pub email: Option<&'a str>,
+    pub phone: Option<&'a str>,
+    pub origin: Option<&'a str>,
+    pub full_name: Option<&'a str>,
+    pub locality: Option<&'a str>,
+    pub administrative_area: Option<&'a str>,
+    pub postal_code: Option<&'a str>,
+    pub country_code: Option<&'a str>,
+}
+
+/// Add server-owned order contact identity and the canonical storefront origin
+/// without coupling conversion delivery to an arbitrary browser ledger row.
+pub(crate) fn merge_order_identity(properties: &mut Value, context: OrderIdentityContext<'_>) {
+    let Some(object) = properties.as_object_mut() else {
+        return;
+    };
+    let meta = object
+        .entry("_meta")
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Some(meta) = meta.as_object_mut() else {
+        return;
+    };
+    if let Some(origin) = context.origin.filter(|value| !value.trim().is_empty()) {
         meta.entry("source_url")
             .or_insert_with(|| Value::String(origin.to_owned()));
     }
-    if let Some(email) = email.and_then(normalized_email_hash) {
+    if let Some(email) = context.email.and_then(normalized_email_hash) {
         meta.insert("em".into(), Value::String(email));
     }
-    if let Some(phone) = phone.and_then(normalized_phone_hash) {
+    if let Some(phone) = context.phone.and_then(normalized_phone_hash) {
         meta.insert("ph".into(), Value::String(phone));
     }
-}
-
-fn attribution_value_is_safe(key: &str, value: &Value) -> bool {
-    match key {
-        "fbc" | "fbp" => value.as_str().is_some_and(valid_meta_browser_id),
-        "session_id" => value
-            .as_str()
-            .and_then(|value| Uuid::parse_str(value).ok())
-            .is_some(),
-        "utm_source" | "utm_medium" | "utm_campaign" | "utm_term" | "utm_content" => {
-            normalized_utm_value(Some(value)).is_some()
+    let (first_name, last_name) = context
+        .full_name
+        .map(split_full_name)
+        .unwrap_or((None, None));
+    for (key, value) in [
+        ("fn", first_name.as_deref()),
+        ("ln", last_name.as_deref()),
+        ("ct", context.locality),
+        ("st", context.administrative_area),
+        ("zp", context.postal_code),
+        ("country", context.country_code),
+    ] {
+        if let Some(hashed) = value.and_then(normalized_identity_hash) {
+            meta.insert(key.into(), Value::String(hashed));
         }
-        "source_url" => value
-            .as_str()
-            .is_some_and(|value| value.len() <= 2_048 && !value.chars().any(char::is_control)),
-        "client_ip_address" => value
-            .as_str()
-            .is_some_and(|value| value.parse::<std::net::IpAddr>().is_ok()),
-        "client_user_agent" => value.as_str().is_some_and(|value| {
-            !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
-        }),
-        "traffic" => value.is_object(),
-        _ => false,
     }
 }
 
-fn valid_meta_browser_id(value: &str) -> bool {
-    if value.len() > MAX_META_BROWSER_ID_BYTES {
-        return false;
-    }
-    let mut parts = value.splitn(4, '.');
-    let (Some(prefix), Some(version), Some(timestamp), Some(suffix)) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return false;
-    };
-    prefix == "fb"
-        && !version.is_empty()
-        && version.bytes().all(|byte| byte.is_ascii_digit())
-        && timestamp.len() == 13
-        && timestamp.bytes().all(|byte| byte.is_ascii_digit())
-        && !suffix.is_empty()
-        && !suffix.chars().any(char::is_whitespace)
+/// Chaos only ever collects one shipping name field, so first/last is a
+/// lossy split on the first whitespace run — Meta documents this as an
+/// acceptable fallback when a store doesn't collect the names separately.
+fn split_full_name(full_name: &str) -> (Option<String>, Option<String>) {
+    let mut parts = full_name.trim().splitn(2, char::is_whitespace);
+    let first = parts.next().filter(|value| !value.is_empty());
+    let last = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    (first.map(str::to_owned), last.map(str::to_owned))
 }
 
 fn normalized_email_hash(value: &str) -> Option<String> {
     let normalized = value.trim().to_ascii_lowercase();
+    (!normalized.is_empty()).then(|| sha256_hex(normalized.as_bytes()))
+}
+
+/// Shared normalization for the `fn`/`ln`/`ct`/`st`/`zp`/`country` Meta
+/// CAPI fields: trim, lowercase, and drop whitespace. This is a deliberate
+/// simplification of Meta's per-field guidance (real postal/state rules are
+/// country-specific) — acceptable because Meta's matching tolerates
+/// imperfect normalization, and modeling per-country rules isn't worth it
+/// for the resulting match-quality gain.
+fn normalized_identity_hash(value: &str) -> Option<String> {
+    let normalized: String = value
+        .trim()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect();
     (!normalized.is_empty()).then(|| sha256_hex(normalized.as_bytes()))
 }
 
@@ -836,8 +711,8 @@ fn db(error: sqlx::Error) -> ApplicationError {
 #[cfg(test)]
 mod tests {
     use super::{
-        attribution_from_properties, merge_attribution, normalized_utm_value,
-        parse_optional_rfc3339, traffic_utm_value,
+        OrderIdentityContext, merge_order_identity, normalized_utm_value, parse_optional_rfc3339,
+        sha256_hex, splice_attribution, traffic_utm_value,
     };
     use serde_json::json;
 
@@ -882,64 +757,50 @@ mod tests {
     }
 
     #[test]
-    fn extracts_only_event_attribution_for_later_server_conversions() {
-        let session_id = "11111111-1111-4111-8111-111111111111";
-        let properties = json!({
-            "_meta": {
-                "source_url": "https://shop.example/products",
-                "fbc": "fb.1.1234567890123.click",
-                "fbp": "fb.1.1234567890123.browser",
-                "client_ip_address": "203.0.113.8",
-                "client_user_agent": "ChaosBrowser/1.0",
-                "em": "raw-email-must-not-be-copied"
+    fn hashes_and_splits_shipping_identity_for_meta_matching() {
+        let mut properties = json!({});
+        merge_order_identity(
+            &mut properties,
+            OrderIdentityContext {
+                email: None,
+                phone: None,
+                origin: None,
+                full_name: Some("Jane Q. Shopper"),
+                locality: Some("San Francisco"),
+                administrative_area: Some("CA"),
+                postal_code: Some("94103"),
+                country_code: Some("US"),
             },
-            "session_id": session_id,
-            "traffic": {"session": {"source": "newsletter"}},
-            "utm_source": "newsletter",
-            "utm_medium": "email",
-            "em": "raw-email-must-not-be-copied",
-            "product_id": "product-is-not-attribution"
-        });
+        );
 
-        let snapshot = attribution_from_properties(&properties);
-
-        assert_eq!(snapshot["_meta"]["fbc"], "fb.1.1234567890123.click");
-        assert_eq!(snapshot["_meta"]["fbp"], "fb.1.1234567890123.browser");
-        assert_eq!(snapshot["session_id"], session_id);
-        assert_eq!(snapshot["utm_source"], "newsletter");
-        assert!(snapshot["_meta"].get("em").is_none());
-        assert!(snapshot.get("em").is_none());
-        assert!(snapshot.get("product_id").is_none());
+        let meta = &properties["_meta"];
+        assert_eq!(
+            meta["fn"],
+            json!(sha256_hex(b"jane")),
+            "full_name splits on the first whitespace run"
+        );
+        assert_eq!(meta["ln"], json!(sha256_hex(b"q.shopper")));
+        assert_eq!(meta["ct"], json!(sha256_hex(b"sanfrancisco")));
+        assert_eq!(meta["st"], json!(sha256_hex(b"ca")));
+        assert_eq!(meta["zp"], json!(sha256_hex(b"94103")));
+        assert_eq!(meta["country"], json!(sha256_hex(b"us")));
     }
 
     #[test]
-    fn merges_captured_attribution_without_replacing_server_values() {
-        let mut properties = json!({
-            "_meta": {
-                "source_url": "https://canonical.example/checkout"
-            },
-            "session_id": "22222222-2222-4222-8222-222222222222"
-        });
+    fn splices_cart_attribution_source_url_and_platform_meta() {
+        let mut properties = json!({"order_id": "o-1"});
         let attribution = json!({
-            "_meta": {
-                "source_url": "https://browser.example/product",
-                "fbc": "fb.1.1234567890123.click"
-            },
-            "session_id": "33333333-3333-4333-8333-333333333333",
-            "utm_campaign": "summer"
+            "source_url": "https://shop.example/checkout",
+            "meta": {"fbc": "fb.1.123.click", "fbp": "fb.1.123.browser"}
         });
 
-        merge_attribution(&mut properties, &attribution);
+        splice_attribution(&mut properties, &attribution);
 
         assert_eq!(
             properties["_meta"]["source_url"],
-            "https://canonical.example/checkout"
+            "https://shop.example/checkout"
         );
-        assert_eq!(properties["_meta"]["fbc"], "fb.1.1234567890123.click");
-        assert_eq!(
-            properties["session_id"],
-            "22222222-2222-4222-8222-222222222222"
-        );
-        assert_eq!(properties["utm_campaign"], "summer");
+        assert_eq!(properties["_meta"]["fbc"], "fb.1.123.click");
+        assert_eq!(properties["_meta"]["fbp"], "fb.1.123.browser");
     }
 }
