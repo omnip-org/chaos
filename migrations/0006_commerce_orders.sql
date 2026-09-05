@@ -12,6 +12,7 @@ CREATE TABLE commerce.carts (
     price_list_id         UUID                    NOT NULL,
     status                commerce.cart_status    NOT NULL DEFAULT 'active',
     payment_client_action JSONB,
+    attribution           JSONB,
     version               BIGINT                  NOT NULL DEFAULT 0,
     created_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -32,6 +33,13 @@ CREATE TABLE commerce.carts (
             AND jsonb_typeof(payment_client_action->'type') = 'string'
             AND pg_column_size(payment_client_action) <= 8192
         )
+    ),
+    -- Ad-platform attribution captured at checkout creation, namespaced by
+    -- platform (e.g. "meta") so a future platform is an additive JSON key,
+    -- not a schema change: {"source_url": ..., "meta": {"fbc": ..., "fbp": ...}}.
+    CONSTRAINT carts_attribution_check            CHECK (
+        attribution IS NULL
+        OR (jsonb_typeof(attribution) = 'object' AND pg_column_size(attribution) <= 4096)
     )
 );
 
@@ -242,6 +250,12 @@ CREATE TABLE commerce.order_lines (
     quantity                INTEGER     NOT NULL,
     unit_price_amount_minor BIGINT      NOT NULL,
     subtotal_amount_minor   BIGINT      NOT NULL,
+    -- The ready Media asset's public URL, resolved with the exact Variant ->
+    -- Option Value -> Product fallback at order creation: order lines are an
+    -- immutable purchase-time snapshot, so the image the shopper saw at
+    -- checkout is captured here rather than resolved live from the mutable
+    -- catalog.
+    image_url               TEXT,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT order_lines_pkey                          PRIMARY KEY (store_id, order_id, position),
@@ -252,7 +266,8 @@ CREATE TABLE commerce.order_lines (
     CONSTRAINT order_lines_variant_title_length_check    CHECK (length(trim(variant_title)) BETWEEN 1 AND 255),
     CONSTRAINT order_lines_sku_length_check              CHECK (sku IS NULL OR length(trim(sku)) BETWEEN 1 AND 64),
     CONSTRAINT order_lines_quantity_range_check          CHECK (quantity BETWEEN 1 AND 999),
-    CONSTRAINT order_lines_amounts_check                 CHECK (unit_price_amount_minor >= 0 AND subtotal_amount_minor = unit_price_amount_minor * quantity AND subtotal_amount_minor >= 0)
+    CONSTRAINT order_lines_amounts_check                 CHECK (unit_price_amount_minor >= 0 AND subtotal_amount_minor = unit_price_amount_minor * quantity AND subtotal_amount_minor >= 0),
+    CONSTRAINT order_lines_image_url_check               CHECK (image_url IS NULL OR (length(image_url) BETWEEN 9 AND 2048 AND image_url ~ '^https://'))
 );
 
 CREATE TABLE commerce.order_refunds (
@@ -307,21 +322,6 @@ CREATE TABLE commerce.order_shippings (
     )
 );
 
-CREATE TABLE commerce.order_tracking_tokens (
-    store_id      UUID         NOT NULL,
-    order_id      UUID         NOT NULL,
-    token_digest  BYTEA        NOT NULL,
-    expires_at    TIMESTAMPTZ  NOT NULL,
-    last_used_at  TIMESTAMPTZ,
-    created_at    TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT order_tracking_tokens_pkey                PRIMARY KEY (store_id, order_id),
-    CONSTRAINT order_tracking_tokens_store_id_token_key  UNIQUE (store_id, token_digest),
-    CONSTRAINT order_tracking_tokens_store_id_order_fkey FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders (store_id, id) ON DELETE CASCADE,
-    CONSTRAINT order_tracking_tokens_digest_check        CHECK (octet_length(token_digest) = 32),
-    CONSTRAINT order_tracking_tokens_expiry_check        CHECK (expires_at > created_at)
-);
-
 CREATE INDEX carts_channel_updated_idx ON commerce.carts (store_id, channel_id, status, updated_at DESC, id DESC);
 CREATE UNIQUE INDEX carts_one_active_per_shopper_key ON commerce.carts (store_id, channel_id, shopper_id) WHERE status = 'active';
 CREATE INDEX carts_store_shopper_idx ON commerce.carts (store_id, shopper_id, id);
@@ -333,7 +333,6 @@ CREATE INDEX orders_store_contact_email_id_idx ON commerce.orders (store_id, con
 CREATE UNIQUE INDEX orders_one_order_per_cart_key ON commerce.orders (store_id, cart_id);
 CREATE INDEX orders_store_shopper_idx ON commerce.orders (store_id, shopper_id);
 CREATE INDEX orders_store_price_list_currency_idx ON commerce.orders (store_id, price_list_id, currency);
-CREATE INDEX order_tracking_tokens_expiry_idx ON commerce.order_tracking_tokens (expires_at, store_id, order_id);
 CREATE UNIQUE INDEX orders_payment_provider_reference_key ON commerce.orders (store_id, payment_provider_account_id, payment_provider_reference_id) WHERE payment_provider_reference_id IS NOT NULL;
 CREATE UNIQUE INDEX fulfillments_shipping_provider_reference_key ON commerce.order_shippings (store_id, shipping_provider_account_id, shipping_provider_reference_id) WHERE shipping_provider_reference_id IS NOT NULL;
 CREATE INDEX refunds_order_created_idx ON commerce.order_refunds (store_id, order_id, created_at DESC);
@@ -436,37 +435,6 @@ CREATE TRIGGER fulfillments_shipping_provider_capability_check
     ON commerce.order_shippings
     FOR EACH ROW EXECUTE FUNCTION commerce.validate_shipping_provider_account();
 
-CREATE FUNCTION commerce.cleanup_expired_order_tracking_tokens(batch_size INTEGER)
-RETURNS INTEGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-DECLARE
-    deleted_count INTEGER;
-BEGIN
-    IF batch_size IS NULL OR batch_size NOT BETWEEN 1 AND 10000 THEN
-        RAISE EXCEPTION 'batch_size must be between 1 and 10000'
-            USING ERRCODE = '22023';
-    END IF;
-
-    WITH candidates AS (
-        SELECT store_id, order_id
-        FROM commerce.order_tracking_tokens
-        WHERE expires_at < CURRENT_TIMESTAMP
-        ORDER BY expires_at, store_id, order_id
-        LIMIT batch_size
-    )
-    DELETE FROM commerce.order_tracking_tokens AS token
-     USING candidates
-     WHERE token.store_id = candidates.store_id
-       AND token.order_id = candidates.order_id;
-
-    GET DIAGNOSTICS deleted_count = ROW_COUNT;
-    RETURN deleted_count;
-END
-$$;
-
 CREATE FUNCTION integration.set_provider_webhook_aggregate (
     event_id           UUID,
     resolved_type      TEXT,
@@ -500,7 +468,6 @@ $$;
 ALTER TABLE commerce.carts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.cart_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.orders ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.order_tracking_tokens ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.order_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.order_refunds ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.order_shippings ENABLE ROW LEVEL SECURITY;
@@ -514,10 +481,6 @@ CREATE POLICY store_isolation ON commerce.cart_lines
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 CREATE POLICY store_isolation ON commerce.orders
-    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
-    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
-
-CREATE POLICY store_isolation ON commerce.order_tracking_tokens
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
@@ -537,7 +500,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE
     ON commerce.carts,
        commerce.cart_lines,
        commerce.orders,
-       commerce.order_tracking_tokens,
        commerce.order_lines,
        commerce.order_refunds,
        commerce.order_shippings
@@ -545,7 +507,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE
 
 REVOKE DELETE, TRUNCATE ON commerce.carts,
     commerce.orders,
-    commerce.order_tracking_tokens,
     commerce.order_refunds,
     commerce.order_shippings
     FROM chaos_runtime;
@@ -589,12 +550,10 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
 REVOKE ALL ON FUNCTION commerce.validate_payment_provider_account() FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.validate_shipping_provider_account() FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.prevent_order_identity_change() FROM PUBLIC;
-REVOKE ALL ON FUNCTION commerce.cleanup_expired_order_tracking_tokens(INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.set_provider_webhook_aggregate (UUID, TEXT, UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION commerce.validate_payment_provider_account() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.validate_shipping_provider_account() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.prevent_order_identity_change() TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION commerce.cleanup_expired_order_tracking_tokens(INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.set_provider_webhook_aggregate (UUID, TEXT, UUID) TO chaos_runtime;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA commerce GRANT SELECT, INSERT ON TABLES TO chaos_runtime;

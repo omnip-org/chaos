@@ -76,7 +76,7 @@ impl AnalyticsAdministration {
 }
 
 /// Consumes `analytics_capi_queue` (bound to the `payment.initiated`/
-/// `payment.completed` routing keys — see `migrations/0011_topic_routing.sql`)
+/// `payment.completed` routing keys — see `migrations/0004_integration.sql`)
 /// and delivers to the one configured Meta CAPI destination. Topic routing
 /// already picked this consumer, so there's no provider-name dispatch here
 /// the way a shared queue would need; a second ad-platform destination

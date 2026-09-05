@@ -473,26 +473,10 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
 BEGIN
-    INSERT INTO integration.event_outbox (
-        id,
-        store_id,
-        aggregate_type,
-        aggregate_id,
-        internal_event_type,
-        payload
-    ) VALUES (
-        uuidv7(),
-        NEW.store_id,
-        'product',
-        NEW.id,
-        'search.product.changed',
-        jsonb_build_object('product_id', NEW.id)
-    )
-    ON CONFLICT (store_id, aggregate_id, internal_event_type)
-    WHERE internal_event_type = 'search.product.changed'
-      AND processed_at IS NULL
-      AND failed_at IS NULL
-    DO NOTHING;
+    PERFORM integration.publish_commerce_event(
+        'product.updated',
+        jsonb_build_object('store_id', NEW.store_id, 'product_id', NEW.id)
+    );
     RETURN NEW;
 END;
 $$;
@@ -516,26 +500,10 @@ BEGIN
     END IF;
 
     IF EXISTS (SELECT 1 FROM commerce.stores WHERE id = owning_store_id) THEN
-        INSERT INTO integration.event_outbox (
-            id,
-            store_id,
-            aggregate_type,
-            aggregate_id,
-            internal_event_type,
-            payload
-        ) VALUES (
-            uuidv7(),
-            owning_store_id,
-            'product',
-            changed_product_id,
-            'search.product.changed',
-            jsonb_build_object('product_id', changed_product_id)
-        )
-        ON CONFLICT (store_id, aggregate_id, internal_event_type)
-        WHERE internal_event_type = 'search.product.changed'
-          AND processed_at IS NULL
-          AND failed_at IS NULL
-        DO NOTHING;
+        PERFORM integration.publish_commerce_event(
+            'product.updated',
+            jsonb_build_object('store_id', owning_store_id, 'product_id', changed_product_id)
+        );
     END IF;
 
     IF TG_OP = 'DELETE' THEN
@@ -598,26 +566,21 @@ DECLARE
     processed BIGINT := 0;
 BEGIN
     FOR event IN
-        SELECT
-            outbox.id,
-            outbox.store_id,
-            outbox.aggregate_id,
-            outbox.attempts
-        FROM integration.claim_event_outbox(
-            'chaos_search_events', batch_size
-        ) AS outbox
+        SELECT queued.msg_id, queued.payload, queued.attempts
+        FROM integration.claim_topic_queue('search_index_queue', batch_size) AS queued
     LOOP
         BEGIN
             PERFORM commerce.refresh_product_document(
-                event.store_id, event.aggregate_id
+                (event.payload->>'store_id')::uuid,
+                (event.payload->>'product_id')::uuid
             );
-            PERFORM integration.finish_event_outbox(
-                event.id, event.attempts, true, '', max_attempts, finished_at
+            PERFORM integration.finish_topic_event(
+                'search_index_queue', event.msg_id, event.attempts, true, max_attempts
             );
             processed := processed + 1;
         EXCEPTION WHEN OTHERS THEN
-            PERFORM integration.finish_event_outbox(
-                event.id, event.attempts, false, SQLERRM, max_attempts, finished_at
+            PERFORM integration.finish_topic_event(
+                'search_index_queue', event.msg_id, event.attempts, false, max_attempts
             );
         END;
     END LOOP;

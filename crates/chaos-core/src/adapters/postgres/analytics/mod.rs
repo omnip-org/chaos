@@ -201,7 +201,7 @@ pub(crate) async fn append_event(
 /// Publish a topic-routed commerce event (`integration.publish_commerce_event`)
 /// in the same transaction that produced it, so a rolled-back transaction
 /// never delivers a message a consumer would act on. See
-/// `migrations/0011_topic_routing.sql` for the queue bindings this reaches.
+/// `migrations/0004_integration.sql` for the queue bindings this reaches.
 pub(crate) async fn publish_commerce_event(
     tx: &mut Transaction<'_, Postgres>,
     routing_key: &'static str,

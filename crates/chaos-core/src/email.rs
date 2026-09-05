@@ -508,7 +508,7 @@ fn validation(field: &'static str, reason: &'static str) -> ApplicationError {
 
 /// Email is an integration consumer, not an Order state machine. It consumes
 /// `payment.completed` (`notification_email_queue`, see
-/// `migrations/0011_topic_routing.sql`) and owns provider retries through
+/// `migrations/0004_integration.sql`) and owns provider retries through
 /// PGMQ's own message lifecycle.
 pub struct EmailWorkers {
     queue: Arc<dyn IntegrationQueue>,

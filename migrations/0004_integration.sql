@@ -1,10 +1,18 @@
 CREATE SCHEMA integration;
 
 SELECT pgmq.create('chaos_payment_commands');
-SELECT pgmq.create('chaos_email_commands');
 SELECT pgmq.create('chaos_shipping_commands');
-SELECT pgmq.create('chaos_search_events');
 SELECT pgmq.create('chaos_webhooks');
+
+SELECT pgmq.create('search_index_queue');
+SELECT pgmq.create('analytics_capi_queue');
+SELECT pgmq.create('notification_email_queue');
+
+SELECT pgmq.bind_topic('product.updated',   'search_index_queue');
+SELECT pgmq.bind_topic('payment.initiated', 'analytics_capi_queue');
+SELECT pgmq.bind_topic('payment.completed', 'analytics_capi_queue');
+SELECT pgmq.bind_topic('payment.completed', 'notification_email_queue');
+SELECT pgmq.bind_topic('order.confirmed',   'notification_email_queue');
 
 CREATE TYPE integration.provider_capability AS ENUM ('email', 'payment', 'shipping');
 CREATE TYPE integration.webhook_processing_status AS ENUM ('pending', 'processed', 'unsupported', 'failed');
@@ -107,7 +115,6 @@ CREATE TABLE integration.provider_webhook_inbox (
 CREATE INDEX event_outbox_pending_idx ON integration.event_outbox (created_at, id) WHERE processed_at IS NULL AND failed_at IS NULL;
 CREATE INDEX event_outbox_store_idx ON integration.event_outbox (store_id, id);
 CREATE INDEX event_outbox_event_route_idx ON integration.event_outbox (internal_event_type, created_at, id);
-CREATE UNIQUE INDEX event_outbox_pending_search_product_key_idx ON integration.event_outbox (store_id, aggregate_id, internal_event_type) WHERE internal_event_type = 'search.product.changed' AND processed_at IS NULL AND failed_at IS NULL;
 CREATE INDEX event_outbox_terminal_retention_idx ON integration.event_outbox ((COALESCE(processed_at, failed_at)), created_at, id) WHERE processed_at IS NOT NULL OR failed_at IS NOT NULL;
 CREATE INDEX provider_accounts_store_capability_created_idx ON integration.provider_accounts (store_id, capability, created_at DESC, id DESC);
 CREATE INDEX provider_webhook_inbox_claim_idx ON integration.provider_webhook_inbox (created_at, id) WHERE processing_status = 'pending';
@@ -138,7 +145,7 @@ CREATE TRIGGER provider_accounts_identity_immutable
     ON integration.provider_accounts
     FOR EACH ROW EXECUTE FUNCTION integration.prevent_provider_account_identity_change();
 
-INSERT INTO integration.event_routes (internal_event_type, queue_name, description) VALUES ('search.product.changed', 'chaos_search_events', 'Refreshes the Store-isolated Product search document'), ('order.confirmed', 'chaos_email_commands', 'Sends the Order confirmation through the configured Email provider'), ('fulfillment.shipped', 'chaos_shipping_commands', 'Dispatches shipment state to the configured Shipping provider'), ('refund.create_requested', 'chaos_payment_commands', 'Creates an Order refund through the configured Payment provider');
+INSERT INTO integration.event_routes (internal_event_type, queue_name, description) VALUES ('fulfillment.shipped', 'chaos_shipping_commands', 'Dispatches shipment state to the configured Shipping provider'), ('refund.create_requested', 'chaos_payment_commands', 'Creates an Order refund through the configured Payment provider');
 
 CREATE FUNCTION integration.event_route_queue_name (requested_event_type TEXT)
 RETURNS TEXT
@@ -212,9 +219,7 @@ DECLARE
 BEGIN
     IF requested_queue_name NOT IN (
         'chaos_payment_commands',
-        'chaos_email_commands',
-        'chaos_shipping_commands',
-        'chaos_search_events'
+        'chaos_shipping_commands'
     ) THEN
         RAISE EXCEPTION 'unsupported outbox queue %', requested_queue_name
             USING ERRCODE = '22023';
@@ -295,12 +300,7 @@ BEGIN
         UPDATE integration.event_outbox AS event
         SET processed_at = CASE WHEN succeeded THEN finished_at ELSE NULL END,
             failed_at    = CASE WHEN succeeded THEN NULL ELSE finished_at END,
-            last_error   = CASE WHEN succeeded THEN NULL ELSE left(failure, 2000) END,
-            payload      = CASE
-                               WHEN event.internal_event_type = 'order.confirmed'
-                               THEN event.payload - 'tracking_token'
-                               ELSE event.payload
-                           END
+            last_error   = CASE WHEN succeeded THEN NULL ELSE left(failure, 2000) END
         WHERE event.id = event_id;
 
         PERFORM pgmq.delete(queue_name, message_id);
@@ -317,6 +317,69 @@ BEGIN
     END IF;
 
     RETURN true;
+END;
+$$;
+
+CREATE FUNCTION integration.publish_commerce_event (
+    routing_key TEXT,
+    payload     JSONB
+)
+RETURNS INTEGER
+LANGUAGE SQL
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT pgmq.send_topic(routing_key, payload);
+$$;
+
+CREATE FUNCTION integration.claim_topic_queue (
+    requested_queue_name TEXT,
+    batch_size            INTEGER
+)
+RETURNS TABLE (
+    msg_id    BIGINT,
+    payload   JSONB,
+    attempts  INTEGER
+)
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT queued.msg_id, queued.message, queued.read_ct
+    FROM pgmq.read(
+        requested_queue_name,
+        120,
+        greatest(least(batch_size, 100), 1),
+        '{}'::jsonb
+    ) AS queued;
+$$;
+
+CREATE FUNCTION integration.finish_topic_event (
+    requested_queue_name TEXT,
+    requested_msg_id     BIGINT,
+    attempts             INTEGER,
+    succeeded            BOOLEAN,
+    max_attempts         INTEGER
+)
+RETURNS VOID
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    IF succeeded THEN
+        PERFORM pgmq.delete(requested_queue_name, requested_msg_id);
+    ELSIF attempts >= greatest(max_attempts, 1) THEN
+        PERFORM pgmq.archive(requested_queue_name, requested_msg_id);
+    ELSE
+        PERFORM pgmq.set_vt(
+            requested_queue_name,
+            requested_msg_id,
+            least(power(2, greatest(attempts - 1, 0))::integer, 300)
+        );
+    END IF;
 END;
 $$;
 
@@ -601,6 +664,9 @@ REVOKE ALL ON FUNCTION integration.event_route_queue_name (TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.enqueue_event_outbox () FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_event_outbox (TEXT, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.finish_event_outbox (UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.publish_commerce_event (TEXT, JSONB) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.claim_topic_queue (TEXT, INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.finish_topic_event (TEXT, BIGINT, INTEGER, BOOLEAN, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.resolve_provider_account (integration.provider_capability, TEXT, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.resolve_webhook_secret_reference (integration.provider_capability, TEXT, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.enqueue_webhook_event () FROM PUBLIC;
@@ -611,6 +677,9 @@ REVOKE ALL ON FUNCTION integration.prevent_provider_account_identity_change () F
 
 GRANT EXECUTE ON FUNCTION integration.finish_event_outbox (UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_event_outbox (TEXT, INTEGER) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION integration.publish_commerce_event (TEXT, JSONB) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION integration.claim_topic_queue (TEXT, INTEGER) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION integration.finish_topic_event (TEXT, BIGINT, INTEGER, BOOLEAN, INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.resolve_provider_account (integration.provider_capability, TEXT, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.resolve_webhook_secret_reference (integration.provider_capability, TEXT, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_provider_webhook_inbox (integration.provider_capability, INTEGER) TO chaos_runtime;
