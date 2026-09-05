@@ -1,5 +1,12 @@
 # Analytics Operations
 
+There is no browser collection endpoint: chaos-js never posts behavior events
+to chaos rust (see [`product-model.md`](product-model.md#cart-and-checkout)).
+The only writer left is payment confirmation, which appends one server-side
+`purchase` event per Order (`event_source='server'`) for Stores that still use
+the chaos-hosted `configure_meta_destination` delivery path — write volume is
+one row per confirmed Order, not one row per browser event.
+
 `integration.analytics_events` is an append-only analysis ledger partitioned by
 daily `received_at` ranges. The integration bootstrap registers it with `pg_partman`
 with seven premade partitions and schedules the following `pg_cron` job:

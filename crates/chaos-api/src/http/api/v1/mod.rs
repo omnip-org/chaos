@@ -4,7 +4,6 @@ use axum::Router;
 
 use crate::http::ApiState;
 
-mod analytics;
 mod carts;
 mod collections;
 mod order;
@@ -20,5 +19,4 @@ pub(crate) fn routes() -> Router<ApiState> {
         .merge(shopper::routes())
         .merge(carts::routes())
         .merge(order::routes())
-        .merge(analytics::routes())
 }

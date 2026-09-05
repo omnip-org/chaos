@@ -475,59 +475,6 @@ fn traffic_utm_value(properties: &Value, key: &str) -> Option<String> {
 }
 
 impl PostgresAnalyticsEventStore {
-    pub(crate) async fn append_events(
-        &self,
-        actor: &MachineActor,
-        shopper_id: Uuid,
-        events: &[AnalyticsEventInput],
-        received_at: OffsetDateTime,
-    ) -> Result<usize, ApplicationError> {
-        let channel = actor.channel_id.ok_or(ApplicationError::Forbidden)?;
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        context(&mut tx, actor.store_id.as_uuid(), None).await?;
-        let active: bool = sqlx::query_scalar(
-            "SELECT EXISTS(
-                SELECT 1 FROM commerce.stores s
-                JOIN commerce.channels c ON c.store_id=s.id
-                WHERE s.id=$1 AND c.id=$2 AND s.status='active' AND c.status='active'
-            )",
-        )
-        .bind(actor.store_id.as_uuid())
-        .bind(channel.as_uuid())
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(db)?;
-        if !active {
-            return Err(ApplicationError::Forbidden);
-        }
-        let mut stored = 0;
-        for event in events {
-            let mut properties = event.properties.clone();
-            if let Some(object) = properties.as_object_mut() {
-                object.insert("_source".into(), Value::String("browser".into()));
-            }
-            if append_event(
-                &mut tx,
-                AnalyticsEventToAppend {
-                    store_id: actor.store_id.as_uuid(),
-                    channel_id: channel.as_uuid(),
-                    shopper_id,
-                    event_id: event.event_id,
-                    event_name: event.event_name.clone(),
-                    event_source: "browser",
-                    properties,
-                    occurred_at: event.occurred_at,
-                    received_at,
-                },
-            )
-            .await?
-            {
-                stored += 1;
-            }
-        }
-        tx.commit().await.map_err(db)?;
-        Ok(stored)
-    }
     pub(crate) async fn list_events(
         &self,
         actor: StoreActor,

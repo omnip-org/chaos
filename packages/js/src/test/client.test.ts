@@ -946,7 +946,7 @@ test("browser SDK observations record only after successful responses", async ()
   await client.cart.addLine("cart-1", "variant-1", 2);
 
   assert.deepEqual(recorded, [
-    ["search", { query: "shoes", resultCount: 1 }],
+    ["search", { query: "shoes" }],
     ["view_content", { productId: "product-1" }],
   ]);
 });

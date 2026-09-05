@@ -1,6 +1,5 @@
 //! Shared HTTP extractors, errors, pagination, responses, and test support.
 
-pub(crate) mod analytics;
 pub(crate) mod error;
 pub(crate) mod extract;
 pub(crate) mod pagination;

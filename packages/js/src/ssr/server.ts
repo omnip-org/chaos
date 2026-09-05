@@ -6,7 +6,9 @@ import {
   type ClientOptions,
 } from "../client.js";
 import {
-  sendMetaCapiEvent,
+  sendAddToCartCapi,
+  sendInitiateCheckoutCapi,
+  sendPurchaseCapi,
   type MetaCapiConfig,
   type MetaCapiContext,
 } from "../providers/meta-capi.js";
@@ -442,8 +444,8 @@ export async function lookupOrderFromRequest(
  * Sends a confirmed, paid order to Meta CAPI once, using the `capi` config
  * passed to `createServerStorefrontClient`. No-op without that config or
  * without a confirmed+paid order — mirrors `ChaosStorefrontAnalytics.
- * recordConfirmedOrder`, which projects the same order to the browser Pixel
- * and GA4 using the same deterministic, order-derived event ID.
+ * recordConfirmedPurchase`, which projects the same order to the browser
+ * Pixel and GA4 using the same deterministic, order-derived event ID.
  */
 export async function recordConfirmedPurchaseCapi(
   client: ChaosStorefrontClient,
@@ -458,8 +460,7 @@ export async function recordConfirmedPurchaseCapi(
   if (!capiConfig) return;
   const input = toPurchaseAnalyticsInput(order);
   if (!input) return;
-  await sendMetaCapiEvent(capiConfig, {
-    eventName: "purchase",
+  await sendPurchaseCapi(capiConfig, {
     eventId: input.orderId.toLowerCase(),
     context: metaCapiContextFrom(client, cookies, eventSourceUrl),
     input,
@@ -474,8 +475,7 @@ async function recordAddToCartCapi(
   const capiConfig = serverCapiConfigs.get(client);
   if (!capiConfig) return undefined;
   const eventId = client.randomUUID();
-  await sendMetaCapiEvent(capiConfig, {
-    eventName: "add_to_cart",
+  await sendAddToCartCapi(capiConfig, {
     eventId,
     context: metaCapiContextFrom(client, cookies),
     input: {
@@ -500,8 +500,7 @@ async function recordInitiateCheckoutCapi(
   const capiConfig = serverCapiConfigs.get(client);
   if (!capiConfig) return undefined;
   const eventId = client.randomUUID();
-  await sendMetaCapiEvent(capiConfig, {
-    eventName: "initiate_checkout",
+  await sendInitiateCheckoutCapi(capiConfig, {
     eventId,
     context: metaCapiContextFrom(client, cookies, eventSourceUrl),
     input: {

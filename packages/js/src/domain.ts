@@ -1,10 +1,5 @@
-import type {
-  ProductOption,
-  ProductVariant,
-  PurchaseAnalyticsInput,
-  Review,
-  OrderLookup,
-} from "./types.js";
+import type { PurchaseAnalyticsInput } from "./analytics-types.js";
+import type { ProductOption, ProductVariant, Review, OrderLookup } from "./types.js";
 
 export type SelectedOptions = Record<string, string>;
 

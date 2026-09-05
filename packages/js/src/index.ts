@@ -15,6 +15,12 @@ export {
   createStorefrontAnalytics,
 } from "./analytics.js";
 export type { AnalyticsOptions, PageViewInput } from "./analytics.js";
+export type {
+  AddToCartAnalyticsInput,
+  AnalyticsCommerceItem,
+  InitiateCheckoutAnalyticsInput,
+  PurchaseAnalyticsInput,
+} from "./analytics-types.js";
 
 export { ChaosApiError } from "./errors.js";
 

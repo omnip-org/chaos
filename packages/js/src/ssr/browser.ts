@@ -1,11 +1,11 @@
-import { ChaosApiError, throwForResponse } from "../errors.js";
 import type { ChaosStorefrontAnalytics } from "../analytics.js";
+import type { PurchaseAnalyticsInput } from "../analytics-types.js";
+import { ChaosApiError, throwForResponse } from "../errors.js";
 import type {
   CartLineMutation,
   DataEnvelope,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutOptions,
-  PurchaseAnalyticsInput,
   OrderLookup,
 } from "../types.js";
 
@@ -69,7 +69,7 @@ export class StorefrontBrowserClient {
 
   recordPurchase(input: PurchaseAnalyticsInput): void {
     try {
-      this.analytics?.purchase(input);
+      this.analytics?.recordPurchase(input);
     } catch {
       // The order is already confirmed; analytics must remain best-effort.
     }

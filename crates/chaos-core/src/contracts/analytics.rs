@@ -4,32 +4,6 @@ use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::ApplicationError;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AnalyticsRateLimitDecision {
-    pub allowed: bool,
-    pub retry_after_seconds: u32,
-}
-
-#[async_trait]
-pub trait AnalyticsCollectionRateLimiter: Send + Sync {
-    async fn consume(
-        &self,
-        store_id: StoreId,
-        shopper_id: Uuid,
-        batch_size: u16,
-    ) -> Result<AnalyticsRateLimitDecision, ApplicationError>;
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AnalyticsEventInput {
-    pub event_id: Uuid,
-    pub event_name: String,
-    pub occurred_at: OffsetDateTime,
-    pub properties: Value,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnalyticsEventRecord {
     pub id: Uuid,

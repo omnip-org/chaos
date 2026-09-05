@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { sendMetaCapiEvent, type MetaCapiConfig } from "../providers/meta-capi.js";
+import {
+  sendAddToCartCapi,
+  sendInitiateCheckoutCapi,
+  sendPurchaseCapi,
+  type MetaCapiConfig,
+} from "../providers/meta-capi.js";
 
 function sha256Hex(input: string): string {
   return createHash("sha256").update(input).digest("hex");
@@ -30,8 +35,7 @@ function harness() {
 
 test("sends AddToCart with the wire shape ported from the Rust adapter", async () => {
   const { config, requests } = harness();
-  await sendMetaCapiEvent(config, {
-    eventName: "add_to_cart",
+  await sendAddToCartCapi(config, {
     eventId: "00000000-0000-4000-8000-000000000001",
     occurredAt: new Date("2026-08-16T00:00:00Z"),
     context: {
@@ -90,8 +94,7 @@ test("sends AddToCart with the wire shape ported from the Rust adapter", async (
 
 test("drops a malformed fbc/fbp instead of forwarding it", async () => {
   const { config, requests } = harness();
-  await sendMetaCapiEvent(config, {
-    eventName: "purchase",
+  await sendPurchaseCapi(config, {
     eventId: "00000000-0000-4000-8000-000000000002",
     context: { fbc: "not-a-valid-fbc", fbp: "also-invalid" },
     input: {
@@ -118,8 +121,7 @@ test("drops a malformed fbc/fbp instead of forwarding it", async () => {
 
 test("uses the zero-decimal MGA currency scale for value and item_price", async () => {
   const { config, requests } = harness();
-  await sendMetaCapiEvent(config, {
-    eventName: "initiate_checkout",
+  await sendInitiateCheckoutCapi(config, {
     eventId: "00000000-0000-4000-8000-000000000003",
     input: {
       cartId: "00000000-0000-4000-8000-000000000030",
@@ -148,10 +150,9 @@ test("uses the zero-decimal MGA currency scale for value and item_price", async 
 
 test("includes test_event_code when configured", async () => {
   const { config, requests } = harness();
-  await sendMetaCapiEvent(
+  await sendAddToCartCapi(
     { ...config, testEventCode: "TEST12345" },
     {
-      eventName: "add_to_cart",
       eventId: "00000000-0000-4000-8000-000000000004",
       input: {
         productId: "00000000-0000-4000-8000-000000000040",
@@ -167,22 +168,87 @@ test("includes test_event_code when configured", async () => {
   assert.equal(requests[0]!.body.test_event_code, "TEST12345");
 });
 
-test("delivery failure is swallowed, never thrown", async () => {
+test("delivery failure is swallowed, never thrown, but still reaches onError", async () => {
+  const errors: Array<{ error: unknown; event: { eventName: string; eventId: string } }> = [];
   const config: MetaCapiConfig = {
     accessToken: "capi-token",
     pixelId: "pixel-1",
     fetch: (async () => {
       throw new Error("network down");
     }) as unknown as typeof fetch,
+    onError: (error, event) => errors.push({ error, event }),
   };
 
   await assert.doesNotReject(
-    sendMetaCapiEvent(config, {
-      eventName: "add_to_cart",
+    sendAddToCartCapi(config, {
       eventId: "00000000-0000-4000-8000-000000000005",
       input: {
         productId: "00000000-0000-4000-8000-000000000050",
         productVariantId: "00000000-0000-4000-8000-000000000051",
+        quantity: 1,
+        priceMinor: 100,
+        valueMinor: 100,
+        currency: "usd",
+      },
+    }),
+  );
+
+  assert.equal(errors.length, 1);
+  assert.equal((errors[0]!.error as Error).message, "network down");
+  assert.deepEqual(errors[0]!.event, {
+    eventName: "AddToCart",
+    eventId: "00000000-0000-4000-8000-000000000005",
+  });
+});
+
+test("a non-2xx Graph API response is reported to onError instead of treated as delivered", async () => {
+  const errors: unknown[] = [];
+  const config: MetaCapiConfig = {
+    accessToken: "capi-token",
+    pixelId: "pixel-1",
+    fetch: (async () =>
+      ({
+        ok: false,
+        status: 401,
+        json: async () => ({ error: { message: "Error validating access token" } }),
+      }) as Response) as unknown as typeof fetch,
+    onError: (error) => errors.push(error),
+  };
+
+  await sendAddToCartCapi(config, {
+    eventId: "00000000-0000-4000-8000-000000000006",
+    input: {
+      productId: "00000000-0000-4000-8000-000000000060",
+      productVariantId: "00000000-0000-4000-8000-000000000061",
+      quantity: 1,
+      priceMinor: 100,
+      valueMinor: 100,
+      currency: "usd",
+    },
+  });
+
+  assert.equal(errors.length, 1);
+  assert.match((errors[0] as Error).message, /401/);
+});
+
+test("a broken onError callback never breaks delivery", async () => {
+  const config: MetaCapiConfig = {
+    accessToken: "capi-token",
+    pixelId: "pixel-1",
+    fetch: (async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch,
+    onError: () => {
+      throw new Error("observer bug");
+    },
+  };
+
+  await assert.doesNotReject(
+    sendAddToCartCapi(config, {
+      eventId: "00000000-0000-4000-8000-000000000007",
+      input: {
+        productId: "00000000-0000-4000-8000-000000000070",
+        productVariantId: "00000000-0000-4000-8000-000000000071",
         quantity: 1,
         priceMinor: 100,
         valueMinor: 100,

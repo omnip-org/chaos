@@ -1,10 +1,10 @@
-import { sha256Hex } from "../internal/sha256.js";
-import { toMajorUnits } from "../money.js";
 import type {
   AddToCartAnalyticsInput,
   InitiateCheckoutAnalyticsInput,
   PurchaseAnalyticsInput,
-} from "../types.js";
+} from "../analytics-types.js";
+import { sha256Hex } from "../internal/sha256.js";
+import { toMajorUnits } from "../money.js";
 
 /**
  * Server-only Meta Conversions API sender. This module must never be
@@ -18,8 +18,10 @@ import type {
  *
  * Ports the wire behavior of the Rust `MetaConversionsDestination` adapter
  * (event_name mapping, hashed `external_id`, `fbc`/`fbp` shape validation,
- * value/currency/contents derivation) without its dynamic-JSON parsing,
- * since every call site here already has a typed commerce input.
+ * value/currency/contents derivation). Each event has its own explicit
+ * `custom_data` shape below instead of one shared, dynamically-branching
+ * builder — every call site here already has a typed commerce input, so
+ * there's nothing left to infer.
  */
 
 const GRAPH_API_DEFAULT_VERSION = "v21.0";
@@ -32,6 +34,14 @@ export interface MetaCapiConfig {
   /** Graph API version segment, e.g. "v21.0". Defaults to a current stable version. */
   apiVersion?: string;
   fetch?: typeof fetch;
+  /**
+   * Best-effort delivery-failure hook: called for a network error or a
+   * non-2xx Graph API response (e.g. an expired access token), so a store
+   * can log or alert instead of delivery failing silently. Never awaited and
+   * never allowed to throw back into the caller — delivery stays best-effort
+   * either way.
+   */
+  onError?: (error: unknown, event: { eventName: string; eventId: string }) => void;
 }
 
 /** Per-call context Meta needs for matching/attribution; all fields are optional and best-effort. */
@@ -45,44 +55,115 @@ export interface MetaCapiContext {
   shopperToken?: string;
 }
 
-export type MetaCapiCommerceEvent =
-  | {
-      eventName: "add_to_cart";
-      eventId: string;
-      occurredAt?: Date;
-      context?: MetaCapiContext;
-      input: AddToCartAnalyticsInput;
-    }
-  | {
-      eventName: "initiate_checkout";
-      eventId: string;
-      occurredAt?: Date;
-      context?: MetaCapiContext;
-      input: InitiateCheckoutAnalyticsInput;
-    }
-  | {
-      eventName: "purchase";
-      eventId: string;
-      occurredAt?: Date;
-      context?: MetaCapiContext;
-      input: PurchaseAnalyticsInput;
-    };
-
-const META_EVENT_NAMES: Record<MetaCapiCommerceEvent["eventName"], string> = {
-  add_to_cart: "AddToCart",
-  initiate_checkout: "InitiateCheckout",
-  purchase: "Purchase",
-};
+interface CommerceCapiParams<Input> {
+  eventId: string;
+  occurredAt?: Date;
+  context?: MetaCapiContext;
+  input: Input;
+}
 
 /**
- * Sends one event to Meta's Conversions API. Best-effort: a delivery
- * failure is swallowed rather than thrown, matching every other analytics
- * call site in this SDK — Meta CAPI must never turn a successful commerce
- * operation into a failed one.
+ * Sends an AddToCart event to Meta's Conversions API. Best-effort: a
+ * delivery failure is swallowed rather than thrown, matching every other
+ * analytics call site in this SDK — Meta CAPI must never turn a successful
+ * commerce operation into a failed one.
  */
-export async function sendMetaCapiEvent(
+export async function sendAddToCartCapi(
   config: MetaCapiConfig,
-  event: MetaCapiCommerceEvent,
+  { eventId, occurredAt, context, input }: CommerceCapiParams<AddToCartAnalyticsInput>,
+): Promise<void> {
+  const currency = input.currency.toUpperCase();
+  const contentId = input.productVariantId || input.productId;
+  await postMetaEvent(config, {
+    event_name: "AddToCart",
+    eventId,
+    occurredAt,
+    context,
+    custom_data: compact({
+      value: toMajorUnits(input.valueMinor, currency),
+      currency,
+      content_ids: [contentId],
+      contents: [
+        compact({
+          id: contentId,
+          quantity: input.quantity,
+          item_price: toMajorUnits(input.priceMinor, currency),
+        }),
+      ],
+      content_type: "product",
+      num_items: input.quantity,
+    }),
+  });
+}
+
+/** Sends an InitiateCheckout event to Meta's Conversions API. See `sendAddToCartCapi`. */
+export async function sendInitiateCheckoutCapi(
+  config: MetaCapiConfig,
+  { eventId, occurredAt, context, input }: CommerceCapiParams<InitiateCheckoutAnalyticsInput>,
+): Promise<void> {
+  const currency = input.currency.toUpperCase();
+  const contents = input.items.map((item) =>
+    compact({
+      id: item.productVariantId || item.productId,
+      quantity: item.quantity,
+      item_price: toMajorUnits(item.priceMinor, currency),
+    }),
+  );
+  await postMetaEvent(config, {
+    event_name: "InitiateCheckout",
+    eventId,
+    occurredAt,
+    context,
+    custom_data: compact({
+      value: toMajorUnits(input.valueMinor, currency),
+      currency,
+      content_ids: contents.map((content) => content.id),
+      contents,
+      content_type: "product",
+      num_items: input.items.reduce((total, item) => total + item.quantity, 0),
+    }),
+  });
+}
+
+/** Sends a Purchase event to Meta's Conversions API. See `sendAddToCartCapi`. */
+export async function sendPurchaseCapi(
+  config: MetaCapiConfig,
+  { eventId, occurredAt, context, input }: CommerceCapiParams<PurchaseAnalyticsInput>,
+): Promise<void> {
+  const currency = input.currency.toUpperCase();
+  const contents = input.items.map((item) =>
+    compact({
+      id: item.productVariantId || item.productId,
+      quantity: item.quantity,
+      item_price: toMajorUnits(item.priceMinor, currency),
+    }),
+  );
+  await postMetaEvent(config, {
+    event_name: "Purchase",
+    eventId,
+    occurredAt,
+    context,
+    custom_data: compact({
+      value: toMajorUnits(input.valueMinor, currency),
+      currency,
+      content_ids: contents.map((content) => content.id),
+      contents,
+      content_type: "product",
+      num_items: input.items.reduce((total, item) => total + item.quantity, 0),
+    }),
+  });
+}
+
+/** Shared HTTP plumbing — building `custom_data` is each event's own job; sending it isn't. */
+async function postMetaEvent(
+  config: MetaCapiConfig,
+  event: {
+    event_name: string;
+    eventId: string;
+    occurredAt: Date | undefined;
+    context: MetaCapiContext | undefined;
+    custom_data: Record<string, unknown>;
+  },
 ): Promise<void> {
   try {
     const fetchImpl = config.fetch ?? globalThis.fetch;
@@ -94,25 +175,44 @@ export async function sendMetaCapiEvent(
     const body = {
       data: [
         compact({
-          event_name: META_EVENT_NAMES[event.eventName],
+          event_name: event.event_name,
           event_time: Math.floor((event.occurredAt ?? new Date()).getTime() / 1000),
           event_id: event.eventId,
           action_source: "website",
           event_source_url: event.context?.eventSourceUrl,
           user_data: await buildUserData(event.context),
-          custom_data: buildCustomData(event),
+          custom_data: event.custom_data,
         }),
       ],
       ...(config.testEventCode ? { test_event_code: config.testEventCode } : {}),
     };
 
-    await fetchImpl(url.toString(), {
+    const response = await fetchImpl(url.toString(), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+    if (!response.ok) {
+      reportCapiError(
+        config,
+        new Error(`Meta CAPI request failed with status ${response.status}`),
+        event,
+      );
+    }
+  } catch (error) {
+    reportCapiError(config, error, event);
+  }
+}
+
+function reportCapiError(
+  config: MetaCapiConfig,
+  error: unknown,
+  event: { event_name: string; eventId: string },
+): void {
+  try {
+    config.onError?.(error, { eventName: event.event_name, eventId: event.eventId });
   } catch {
-    // Best-effort — see the doc comment above.
+    // onError must never break delivery — see MetaCapiConfig.onError.
   }
 }
 
@@ -128,48 +228,6 @@ async function buildUserData(
     fbp: isValidMetaBrowserId(context?.fbp) ? context?.fbp : undefined,
     client_ip_address: context?.clientIpAddress,
     client_user_agent: context?.clientUserAgent,
-  });
-}
-
-function commerceItems(
-  event: MetaCapiCommerceEvent,
-): Array<{ id: string; quantity: number; priceMinor?: number }> {
-  if (event.eventName === "add_to_cart") {
-    return [
-      {
-        id: event.input.productVariantId || event.input.productId,
-        quantity: event.input.quantity,
-        priceMinor: event.input.priceMinor,
-      },
-    ];
-  }
-  return event.input.items.map((item) => ({
-    id: item.productVariantId || item.productId,
-    quantity: item.quantity,
-    priceMinor: item.priceMinor,
-  }));
-}
-
-function buildCustomData(event: MetaCapiCommerceEvent): Record<string, unknown> {
-  const currency = event.input.currency.toUpperCase();
-  const items = commerceItems(event);
-  const contents = items.map((item) =>
-    compact({
-      id: item.id,
-      quantity: item.quantity,
-      item_price:
-        item.priceMinor !== undefined
-          ? toMajorUnits(item.priceMinor, currency)
-          : undefined,
-    }),
-  );
-  return compact({
-    value: toMajorUnits(event.input.valueMinor, currency),
-    currency,
-    content_ids: contents.map((content) => content.id),
-    contents,
-    content_type: "product",
-    num_items: items.reduce((total, item) => total + item.quantity, 0),
   });
 }
 

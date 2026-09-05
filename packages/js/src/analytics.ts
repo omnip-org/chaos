@@ -1,17 +1,12 @@
+import type {
+  AddToCartAnalyticsInput,
+  InitiateCheckoutAnalyticsInput,
+  PurchaseAnalyticsInput,
+} from "./analytics-types.js";
 import { toPurchaseAnalyticsInput } from "./domain.js";
 import { fnv1a32 } from "./internal/hash.js";
 import { toMajorUnits } from "./money.js";
-import type {
-  AddToCartAnalyticsInput,
-  BrowserAnalyticsEventName,
-  CartLineMutation,
-  ClientCommerceAnalyticsEventName,
-  EmbeddedCheckoutCreation,
-  InitiateCheckoutAnalyticsInput,
-  OrderLookup,
-  PreparedAnalyticsEvent,
-  PurchaseAnalyticsInput,
-} from "./types.js";
+import type { CartLineMutation, EmbeddedCheckoutCreation, OrderLookup } from "./types.js";
 
 /**
  * First-party behavior collection. Events project directly to the
@@ -19,27 +14,21 @@ import type {
  * ledger or delivery queue; a store that also wants server-side Meta
  * Conversions API delivery uses the separate `@omnip-org/chaos-js/meta-capi`
  * subpath from its own server-side code.
+ *
+ * There are exactly six events (page_view, view_content, search,
+ * add_to_cart, initiate_checkout, purchase); every one of them is emitted by
+ * this SDK, never by store-supplied names or properties, so each has its own
+ * explicit Pixel/GA4 payload below instead of a shared, shape-inferring
+ * mapper.
  */
 
-const MAX_ENGAGEMENT_INTERVAL_MS = 60_000;
-const MAX_PROPERTIES_BYTES = 32_768;
-const MAX_GA4_EVENT_NAME_BYTES = 40;
 const MAX_META_BROWSER_ID_LENGTH = 2_048;
 const META_FBC_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
-const COMMERCE_EVENT_NAMES = new Set([
-  "add_to_cart",
-  "initiate_checkout",
-  "purchase",
-]);
-const CLIENT_COMMERCE_EVENT_NAMES = new Set([
-  "add_to_cart",
-  "initiate_checkout",
-]);
+const PROVIDER_EVENT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 
 export interface PageViewInput {
   path?: string;
   title?: string;
-  referrerDomain?: string;
 }
 
 export interface AnalyticsOptions {
@@ -50,11 +39,6 @@ export interface AnalyticsOptions {
   sessionStorage?: Storage;
   randomUUID?: () => string;
   now?: () => number;
-  /** Monotonic clock used only for elapsed-time measurement. */
-  monotonicNow?: () => number;
-  setInterval?: typeof setInterval;
-  clearInterval?: typeof clearInterval;
-  flushIntervalMs?: number;
   providers?: {
     metaPixel?: { pixelId: string };
     ga4?: { measurementId: string };
@@ -71,26 +55,11 @@ export class ChaosStorefrontAnalytics {
   private readonly sessionStorageRef?: Storage;
   private readonly randomUUID: () => string;
   private readonly now: () => number;
-  private readonly monotonicNow: () => number;
-  private readonly setIntervalImpl: typeof setInterval;
-  private readonly clearIntervalImpl: typeof clearInterval;
-  private readonly flushIntervalMs: number;
-  private readonly providers: BrowserProviderAdapters;
+  private readonly destinations: AnalyticsDestinations;
 
   private readonly metaFbcStorageKey: string;
   private readonly providerEventStoragePrefix: string;
   private running = false;
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private currentPageViewEventId: string | null = null;
-  private currentPagePath: string | null = null;
-  private activeStartedAt: number | null = null;
-  private accumulatedActiveMs = 0;
-  private readonly onActivityChange = () => this.updateActivityState();
-  private readonly onPageHide = () => {
-    this.flushViewDuration();
-    this.activeStartedAt = null;
-  };
-  private readonly onPageShow = () => this.updateActivityState();
   private readonly onRouteChange = () => this.pageView();
   private restoreHistory: (() => void) | null = null;
 
@@ -109,22 +78,10 @@ export class ChaosStorefrontAnalytics {
       options.randomUUID ??
       globalThis.crypto?.randomUUID.bind(globalThis.crypto);
     this.now = options.now ?? Date.now;
-    this.monotonicNow =
-      options.monotonicNow ??
-      globalThis.performance?.now.bind(globalThis.performance) ??
-      this.now;
-    const setIntervalImpl = options.setInterval ?? globalThis.setInterval;
-    const clearIntervalImpl = options.clearInterval ?? globalThis.clearInterval;
-    this.setIntervalImpl = setIntervalImpl.bind(globalThis);
-    this.clearIntervalImpl = clearIntervalImpl.bind(globalThis);
-    this.flushIntervalMs = options.flushIntervalMs ?? 15_000;
     if (!this.randomUUID || !this.documentRef || !this.windowRef) {
       throw new TypeError("randomUUID, document, and window are required");
     }
-    if (this.flushIntervalMs < 1_000 || this.flushIntervalMs > 60_000) {
-      throw new RangeError("flushIntervalMs must be between 1000 and 60000");
-    }
-    this.providers = new BrowserProviderAdapters(
+    this.destinations = new AnalyticsDestinations(
       this.windowRef,
       this.documentRef,
       options.providers,
@@ -133,6 +90,7 @@ export class ChaosStorefrontAnalytics {
     const storageNamespace = analyticsStorageNamespace(this.publishableKey);
     this.metaFbcStorageKey = `chaos.analytics.${storageNamespace}.meta.fbc.v2`;
     this.providerEventStoragePrefix = `chaos.analytics.${storageNamespace}.provider_event.v1.`;
+    this.pruneExpiredProviderEvents();
     this.maintainFbcCookie();
     if (options.autoStart !== false) {
       this.start();
@@ -143,134 +101,43 @@ export class ChaosStorefrontAnalytics {
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.documentRef.addEventListener(
-      "visibilitychange",
-      this.onActivityChange,
-    );
-    this.windowRef.addEventListener("focus", this.onActivityChange);
-    this.windowRef.addEventListener("blur", this.onActivityChange);
-    this.windowRef.addEventListener("pagehide", this.onPageHide);
-    this.windowRef.addEventListener("pageshow", this.onPageShow);
     this.windowRef.addEventListener("popstate", this.onRouteChange);
     this.restoreHistory = observeHistory(this.windowRef, this.onRouteChange);
-    this.updateActivityState();
-    this.timer = this.setIntervalImpl(() => {
-      this.flushViewDuration();
-    }, this.flushIntervalMs);
   }
 
   stop(): void {
-    if (this.running) {
-      this.snapshotActiveTime();
-      this.running = false;
-      this.documentRef.removeEventListener(
-        "visibilitychange",
-        this.onActivityChange,
-      );
-      this.windowRef.removeEventListener("focus", this.onActivityChange);
-      this.windowRef.removeEventListener("blur", this.onActivityChange);
-      this.windowRef.removeEventListener("pagehide", this.onPageHide);
-      this.windowRef.removeEventListener("pageshow", this.onPageShow);
-      this.windowRef.removeEventListener("popstate", this.onRouteChange);
-      this.restoreHistory?.();
-      this.restoreHistory = null;
-      if (this.timer !== null) this.clearIntervalImpl(this.timer);
-      this.timer = null;
-      this.activeStartedAt = null;
-    }
-    this.flushViewDuration();
+    if (!this.running) return;
+    this.running = false;
+    this.windowRef.removeEventListener("popstate", this.onRouteChange);
+    this.restoreHistory?.();
+    this.restoreHistory = null;
   }
 
-  pageView(input: PageViewInput = {}): string | null {
-    const { path, title, referrerDomain } = input;
-    this.flushViewDuration();
+  pageView(input: PageViewInput = {}): string {
     this.maintainFbcCookie();
-    const resolvedPath = path ?? this.documentRef.location?.pathname ?? "/";
-    const resolvedTitle = title ?? nonEmpty(this.documentRef.title);
-    const resolvedReferrer =
-      referrerDomain ?? referrerHost(this.documentRef.referrer);
-    const eventId = this.emit(
+    const path = input.path ?? this.documentRef.location?.pathname ?? "/";
+    const title = input.title ?? nonEmpty(this.documentRef.title);
+    const eventId = this.randomUUID();
+    this.destinations.pixel("PageView", eventId, { page_path: path });
+    this.destinations.ga4(
       "page_view",
-      compact({
-        path: resolvedPath,
-        title: resolvedTitle,
-        referrer_domain: resolvedReferrer,
-      }),
+      compact({ event_id: eventId, page_path: path, page_title: title }),
     );
-    this.accumulatedActiveMs = 0;
-    this.currentPageViewEventId = eventId;
-    this.currentPagePath = resolvedPath;
-    this.activeStartedAt =
-      this.isActive() && eventId ? this.monotonicNow() : null;
     return eventId;
   }
 
-  /** Consumes SDK-owned server markers without exposing provider schemas to a storefront. */
-  consumeMarkers(root: ParentNode = this.documentRef): void {
-    const stripParams = new Set<string>();
-    root
-      .querySelectorAll<HTMLElement>("[data-chaos-analytics-event]")
-      .forEach((marker) => {
-        if (marker.dataset.chaosAnalyticsConsumed === "true") return;
-        marker.dataset.chaosAnalyticsConsumed = "true";
-
-        const eventName = marker.dataset.chaosAnalyticsEvent;
-        const rawProperties = marker.dataset.chaosAnalyticsProperties;
-        if (!eventName || !rawProperties) return;
-
-        let properties: unknown;
-        try {
-          properties = JSON.parse(rawProperties);
-        } catch {
-          return;
-        }
-        if (!isRecord(properties)) return;
-
-        try {
-          this.recordMarker(eventName, properties);
-        } catch {
-          // A malformed optional marker must never break the page.
-        }
-
-        for (const parameter of marker.dataset.chaosAnalyticsStripParams?.split(",") ?? []) {
-          if (parameter) stripParams.add(parameter);
-        }
-      });
-
-    if (stripParams.size === 0) return;
-    const url = new URL(this.windowRef.location.href);
-    let changed = false;
-    for (const parameter of stripParams) {
-      if (url.searchParams.has(parameter)) {
-        url.searchParams.delete(parameter);
-        changed = true;
-      }
-    }
-    if (changed) this.windowRef.history.replaceState(this.windowRef.history.state, "", url);
-  }
-
-  /** Record any store-defined behavior using the common event envelope. */
-  track(
-    eventName: BrowserAnalyticsEventName,
-    properties: Record<string, unknown> = {},
-  ): string | null {
-    validateEventName(eventName);
-    if (isCommerceEvent(eventName)) {
-      throw new TypeError(
-        `${eventName} must be sent through the analytics SDK after the commerce operation succeeds`,
-      );
-    }
-    return this.emit(eventName, properties, {
-      sendToMeta: isBrowserMetaEvent(eventName),
-      sendToGa4: !COMMERCE_EVENT_NAMES.has(eventName),
-    });
-  }
-
   /**
-   * Records a successful cart addition through the common event boundary.
-   * `eventId` lets a caller that already sent this event through server-side
-   * Meta CAPI (see `@omnip-org/chaos-js/meta-capi`) share the same event ID
-   * for Meta's Pixel+CAPI deduplication, instead of minting a second one.
+   * Records a successful cart addition. `eventId` lets a caller that already
+   * sent this event through server-side Meta CAPI (see
+   * `@omnip-org/chaos-js/meta-capi`) share the same event ID for Meta's
+   * Pixel+CAPI deduplication, instead of minting a second one.
+   *
+   * Warning: if a server-side CAPI call for this same action already ran
+   * (directly, or through `addCartLine`/`updateCartLine` in `ssr/server.ts`),
+   * always pass its `eventId` here. Calling this without it while CAPI is
+   * also configured sends Meta two independent events for one action, which
+   * it cannot deduplicate — `recordCartMutation` does this pairing for you
+   * when you go through the `ssr/server.ts` + `StorefrontBrowserClient` pair.
    */
   recordAddToCart(input: AddToCartAnalyticsInput, eventId?: string): string | null {
     validateMoney(input.valueMinor, input.currency);
@@ -285,26 +152,34 @@ export class ChaosStorefrontAnalytics {
     if (input.cartId !== undefined && !isUuid(input.cartId))
       throw new TypeError("cartId must be a valid UUID");
 
-    return this.recordCommerceEvent(
-      "add_to_cart",
-      {
-        ...(input.cartId ? { cart_id: input.cartId } : {}),
-        product_id: input.productId,
-        product_variant_id: input.productVariantId,
-        quantity: input.quantity,
-        value_minor: input.valueMinor,
-        currency: input.currency.toUpperCase(),
-        items: [
-          {
-            product_id: input.productId,
-            product_variant_id: input.productVariantId,
-            quantity: input.quantity,
-            price_minor: input.priceMinor,
-          },
-        ],
-      },
-      eventId,
-    );
+    try {
+      const resolvedId = canonicalEventId(eventId, this.randomUUID());
+      return this.recordOnce("add_to_cart", resolvedId, () => {
+        const currency = input.currency.toUpperCase();
+        const value = toMajorUnits(input.valueMinor, currency);
+        const price = toMajorUnits(input.priceMinor, currency);
+        this.destinations.pixel("AddToCart", resolvedId, {
+          content_ids: [input.productVariantId],
+          content_type: "product",
+          quantity: input.quantity,
+          value,
+          currency,
+          contents: [
+            { id: input.productVariantId, quantity: input.quantity, item_price: price },
+          ],
+          num_items: input.quantity,
+        });
+        this.destinations.ga4("add_to_cart", {
+          event_id: resolvedId,
+          value,
+          currency,
+          items: [{ item_id: input.productVariantId, quantity: input.quantity, price }],
+        });
+      });
+    } catch {
+      // eventId/provider problems are best-effort; bad input above already threw.
+      return null;
+    }
   }
 
   /** Records a successful embedded checkout creation. See `recordAddToCart` for `eventId`. */
@@ -330,22 +205,43 @@ export class ChaosStorefrontAnalytics {
         throw new RangeError("priceMinor must be a non-negative safe integer");
     }
 
-    return this.recordCommerceEvent(
-      "initiate_checkout",
-      {
-        cart_id: input.cartId,
-        order_number: input.orderNumber,
-        value_minor: input.valueMinor,
-        currency: input.currency.toUpperCase(),
-        items: input.items.map((item) => ({
-          product_id: item.productId,
-          product_variant_id: item.productVariantId,
+    try {
+      const resolvedId = canonicalEventId(eventId, this.randomUUID());
+      return this.recordOnce("initiate_checkout", resolvedId, () => {
+        const currency = input.currency.toUpperCase();
+        const value = toMajorUnits(input.valueMinor, currency);
+        const items = input.items.map((item) => ({
+          id: item.productVariantId,
           quantity: item.quantity,
-          price_minor: item.priceMinor,
-        })),
-      },
-      eventId,
-    );
+          price: toMajorUnits(item.priceMinor, currency),
+        }));
+        this.destinations.pixel("InitiateCheckout", resolvedId, {
+          content_ids: items.map((item) => item.id),
+          content_type: "product",
+          value,
+          currency,
+          contents: items.map((item) => ({
+            id: item.id,
+            quantity: item.quantity,
+            item_price: item.price,
+          })),
+          num_items: items.reduce((total, item) => total + item.quantity, 0),
+        });
+        this.destinations.ga4("begin_checkout", {
+          event_id: resolvedId,
+          transaction_id: input.orderNumber,
+          value,
+          currency,
+          items: items.map((item) => ({
+            item_id: item.id,
+            quantity: item.quantity,
+            price: item.price,
+          })),
+        });
+      });
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -396,102 +292,35 @@ export class ChaosStorefrontAnalytics {
     );
   }
 
-  /**
-   * Builds the internal commerce envelope shared by browser providers. It
-   * does not project the event; the public high-level methods call it only
-   * after the commerce operation succeeds.
-   * @internal Used only by the SDK's high-level commerce methods.
-   */
-  prepareCommerceEvent(
-    eventName: ClientCommerceAnalyticsEventName,
-    properties: Record<string, unknown> = {},
-    eventId?: string,
-  ): PreparedAnalyticsEvent {
-    validateEventName(eventName);
-    const resolvedEventId = eventId ?? this.randomUUID();
-    if (!isUuid(resolvedEventId)) {
-      throw new TypeError("commerce event_id must be a valid UUID");
-    }
-    const canonicalEventId = resolvedEventId.toLowerCase();
-    const event: PreparedAnalyticsEvent = {
-      event_id: canonicalEventId,
-      event_name: eventName,
-      occurred_at: new Date(this.now()).toISOString(),
-      properties: compact(properties),
-    };
-    validateEventProperties(event.properties);
-    return event;
-  }
-
-  /**
-   * Projects a prepared commerce event to browser providers after the
-   * matching business operation succeeds, exactly once per event ID.
-   * @internal Used only by the SDK's high-level commerce methods.
-   */
-  sendCommerceEvent(
-    event: PreparedAnalyticsEvent,
-    properties: Record<string, unknown> = {},
-  ): string | null {
-    if (!isClientCommerceEvent(event.event_name)) {
-      throw new TypeError(
-        "sendCommerceEvent only accepts client commerce events",
-      );
-    }
-    if (!isUuid(event.event_id)) {
-      throw new TypeError("commerce event_id must be a valid UUID");
-    }
-    const merged = compact({ ...event.properties, ...properties });
-    validateEventProperties(merged);
-    const eventId = event.event_id.toLowerCase();
-    return this.projectProviderEventOnce(event.event_name, eventId, merged);
-  }
-
-  private recordCommerceEvent(
-    eventName: ClientCommerceAnalyticsEventName,
-    properties: Record<string, unknown>,
-    eventId?: string,
-  ): string | null {
-    try {
-      const event = this.prepareCommerceEvent(eventName, properties, eventId);
-      return this.sendCommerceEvent(event);
-    } catch {
-      // Analytics is optional and must never turn a successful commerce
-      // operation into a failed UI action.
-      return null;
-    }
-  }
-
   viewContent({
     productId,
     productVariantId,
   }: {
     productId: string;
     productVariantId?: string;
-  }): string | null {
-    return this.emit(
-      "view_content",
-      compact({
-        product_id: productId,
-        product_variant_id: productVariantId,
-      }),
-    );
+  }): string {
+    const contentId = productVariantId ?? productId;
+    const eventId = this.randomUUID();
+    this.destinations.pixel("ViewContent", eventId, {
+      content_ids: [contentId],
+      content_type: "product",
+    });
+    this.destinations.ga4("view_item", {
+      event_id: eventId,
+      items: [{ item_id: contentId }],
+    });
+    return eventId;
   }
 
-  search({
-    query,
-    resultCount,
-  }: {
-    query: string;
-    resultCount?: number;
-  }): string | null {
-    return this.emit(
-      "search",
-      compact({ query, result_count: resultCount }),
-    );
+  search({ query }: { query: string }): string {
+    const eventId = this.randomUUID();
+    this.destinations.pixel("Search", eventId, { search_string: query });
+    this.destinations.ga4("search", { event_id: eventId, search_term: query });
+    return eventId;
   }
 
   /** Projects a server-confirmed Purchase to browser providers exactly once per Order. */
-  purchase(input: PurchaseAnalyticsInput): string | null {
+  recordPurchase(input: PurchaseAnalyticsInput): string | null {
     validateMoney(input.valueMinor, input.currency);
     const currency = input.currency.toUpperCase();
     if (!/^[A-Z]{3}$/.test(currency))
@@ -499,119 +328,88 @@ export class ChaosStorefrontAnalytics {
     if (!isUuid(input.orderId))
       throw new TypeError("orderId must be a valid UUID");
     const orderId = input.orderId.toLowerCase();
-    return this.projectProviderEventOnce(
-      "purchase",
-      orderId,
-      compact({
-        order_id: orderId,
-        value_minor: input.valueMinor,
+
+    return this.recordOnce("purchase", orderId, () => {
+      const value = toMajorUnits(input.valueMinor, currency);
+      const items = input.items.map((item) => ({
+        id: item.productVariantId,
+        quantity: item.quantity,
+        price: toMajorUnits(item.priceMinor, currency),
+      }));
+      this.destinations.pixel("Purchase", orderId, {
+        content_ids: items.map((item) => item.id),
+        content_type: "product",
+        value,
         currency,
-        items: input.items.map((item) => ({
-          product_id: item.productId,
-          product_variant_id: item.productVariantId,
+        contents: items.map((item) => ({
+          id: item.id,
           quantity: item.quantity,
-          price_minor: item.priceMinor,
+          item_price: item.price,
         })),
-      }),
-    );
+        num_items: items.reduce((total, item) => total + item.quantity, 0),
+      });
+      this.destinations.ga4("purchase", {
+        event_id: orderId,
+        transaction_id: orderId,
+        value,
+        currency,
+        items: items.map((item) => ({
+          item_id: item.id,
+          quantity: item.quantity,
+          price: item.price,
+        })),
+      });
+    });
   }
 
   /** Projects a confirmed, paid order without making the caller rebuild event fields. */
-  recordConfirmedOrder(order: Pick<OrderLookup, "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines">): string | null {
+  recordConfirmedPurchase(order: Pick<OrderLookup, "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines">): string | null {
     const input = toPurchaseAnalyticsInput(order);
-    return input ? this.purchase(input) : null;
+    return input ? this.recordPurchase(input) : null;
   }
 
-  private recordMarker(
-    eventName: string,
-    properties: Record<string, unknown>,
-  ): void {
-    if (eventName === "view_content") {
-      const productId = properties.product_id;
-      if (typeof productId !== "string") return;
-      const productVariantId = properties.product_variant_id;
-      this.viewContent({
-        productId,
-        ...(typeof productVariantId === "string" ? { productVariantId } : {}),
-      });
-      return;
-    }
-    if (eventName === "search") {
-      const query = properties.query;
-      if (typeof query === "string" && query.trim()) {
-        this.search({ query: query.trim() });
+  /**
+   * Drops `provider_event` dedup keys older than `PROVIDER_EVENT_MAX_AGE_MS`
+   * so a long-lived visitor's `storage` doesn't accumulate one entry per
+   * commerce action forever. Realistic reloads of a confirmation page never
+   * approach this age, so this never reopens a real dedup window.
+   */
+  private pruneExpiredProviderEvents(): void {
+    if (!this.storage) return;
+    try {
+      const cutoff = this.now() - PROVIDER_EVENT_MAX_AGE_MS;
+      const staleKeys: string[] = [];
+      for (let index = 0; index < this.storage.length; index += 1) {
+        const key = this.storage.key(index);
+        if (!key || !key.startsWith(this.providerEventStoragePrefix)) continue;
+        const recordedAt = Date.parse(this.storage.getItem(key) ?? "");
+        if (!Number.isNaN(recordedAt) && recordedAt < cutoff) staleKeys.push(key);
       }
-      return;
+      for (const key of staleKeys) this.storage.removeItem(key);
+    } catch {
+      // Storage enumeration is optional; growth is bounded on a best-effort basis.
     }
-    this.track(eventName, properties);
   }
 
-  private projectProviderEventOnce(
+  /**
+   * Runs `project()` exactly once per `eventName`+`eventId` pair, tracked in
+   * `storage`. Provider failures inside `project()` are swallowed — analytics
+   * is best-effort and must never surface here as a thrown error.
+   */
+  private recordOnce(
     eventName: string,
     eventId: string,
-    properties: Record<string, unknown>,
+    project: () => void,
   ): string | null {
     const storageKey = `${this.providerEventStoragePrefix}${eventName}.${eventId}`;
     if (this.storage?.getItem(storageKey)) return null;
     try {
-      this.providers.track(eventName, eventId, properties);
+      project();
     } catch {
       // Browser provider failures are best-effort; keep the event ID stable
       // for a future retry.
     }
     this.storage?.setItem(storageKey, new Date(this.now()).toISOString());
-    return eventId;
-  }
-
-  flushViewDuration(): number {
-    this.snapshotActiveTime();
-    if (!this.currentPageViewEventId) {
-      this.accumulatedActiveMs = 0;
-      return 0;
-    }
-    let emitted = 0;
-    while (this.accumulatedActiveMs >= 1) {
-      const activeMilliseconds = Math.min(
-        Math.floor(this.accumulatedActiveMs),
-        MAX_ENGAGEMENT_INTERVAL_MS,
-      );
-      this.emit(
-        "view_duration",
-        compact({
-          page_view_event_id: this.currentPageViewEventId,
-          path: this.currentPagePath ?? undefined,
-          active_milliseconds: activeMilliseconds,
-        }),
-        { sendToMeta: false },
-      );
-      this.accumulatedActiveMs -= activeMilliseconds;
-      emitted += activeMilliseconds;
-    }
-    return emitted;
-  }
-
-  /** Projects one generic event straight to the configured browser providers. */
-  private emit(
-    eventName: string,
-    properties: Record<string, unknown>,
-    options: { sendToMeta?: boolean; sendToGa4?: boolean } = {},
-  ): string | null {
-    validateEventName(eventName);
-    validateEventProperties(properties);
-    const eventId = this.randomUUID();
-    try {
-      const providerOptions: { meta?: boolean; ga4?: boolean } = {};
-      if (options.sendToMeta !== undefined)
-        providerOptions.meta = options.sendToMeta;
-      if (options.sendToGa4 !== undefined)
-        providerOptions.ga4 = options.sendToGa4;
-      this.providers.track(eventName, eventId, properties, {
-        ...providerOptions,
-      });
-    } catch {
-      // Browser provider failures must not turn a successful API operation
-      // into a failed commerce operation.
-    }
     return eventId;
   }
 
@@ -632,26 +430,6 @@ export class ChaosStorefrontAnalytics {
     const cookieFbc = readCookie(this.documentRef, "_fbc");
     const fbc = this.resolveFbc(fbclid);
     if (fbc && fbc !== cookieFbc) writeCookie(this.documentRef, "_fbc", fbc);
-  }
-
-  private updateActivityState(): void {
-    const active = this.isActive();
-    this.snapshotActiveTime();
-    this.activeStartedAt = active ? this.monotonicNow() : null;
-  }
-
-  private snapshotActiveTime(): void {
-    if (this.activeStartedAt === null) return;
-    const now = this.monotonicNow();
-    this.accumulatedActiveMs += Math.max(0, now - this.activeStartedAt);
-    this.activeStartedAt = now;
-  }
-
-  private isActive(): boolean {
-    return (
-      this.documentRef.visibilityState === "visible" &&
-      this.documentRef.hasFocus()
-    );
   }
 
   /**
@@ -684,59 +462,67 @@ export class ChaosStorefrontAnalytics {
   }
 }
 
-type ProviderOptions = AnalyticsOptions["providers"];
+/** Resolves the event ID a commerce projection uses: an explicit, validated ID, or a freshly minted one — always lowercased for Meta's dedup match. */
+function canonicalEventId(explicit: string | undefined, fallback: string): string {
+  const resolved = explicit ?? fallback;
+  if (!isUuid(resolved)) {
+    throw new TypeError("commerce event_id must be a valid UUID");
+  }
+  return resolved.toLowerCase();
+}
+
+type DestinationOptions = AnalyticsOptions["providers"];
 type GtagDataLayerEntry = unknown[] | IArguments;
-type ProviderFunction = ((...args: unknown[]) => void) & {
+type FbqFunction = ((...args: unknown[]) => void) & {
   callMethod?: (...args: unknown[]) => void;
   queue?: unknown[][];
   loaded?: boolean;
   version?: string;
 };
-type ProviderWindow = Window &
+type AnalyticsWindow = Window &
   typeof globalThis & {
     dataLayer?: GtagDataLayerEntry[];
     gtag?: (...args: unknown[]) => void;
-    fbq?: ProviderFunction;
-    _fbq?: ProviderFunction;
+    fbq?: FbqFunction;
+    _fbq?: FbqFunction;
   };
 
-class BrowserProviderAdapters {
-  private readonly windowRef: ProviderWindow;
+/** Talks to `fbq`/`gtag` directly — no field mapping, callers build their own params. */
+class AnalyticsDestinations {
+  private readonly windowRef: AnalyticsWindow;
   private readonly documentRef: Document;
-  private readonly options: ProviderOptions;
+  private readonly options: DestinationOptions;
   private metaStarted = false;
   private ga4Started = false;
 
   constructor(
     windowRef: Window & typeof globalThis,
     documentRef: Document,
-    options: ProviderOptions,
+    options: DestinationOptions,
   ) {
-    this.windowRef = windowRef as ProviderWindow;
+    this.windowRef = windowRef as AnalyticsWindow;
     this.documentRef = documentRef;
     this.options = options;
-    validateProviderOptions(options);
+    validateDestinationOptions(options);
     if (this.options?.ga4) this.startGa4();
     if (this.options?.metaPixel) this.startMeta();
   }
 
-  track(
-    eventName: string,
-    eventId: string,
-    properties: Record<string, unknown>,
-    options: { meta?: boolean; ga4?: boolean } = {},
-  ): void {
-    if ((options.meta ?? true) && this.metaStarted && isMetaEvent(eventName)) {
-      const mapped = metaEvent(eventName, properties);
-      this.windowRef.fbq?.("track", mapped.name, mapped.parameters, {
-        eventID: eventId,
-      });
+  pixel(eventName: string, eventId: string, params: Record<string, unknown>): void {
+    if (!this.metaStarted) return;
+    try {
+      this.windowRef.fbq?.("track", eventName, params, { eventID: eventId });
+    } catch {
+      // Best-effort, independent of ga4() below.
     }
-    if ((options.ga4 ?? true) && this.ga4Started) {
-      const mapped = ga4Event(eventName, eventId, properties);
-      if (isValidGa4EventName(mapped.name)) {
-        this.windowRef.gtag?.("event", mapped.name, mapped.parameters);
-      }
+  }
+
+  ga4(eventName: string, params: Record<string, unknown>): void {
+    if (!this.ga4Started) return;
+    try {
+      this.windowRef.gtag?.("event", eventName, params);
+    } catch {
+      // Best-effort, independent of pixel() above.
     }
   }
 
@@ -744,7 +530,7 @@ class BrowserProviderAdapters {
     if (this.metaStarted || !this.options?.metaPixel) return;
     this.metaStarted = true;
     if (!this.windowRef.fbq) {
-      const fbq: ProviderFunction = (...args: unknown[]) => {
+      const fbq: FbqFunction = (...args: unknown[]) => {
         if (fbq.callMethod) fbq.callMethod(...args);
         else fbq.queue?.push(args);
       };
@@ -781,7 +567,7 @@ class BrowserProviderAdapters {
   }
 }
 
-function validateProviderOptions(options: ProviderOptions): void {
+function validateDestinationOptions(options: DestinationOptions): void {
   if (options?.metaPixel && !/^[0-9]{5,32}$/.test(options.metaPixel.pixelId)) {
     throw new TypeError("providers.metaPixel.pixelId must contain 5-32 digits");
   }
@@ -814,170 +600,12 @@ function loadProviderScript(
   documentRef.head.appendChild(script);
 }
 
-function metaEvent(
-  eventName: string,
-  properties: Record<string, unknown>,
-): { name: string; parameters: Record<string, unknown> } {
-  const names: Record<string, string> = {
-    page_view: "PageView",
-    view_content: "ViewContent",
-    search: "Search",
-    add_to_cart: "AddToCart",
-    initiate_checkout: "InitiateCheckout",
-    purchase: "Purchase",
-  };
-  const contentIds = commerceItemIds(properties);
-  return {
-    name: names[eventName] ?? eventName,
-    parameters: compact({
-      content_ids: contentIds.length > 0 ? contentIds : undefined,
-      content_type: contentIds.length > 0 ? "product" : undefined,
-      search_string: properties.query,
-      quantity: properties.quantity,
-      page_path: properties.path,
-      value: providerValue(properties.value_minor, properties.currency),
-      currency: properties.currency,
-      contents: providerItems(properties.items, properties.currency),
-      num_items: providerItemCount(properties.items) ?? properties.quantity,
-    }),
-  };
-}
-
-function isMetaEvent(eventName: string): boolean {
-  return [
-    "page_view",
-    "view_content",
-    "search",
-    "add_to_cart",
-    "initiate_checkout",
-    "purchase",
-  ].includes(eventName);
-}
-
-function isBrowserMetaEvent(eventName: string): boolean {
-  return ["page_view", "view_content", "search"].includes(eventName);
-}
-
-function isCommerceEvent(eventName: string): boolean {
-  return COMMERCE_EVENT_NAMES.has(eventName);
-}
-
-function isClientCommerceEvent(
-  eventName: string,
-): eventName is ClientCommerceAnalyticsEventName {
-  return CLIENT_COMMERCE_EVENT_NAMES.has(eventName);
-}
-
-function ga4Event(
-  eventName: string,
-  eventId: string,
-  properties: Record<string, unknown>,
-): { name: string; parameters: Record<string, unknown> } {
-  const names: Record<string, string> = {
-    view_content: "view_item",
-    add_to_cart: "add_to_cart",
-    initiate_checkout: "begin_checkout",
-    purchase: "purchase",
-  };
-  const itemId = commerceItemId(properties);
-  return {
-    name: names[eventName] ?? eventName,
-    parameters: compact({
-      event_id: eventId,
-      page_path: properties.path,
-      page_title: properties.title,
-      search_term: properties.query,
-      engagement_time_msec: properties.active_milliseconds,
-      transaction_id: properties.order_id ?? properties.order_number,
-      value: providerValue(properties.value_minor, properties.currency),
-      currency: properties.currency,
-      items:
-        ga4Items(properties.items, properties.currency) ??
-        (itemId
-          ? [compact({ item_id: itemId, quantity: properties.quantity })]
-          : undefined),
-    }),
-  };
-}
-
-function providerValue(
-  valueMinor: unknown,
-  currency: unknown,
-): number | undefined {
-  if (typeof valueMinor !== "number" || typeof currency !== "string")
-    return undefined;
-  if (!Number.isSafeInteger(valueMinor) || valueMinor < 0) return undefined;
-  try {
-    return toMajorUnits(valueMinor, currency);
-  } catch {
-    return undefined;
-  }
-}
-
 function validateMoney(valueMinor: number, currency: string): void {
   if (!Number.isSafeInteger(valueMinor) || valueMinor < 0) {
     throw new RangeError("valueMinor must be a non-negative safe integer");
   }
   if (!/^[A-Za-z]{3}$/.test(currency))
     throw new TypeError("currency must be an ISO 4217 code");
-}
-
-function providerItems(items: unknown, currency: unknown): unknown {
-  if (!Array.isArray(items)) return undefined;
-  return items.map((item) => {
-    const value = item as Record<string, unknown>;
-    return compact({
-      id: value.product_variant_id ?? value.product_id,
-      quantity: value.quantity,
-      item_price: providerValue(value.price_minor, currency),
-    });
-  });
-}
-
-function providerItemCount(items: unknown): number | undefined {
-  if (!Array.isArray(items)) return undefined;
-  const quantities = items.map(
-    (item) => (item as Record<string, unknown>).quantity,
-  );
-  if (!quantities.every((quantity) => typeof quantity === "number"))
-    return undefined;
-  return quantities.reduce(
-    (total, quantity) => total + (quantity as number),
-    0,
-  );
-}
-
-function ga4Items(items: unknown, currency: unknown): unknown {
-  if (!Array.isArray(items)) return undefined;
-  return items.map((item) => {
-    const value = item as Record<string, unknown>;
-    return compact({
-      item_id: value.product_variant_id ?? value.product_id,
-      quantity: value.quantity,
-      price: providerValue(value.price_minor, currency),
-    });
-  });
-}
-
-function commerceItemId(properties: Record<string, unknown>): unknown {
-  return properties.product_variant_id ?? properties.product_id;
-}
-
-function commerceItemIds(properties: Record<string, unknown>): string[] {
-  if (Array.isArray(properties.items)) {
-    const ids = properties.items
-      .map((item) => {
-        const value = item as Record<string, unknown>;
-        return value.product_variant_id ?? value.product_id;
-      })
-      .filter(
-        (itemId): itemId is string =>
-          typeof itemId === "string" && itemId.length > 0,
-      );
-    if (ids.length > 0) return ids;
-  }
-  const itemId = commerceItemId(properties);
-  return typeof itemId === "string" && itemId.length > 0 ? [itemId] : [];
 }
 
 function analyticsStorageNamespace(publishableKey: string): string {
@@ -1051,15 +679,6 @@ function isUuid(value: string | null | undefined): boolean {
   );
 }
 
-function referrerHost(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  try {
-    return new URL(value).host || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function readCookie(documentRef: Document, name: string): string | undefined {
   const cookie = documentRef.cookie;
   if (typeof cookie !== "string") return undefined;
@@ -1113,10 +732,6 @@ function compact<T extends Record<string, unknown>>(
   );
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function readStoredJson(storage: Storage | undefined, key: string): unknown {
   try {
     const value = storage?.getItem(key);
@@ -1138,50 +753,8 @@ function writeStoredJson(
   }
 }
 
-function validateEventName(eventName: string): void {
-  if (!isValidEventName(eventName)) {
-    throw new TypeError(
-      "eventName must be 1-64 lowercase snake_case characters",
-    );
-  }
-}
-
-function isValidEventName(value: unknown): value is string {
-  return typeof value === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(value);
-}
-
 function validFbc(value: string | undefined): value is string {
   if (!value || value.length > MAX_META_BROWSER_ID_LENGTH) return false;
   const match = /^fb\.\d+\.(\d{13})\.[^\s]+$/.exec(value);
   return match !== null && Number.isSafeInteger(Number(match[1]));
-}
-
-function validateEventProperties(properties: Record<string, unknown>): void {
-  if (!isValidEventProperties(properties)) {
-    throw new TypeError(
-      "event properties must be a JSON object no larger than 32768 bytes",
-    );
-  }
-}
-
-function isValidEventProperties(
-  value: unknown,
-): value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  try {
-    const serialized = JSON.stringify(value);
-    return (
-      typeof serialized === "string" &&
-      new TextEncoder().encode(serialized).byteLength <= MAX_PROPERTIES_BYTES
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isValidGa4EventName(eventName: string): boolean {
-  return (
-    eventName.length <= MAX_GA4_EVENT_NAME_BYTES &&
-    /^[A-Za-z][A-Za-z0-9_]*$/.test(eventName)
-  );
 }

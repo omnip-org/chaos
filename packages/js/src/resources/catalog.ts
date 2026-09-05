@@ -32,7 +32,7 @@ export class CatalogResource {
       query: params,
     });
     if (params.q) {
-      this.client.analytics?.search({ query: params.q, resultCount: response.data.length });
+      this.client.analytics?.search({ query: params.q });
     }
     return response;
   }

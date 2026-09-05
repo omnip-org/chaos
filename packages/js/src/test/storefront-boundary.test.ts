@@ -127,7 +127,7 @@ test("browser checkout bridge forwards shared checkout options", async () => {
     analytics: {
       recordCartMutation: () => undefined,
       recordCheckoutCreation: () => recorded.push("checkout"),
-      purchase: () => recorded.push("purchase"),
+      recordPurchase: () => recorded.push("purchase"),
     } as unknown as ChaosStorefrontAnalytics,
     fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push({ url: String(input), init: init ?? {} });
@@ -474,7 +474,7 @@ test("addCartLine sends Meta CAPI and shares the event ID with the mutation resu
   assert.equal(userData.fbp, "fb.1.1700000000000.browser");
 });
 
-test("recordConfirmedPurchaseCapi uses the same order-derived event ID as the browser purchase() call", async () => {
+test("recordConfirmedPurchaseCapi uses the same order-derived event ID as the browser recordPurchase() call", async () => {
   const cookies: StorefrontCookieJar = { get: () => undefined, set: () => {} };
   const capiRequests: Array<Record<string, unknown>> = [];
   const client = createServerStorefrontClient({

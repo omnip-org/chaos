@@ -64,16 +64,28 @@ persisted payment-form recovery data. Retrying the same Cart checkout request
 returns that action and never creates another provider session. Stripe collects the checkout address
 and calculates tax, promotions, shipping, and the final total. Verified Stripe
 webhooks reconcile those facts onto the Order, while Chaos retains inventory and
-fulfillment state. The browser SDK prepares one attributed commerce envelope
-before the cart or checkout request, but the business request remains
-analytics-agnostic. After a successful response, the SDK sends the event through
-the common `/analytics/events` endpoint with canonical response values and
-projects the same event ID to browser providers. The browser-side
-`InitiateCheckout` event is stored with its public `order_number`; retrying a Cart checkout
-does not emit a second initiation event. The server-side `Purchase` event later looks
-up that exact event and combines its attribution with the final
-provider-reconciled total. No attribution is stored on the Order, and Meta can
-deduplicate the Pixel and CAPI copies using the shared event ID.
+fulfillment state. chaos-js (`packages/js`) never posts behavior events to
+chaos rust — there is no `/analytics/events` endpoint. AddToCart/
+InitiateCheckout/Purchase project straight from the browser to Meta Pixel and
+GA4 after the matching operation succeeds; a Store with its own server-side
+deployment can additionally send the same events to Meta Conversions API
+directly from its own backend, using its own Meta access token, through
+chaos-js's `meta-capi` subpath — chaos never stores or proxies that token.
+Browser and server projections of the same commerce event share one event ID
+(minted server-side and returned on the mutation/checkout response) so Meta
+can deduplicate the Pixel and CAPI copies.
+
+Independently, payment confirmation still appends one server-side `purchase`
+event to `integration.analytics_events` per Order and can deliver it to a
+Store-configured Meta destination (`configure_meta_destination`) through the
+Worker's analytics delivery loop — a Store's earlier, chaos-hosted Meta
+integration. That path used to enrich the event with `fbc`/`fbp`/UTM
+attribution captured from a matching browser `InitiateCheckout` event; since
+chaos-js no longer sends that browser event, the lookup always misses and
+delivery now carries no click-id/UTM attribution. A Store with both this
+destination configured and its own `meta-capi` backend call wired up sends
+Meta two independent Purchase events with different event IDs, which Meta
+cannot deduplicate.
 
 ## Payment and Refund
 

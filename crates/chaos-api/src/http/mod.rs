@@ -8,7 +8,6 @@ use axum::{Router, http::Request};
 use chaos_core::runtime::lifecycle::Lifecycle;
 use chaos_core::{
     adapters::integrations::{
-        analytics::rate_limit::RedisAnalyticsCollectionRateLimiter,
         resend::ResendEmailProvider,
         stripe::{StripeGateway, StripeWebhookVerifier},
     },
@@ -38,7 +37,7 @@ use chaos_core::{
     runtime::{clock::SystemClock, config::Settings, state::AppState},
 };
 use chaos_core::{
-    analytics::{AnalyticsAdministration, AnalyticsCollection},
+    analytics::AnalyticsAdministration,
     catalog::StorefrontCatalog,
     catalog::{
         CatalogManagement, CatalogQueries, CollectionAdministration, CreateProduct,
@@ -100,7 +99,6 @@ pub struct ApiState {
     pub publishable_key_management: Arc<PublishableKeyManagement>,
     pub publishable_key_authentication: Arc<PublishableKeyAuthentication>,
     pub provider_secret_management: Arc<ProviderSecretManagement>,
-    pub analytics_collection: Arc<AnalyticsCollection>,
     pub analytics_administration: Arc<AnalyticsAdministration>,
     pub storefront_catalog: Arc<StorefrontCatalog>,
     pub storefront_sales: Arc<StorefrontSales>,
@@ -243,12 +241,6 @@ impl ApiState {
         let analytics_event_store = Arc::new(PostgresAnalyticsEventStore::new(
             infrastructure.runtime_pool(),
         ));
-        let analytics_collection = AnalyticsCollection::new(
-            analytics_event_store.clone(),
-            Arc::new(RedisAnalyticsCollectionRateLimiter::new(
-                infrastructure.redis_client(),
-            )),
-        );
         let analytics_administration = AnalyticsAdministration::new(
             Arc::new(PostgresAnalyticsDestinationStore::new(
                 infrastructure.runtime_pool(),
@@ -345,7 +337,6 @@ impl ApiState {
             publishable_key_management: Arc::new(publishable_key_management),
             publishable_key_authentication: Arc::new(publishable_key_authentication),
             provider_secret_management: Arc::new(provider_secret_management),
-            analytics_collection: Arc::new(analytics_collection),
             analytics_administration: Arc::new(analytics_administration),
             storefront_catalog: Arc::new(storefront_catalog),
             storefront_sales: Arc::new(storefront_sales),
@@ -520,7 +511,6 @@ mod tests {
             (Method::GET, "/health/live"),
             (Method::GET, "/api/v1/products"),
             (Method::GET, "/api/v1/collections"),
-            (Method::POST, "/api/v1/analytics/events"),
             (Method::POST, "/api/v1/carts"),
             (Method::POST, "/api/v1/orders/lookup"),
             (

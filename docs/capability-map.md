@@ -35,7 +35,7 @@ replacement, then passes the relevant services into HTTP and MCP delivery.
 | Payments and refunds | `crates/chaos-api/src/http/api/v1/carts.rs` (checkout handoff), `crates/chaos-api/src/http/webhooks/v1/payments.rs` | `crates/chaos-api/src/mcp/tools/operations/payments.rs` | `crates/chaos-core/src/payments/` | `crates/chaos-core/src/contracts/stripe.rs` (`PaymentProvider`, registry) | `crates/chaos-core/src/adapters/postgres/payments/`, `adapters/integrations/stripe.rs` | Checkout Session creation is synchronous; refund commands use `chaos_payment_commands`, and verified payment webhooks use `chaos_webhooks`; payment state remains in `commerce` |
 | Email delivery | `crates/chaos-api/src/http/webhooks/v1/email.rs` mounted at `/webhooks/v1` | `crates/chaos-api/src/mcp/tools/integrations/email.rs`, `provider_secrets.rs` | `crates/chaos-core/src/email.rs` | `crates/chaos-core/src/contracts/email.rs` | `crates/chaos-core/src/adapters/postgres/integrations/email.rs`, `adapters/integrations/resend.rs` | `order.confirmed` routes to `chaos_email_commands`; the global server-owned template renders order data and Store brand tokens live under the Email account's `integration.provider_accounts.configuration.brand`; verified email events use the shared `chaos_webhooks` inbox |
 | Fulfillment (manual shipping) | — | `crates/chaos-api/src/mcp/tools/operations/fulfillment.rs` | `crates/chaos-core/src/fulfillment/` and `shipping.rs` | `crates/chaos-core/src/contracts/shipping.rs` | `crates/chaos-core/src/adapters/postgres/fulfillment/`, `adapters/integrations/manual_shipping.rs` | Fulfillment state remains in `commerce`; manual account lookup and Shipping dispatch use `integration` and `chaos_shipping_commands`; Returns and carrier integration are not implemented |
-| Analytics and Meta delivery | `crates/chaos-api/src/http/api/v1/analytics.rs` | `crates/chaos-api/src/mcp/tools/integrations/analytics.rs` | `crates/chaos-core/src/analytics/` | `crates/chaos-core/src/contracts/analytics.rs` | `crates/chaos-core/src/adapters/postgres/analytics/`, `adapters/integrations/analytics/` | Analytics delivery worker in `crates/chaos-worker/src/workers.rs` |
+| Analytics and Meta delivery | — (no HTTP entry point; the server-side Purchase event is appended from the payment webhook flow, see `adapters/postgres/payments/`) | `crates/chaos-api/src/mcp/tools/integrations/analytics.rs` | `crates/chaos-core/src/analytics/` | `crates/chaos-core/src/contracts/analytics.rs` | `crates/chaos-core/src/adapters/postgres/analytics/`, `adapters/integrations/analytics/` | Analytics delivery worker in `crates/chaos-worker/src/workers.rs` |
 | Provider secrets | — | `crates/chaos-api/src/mcp/tools/integrations/provider_secrets.rs` | `crates/chaos-core/src/store/provider_secrets.rs` | `crates/chaos-core/src/contracts/provider_secret.rs` | `crates/chaos-core/src/adapters/security/provider_secrets.rs` and Store repositories | — |
 
 ## Important cross-capability flows
@@ -98,16 +98,29 @@ entry point.
 ### Analytics and Meta
 
 ```text
-HTTP api/v1/analytics.rs
-  -> chaos-core analytics/
+payment webhook confirmation (adapters/postgres/payments/)
+  -> adapters/postgres/analytics/ (append_event, event_source="server")
+  -> chaos-core analytics/ (AnalyticsAdministration, AnalyticsDeliveryWorker)
   -> contracts/analytics.rs
-  -> adapters/postgres/analytics/
   -> adapters/integrations/analytics/meta.rs
   -> analytics delivery worker
 ```
 
-The stored event ledger is authoritative. Meta delivery is a retryable
-projection and must not replace the internal event write.
+There is no browser-facing collection endpoint: `packages/js` (chaos-js)
+never posts behavior events to chaos rust. The only writer left is payment
+confirmation, which appends one server-side `purchase` event per Order and
+lets a Store-configured Meta destination (`configure_meta_destination`,
+`crates/chaos-api/src/mcp/tools/integrations/analytics.rs`) deliver it
+through the Worker above. That event's `fbc`/`fbp`/UTM attribution used to
+come from a matching browser `initiate_checkout` event
+(`load_checkout_attribution` in `adapters/postgres/analytics/mod.rs`); since
+chaos-js dropped browser collection, that lookup now always misses, so this
+path currently delivers Purchase events to Meta with degraded (no
+click-id/UTM) attribution. A Store can alternatively (or additionally) call
+Meta CAPI directly from its own backend via chaos-js's `meta-capi` subpath —
+the two delivery paths are independent and use different event IDs, so a
+Store with both configured double-delivers the same Purchase to Meta. Neither
+of these is fixed by this pass; see the analytics module survey for details.
 
 ### Provider webhook ingress
 

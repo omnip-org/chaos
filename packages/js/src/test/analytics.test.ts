@@ -20,12 +20,24 @@ class FakeTarget {
 class MemoryStorage {
   private readonly values = new Map<string, string>();
 
+  get length(): number {
+    return this.values.size;
+  }
+
   getItem(key: string): string | null {
     return this.values.get(key) ?? null;
   }
 
   setItem(key: string, value: string): void {
     this.values.set(key, value);
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key);
+  }
+
+  key(index: number): string | null {
+    return [...this.values.keys()][index] ?? null;
   }
 }
 
@@ -46,9 +58,7 @@ function harness(
   } = {},
 ) {
   let time = Date.parse("2026-08-16T00:00:00Z");
-  let elapsed = 0;
   let sequence = 0;
-  let focused = true;
   const scripts: Array<{ id: string; src: string; async: boolean }> = [];
   const document = Object.assign(new FakeTarget(), {
     cookie: options.cookie ?? "",
@@ -60,7 +70,6 @@ function harness(
       pathname: "/products",
       search: options.search ?? "?fbclid=fb-secret&gclid=g-secret",
     },
-    hasFocus: () => focused,
     getElementById: (id: string) => scripts.find((script) => script.id === id),
     createElement: () => ({ id: "", src: "", async: false }),
     head: {
@@ -90,27 +99,12 @@ function harness(
     document: document as unknown as Document,
     window: window as unknown as Window & typeof globalThis,
     now: () => time,
-    monotonicNow: () => elapsed,
     randomUUID: () =>
       `00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`,
-    setInterval: (() => 1) as unknown as typeof setInterval,
-    clearInterval: (() => {}) as unknown as typeof clearInterval,
     autoStart: options.autoStart ?? false,
     ...(options.providers ? { providers: options.providers } : {}),
   });
-  return {
-    analytics,
-    document,
-    window,
-    scripts,
-    advance: (milliseconds: number) => {
-      time += milliseconds;
-      elapsed += milliseconds;
-    },
-    focus: (value: boolean) => {
-      focused = value;
-    },
-  };
+  return { analytics, document, window, scripts };
 }
 
 function ga4Calls(window: unknown): unknown[][] {
@@ -124,32 +118,6 @@ function fbqCalls(window: unknown): unknown[][] {
     (call) => call[0] === "track",
   );
 }
-
-test("rejects event names that the Storefront API cannot store", () => {
-  const environment = harness();
-  assert.throws(
-    () => environment.analytics.track("Invalid-Name"),
-    /eventName must be 1-64 lowercase snake_case characters/,
-  );
-});
-
-test("sends generic events to GA4 once and requires the commerce envelope", () => {
-  const environment = harness({
-    providers: { ga4: { measurementId: "G-TEST1234" } },
-  });
-  environment.analytics.track("store_defined_event", {
-    product_id: "product-1",
-  });
-  assert.throws(
-    () => environment.analytics.track("purchase", { order_id: "order-1" }),
-    /after the commerce operation succeeds/,
-  );
-
-  const events = ga4Calls(environment.window);
-  assert.equal(events.length, 1);
-  assert.equal(Object.prototype.toString.call(events[0]), "[object Arguments]");
-  assert.equal(events[0]?.[1], "store_defined_event");
-});
 
 test("keeps a fresh _fbc cookie in sync with the current fbclid", () => {
   const environment = harness({
@@ -191,10 +159,7 @@ test("keeps history observation active when one of multiple analytics clients st
     document: first.document as unknown as Document,
     window: first.window as unknown as Window & typeof globalThis,
     now: () => 0,
-    monotonicNow: () => 0,
     randomUUID: () => "00000000-0000-4000-8000-000000000099",
-    setInterval: (() => 1) as unknown as typeof setInterval,
-    clearInterval: (() => {}) as unknown as typeof clearInterval,
     autoStart: false,
     providers: { ga4: { measurementId: "G-TEST1234" } },
   });
@@ -214,19 +179,6 @@ test("keeps history observation active when one of multiple analytics clients st
   second.stop();
 });
 
-test("splits active engagement into bounded behavior events", () => {
-  const environment = harness({
-    providers: { ga4: { measurementId: "G-TEST1234" } },
-  });
-  environment.analytics.pageView();
-  environment.advance(125_000);
-  assert.equal(environment.analytics.flushViewDuration(), 125_000);
-  const durations = ga4Calls(environment.window)
-    .filter((call) => call[1] === "view_duration")
-    .map((call) => (call[2] as Record<string, unknown>).engagement_time_msec);
-  assert.deepEqual(durations, [60_000, 60_000, 5_000]);
-});
-
 test("keeps one stable provider event identity", () => {
   const environment = harness({
     providers: {
@@ -244,28 +196,7 @@ test("keeps one stable provider event identity", () => {
   assert.deepEqual(metaTrack?.[3], { eventID: eventId });
 });
 
-test("does not send duration or arbitrary events to Meta Pixel", () => {
-  const environment = harness({
-    providers: { metaPixel: { pixelId: "12345" } },
-  });
-  environment.analytics.track("view_duration", { active_milliseconds: 1_000 });
-  assert.throws(
-    () =>
-      environment.analytics.track("add_to_cart", { product_id: "product-1" }),
-    /after the commerce operation succeeds/,
-  );
-  assert.throws(
-    () =>
-      environment.analytics.track("initiate_checkout", { order_id: "order-1" }),
-    /after the commerce operation succeeds/,
-  );
-  environment.analytics.track("store_defined_event", {
-    product_id: "product-1",
-  });
-  assert.equal(fbqCalls(environment.window).length, 0);
-});
-
-test("prepareCommerceEvent/sendCommerceEvent project with an explicit event ID", () => {
+test("recordAddToCart dedupes a repeated explicit event ID", () => {
   const environment = harness({
     providers: {
       metaPixel: { pixelId: "12345" },
@@ -273,29 +204,18 @@ test("prepareCommerceEvent/sendCommerceEvent project with an explicit event ID",
     },
   });
   const explicitEventId = "00000000-0000-4000-8000-000000000321";
-  const event = environment.analytics.prepareCommerceEvent(
-    "add_to_cart",
-    { product_id: "product-1" },
-    explicitEventId,
-  );
-  assert.equal(event.event_id, explicitEventId);
+  const input = {
+    cartId: "00000000-0000-4000-8000-000000000001",
+    productId: "00000000-0000-4000-8000-000000000002",
+    productVariantId: "00000000-0000-4000-8000-000000000003",
+    quantity: 1,
+    priceMinor: 1_000,
+    valueMinor: 1_000,
+    currency: "usd",
+  };
 
-  const projected = environment.analytics.sendCommerceEvent(event, {
-    product_id: "product-1",
-    product_variant_id: "variant-1",
-    value_minor: 1_000,
-    currency: "USD",
-    items: [
-      {
-        product_id: "product-1",
-        product_variant_id: "variant-1",
-        quantity: 1,
-        price_minor: 1_000,
-      },
-    ],
-  });
-  assert.equal(projected, explicitEventId);
-
+  const firstId = environment.analytics.recordAddToCart(input, explicitEventId);
+  assert.equal(firstId, explicitEventId);
   const metaTrack = fbqCalls(environment.window).find(
     (call) => call[1] === "AddToCart",
   );
@@ -303,8 +223,41 @@ test("prepareCommerceEvent/sendCommerceEvent project with an explicit event ID",
 
   // Re-sending the same event ID is a no-op: Meta dedup relies on exactly
   // one projection per ID.
-  const secondProjection = environment.analytics.sendCommerceEvent(event);
-  assert.equal(secondProjection, null);
+  const secondId = environment.analytics.recordAddToCart(input, explicitEventId);
+  assert.equal(secondId, null);
+  assert.equal(
+    fbqCalls(environment.window).filter((call) => call[1] === "AddToCart").length,
+    1,
+  );
+});
+
+test("prunes provider_event dedup keys older than 90 days on construction", () => {
+  const localStorage = new MemoryStorage();
+  const first = harness({ localStorage });
+  const eventId = first.analytics.recordAddToCart({
+    cartId: "00000000-0000-4000-8000-000000000001",
+    productId: "00000000-0000-4000-8000-000000000002",
+    productVariantId: "00000000-0000-4000-8000-000000000003",
+    quantity: 1,
+    priceMinor: 1_000,
+    valueMinor: 1_000,
+    currency: "usd",
+  });
+  let staleKey: string | null = null;
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (key?.includes(`add_to_cart.${eventId}`)) staleKey = key;
+  }
+  assert.ok(staleKey, "dedup key should exist after recording");
+  const wellPastRetention = new Date(
+    Date.parse("2026-08-16T00:00:00Z") - 91 * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  localStorage.setItem(staleKey!, wellPastRetention);
+
+  // Constructing a fresh instance against the same storage prunes on startup.
+  harness({ localStorage });
+
+  assert.equal(localStorage.getItem(staleKey!), null);
 });
 
 test("high-level commerce methods project canonical event properties", () => {
@@ -491,7 +444,7 @@ test("maps purchase items to Meta content fields", () => {
   const environment = harness({
     providers: { metaPixel: { pixelId: "12345" } },
   });
-  const eventId = environment.analytics.purchase({
+  const eventId = environment.analytics.recordPurchase({
     orderId: "00000000-0000-4000-8000-000000000999",
     valueMinor: 1_299,
     currency: "usd",
@@ -522,7 +475,7 @@ test("uses the zero-decimal MGA currency scale in browser Meta payloads", () => 
   const environment = harness({
     providers: { metaPixel: { pixelId: "12345" } },
   });
-  environment.analytics.purchase({
+  environment.analytics.recordPurchase({
     orderId: "00000000-0000-4000-8000-000000000998",
     valueMinor: 1_299,
     currency: "mga",

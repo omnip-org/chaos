@@ -23,11 +23,10 @@ mod stripe;
 
 pub use actor::{AdminActor, ShopperActor, ShopperCredentialCodec};
 pub use analytics::{
-    AnalyticsCollectionRateLimiter, AnalyticsDeliveryCommand, AnalyticsDeliveryError,
-    AnalyticsDeliveryJob, AnalyticsDeliveryReceipt, AnalyticsDestination,
-    AnalyticsDestinationConfiguration, AnalyticsEventDelivery, AnalyticsEventDestination,
-    AnalyticsEventInput, AnalyticsEventPage, AnalyticsEventQuery, AnalyticsEventRecord,
-    AnalyticsRateLimitDecision,
+    AnalyticsDeliveryCommand, AnalyticsDeliveryError, AnalyticsDeliveryJob,
+    AnalyticsDeliveryReceipt, AnalyticsDestination, AnalyticsDestinationConfiguration,
+    AnalyticsEventDelivery, AnalyticsEventDestination, AnalyticsEventPage, AnalyticsEventQuery,
+    AnalyticsEventRecord,
 };
 pub use catalog_management::ProductLifecycleSnapshot;
 pub use catalog_read::{
