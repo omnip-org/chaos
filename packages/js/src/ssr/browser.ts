@@ -1,5 +1,4 @@
-import type { ChaosStorefrontAnalytics } from "../analytics.js";
-import type { PurchaseAnalyticsInput } from "../analytics-types.js";
+import { createStorefrontAnalytics, type AnalyticsOptions } from "../events/browser.js";
 import { ChaosApiError, throwForResponse } from "../errors.js";
 import type {
   CartLineMutation,
@@ -11,11 +10,20 @@ import type {
   Product,
 } from "../types.js";
 
+/**
+ * Meta Pixel/GA4 event delivery, keyed by destination: pass `metaPixel` to
+ * turn on Pixel, `ga4` to turn on GA4, omit either to leave it off — there
+ * is no separate enable flag. `document`/`window`/`storage`/`randomUUID`/
+ * `now`/`autoStart` exist for test injection; a real storefront never sets
+ * them.
+ */
+export type StorefrontEventsOptions = Omit<AnalyticsOptions, "publishableKey">;
+
 export interface StorefrontBrowserOptions {
   /** Same-origin storefront adapter prefix. Defaults to the shared route prefix. */
   baseUrl?: string;
   fetch?: typeof fetch;
-  analytics?: ChaosStorefrontAnalytics;
+  events?: StorefrontEventsOptions;
 }
 
 export class StorefrontBrowserClient {
@@ -26,13 +34,19 @@ export class StorefrontBrowserClient {
 
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
-  private readonly analytics: ChaosStorefrontAnalytics | undefined;
+  private readonly analytics: ReturnType<typeof createStorefrontAnalytics>;
 
   constructor(options: StorefrontBrowserOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "/api").replace(/\/+$/, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
-    this.analytics = options.analytics;
     if (!this.fetchImpl) throw new TypeError("fetch is required");
+    // The namespace only needs to be a stable per-storefront string — reused
+    // here from `baseUrl` instead of asking for a publishable key, which
+    // this SSR-only client never holds (see `ssr/server.ts`).
+    this.analytics = createStorefrontAnalytics({
+      publishableKey: this.baseUrl,
+      ...options.events,
+    });
     this.cart = new BrowserCartResource(this);
     this.catalog = new BrowserCatalogResource(this);
     this.checkout = new BrowserCheckoutResource(this);
@@ -57,7 +71,7 @@ export class StorefrontBrowserClient {
 
   recordCartMutation(mutation: CartLineMutation): void {
     try {
-      this.analytics?.recordCartMutation(mutation);
+      this.analytics.recordCartMutation(mutation);
     } catch {
       // The cart mutation already succeeded; analytics must remain best-effort.
     }
@@ -65,15 +79,20 @@ export class StorefrontBrowserClient {
 
   recordCheckoutCreation(creation: EmbeddedCheckoutCreation): void {
     try {
-      this.analytics?.recordCheckoutCreation(creation);
+      this.analytics.recordCheckoutCreation(creation);
     } catch {
       // The checkout already exists; analytics must remain best-effort.
     }
   }
 
-  recordPurchase(input: PurchaseAnalyticsInput): void {
+  recordConfirmedPurchase(
+    order: Pick<
+      OrderLookup,
+      "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines"
+    >,
+  ): void {
     try {
-      this.analytics?.recordPurchase(input);
+      this.analytics.recordConfirmedPurchase(order);
     } catch {
       // The order is already confirmed; analytics must remain best-effort.
     }
@@ -81,7 +100,7 @@ export class StorefrontBrowserClient {
 
   recordSearch(input: { query: string }): void {
     try {
-      this.analytics?.search(input);
+      this.analytics.search(input);
     } catch {
       // The search already ran; analytics must remain best-effort.
     }
@@ -89,7 +108,7 @@ export class StorefrontBrowserClient {
 
   recordViewContent(input: { productId: string; productVariantId?: string }): void {
     try {
-      this.analytics?.viewContent(input);
+      this.analytics.viewContent(input);
     } catch {
       // The product already loaded; analytics must remain best-effort.
     }
@@ -245,8 +264,18 @@ export class BrowserCheckoutResource {
 export class BrowserOrderResource {
   constructor(private readonly client: StorefrontBrowserClient) {}
 
-  recordPurchase(input: PurchaseAnalyticsInput): void {
-    this.client.recordPurchase(input);
+  /**
+   * Projects a confirmed, paid order to Meta Pixel/GA4 — never inferred from
+   * browser activity. Typically called on a return page right after
+   * `lookupOrder`. No-op unless the order is confirmed and paid.
+   */
+  recordConfirmedPurchase(
+    order: Pick<
+      OrderLookup,
+      "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines"
+    >,
+  ): void {
+    this.client.recordConfirmedPurchase(order);
   }
 
   async lookupOrder(params: { orderNumber: string; email: string }): Promise<OrderLookup> {

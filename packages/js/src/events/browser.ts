@@ -1,25 +1,32 @@
+import { toPurchaseAnalyticsInput } from "../domain.js";
+import { fnv1a32 } from "../internal/hash.js";
+import type { CartLineMutation, EmbeddedCheckoutCreation, OrderLookup } from "../types.js";
+import {
+  addToCartEventData,
+  initiateCheckoutEventData,
+  purchaseEventData,
+} from "./meta-payload.js";
 import type {
   AddToCartAnalyticsInput,
   InitiateCheckoutAnalyticsInput,
   PurchaseAnalyticsInput,
-} from "./analytics-types.js";
-import { toPurchaseAnalyticsInput } from "./domain.js";
-import { fnv1a32 } from "./internal/hash.js";
-import { toMajorUnits } from "./money.js";
-import type { CartLineMutation, EmbeddedCheckoutCreation, OrderLookup } from "./types.js";
+} from "./types.js";
 
 /**
  * First-party behavior collection. Events project directly to the
  * configured browser providers (Meta Pixel, GA4) — there is no chaos-owned
  * ledger or delivery queue; a store that also wants server-side Meta
- * Conversions API delivery uses the separate `@omnip-org/chaos-js/meta-capi`
- * subpath from its own server-side code.
+ * Conversions API delivery uses `ChaosServerEvents` from the separate
+ * `@omnip-org/chaos-js/meta-capi` subpath, from its own server-side code
+ * (see `../ssr/server.ts`'s `events` option).
  *
  * There are exactly six events (page_view, view_content, search,
  * add_to_cart, initiate_checkout, purchase); every one of them is emitted by
- * this SDK, never by store-supplied names or properties, so each has its own
- * explicit Pixel/GA4 payload below instead of a shared, shape-inferring
- * mapper.
+ * this SDK, never by store-supplied names or properties. The three commerce
+ * events share their Meta `custom_data` shape with the CAPI sender via
+ * `./meta-payload.js`; GA4's field names differ enough per event that they
+ * stay inlined below instead of adding a second shared mapper for one caller
+ * each.
  */
 
 const MAX_META_BROWSER_ID_LENGTH = 2_048;
@@ -166,25 +173,15 @@ export class ChaosStorefrontAnalytics {
     const resolvedId = canonicalEventId(eventId, this.randomUUID());
     try {
       return this.recordOnce("add_to_cart", resolvedId, () => {
-        const currency = input.currency.toUpperCase();
-        const value = toMajorUnits(input.valueMinor, currency);
-        const price = toMajorUnits(input.priceMinor, currency);
-        this.destinations.pixel("AddToCart", resolvedId, {
-          content_ids: [input.productVariantId],
-          content_type: "product",
-          quantity: input.quantity,
-          value,
-          currency,
-          contents: [
-            { id: input.productVariantId, quantity: input.quantity, item_price: price },
-          ],
-          num_items: input.quantity,
-        });
+        const eventData = addToCartEventData(input);
+        this.destinations.pixel("AddToCart", resolvedId, eventData);
         this.destinations.ga4("add_to_cart", {
           event_id: resolvedId,
-          value,
-          currency,
-          items: [{ item_id: input.productVariantId, quantity: input.quantity, price }],
+          value: eventData.value,
+          currency: eventData.currency,
+          items: [
+            { item_id: input.productVariantId, quantity: input.quantity, price: eventData.contents[0]!.item_price },
+          ],
         });
       });
     } catch {
@@ -219,34 +216,17 @@ export class ChaosStorefrontAnalytics {
     const resolvedId = canonicalEventId(eventId, this.randomUUID());
     try {
       return this.recordOnce("initiate_checkout", resolvedId, () => {
-        const currency = input.currency.toUpperCase();
-        const value = toMajorUnits(input.valueMinor, currency);
-        const items = input.items.map((item) => ({
-          id: item.productVariantId,
-          quantity: item.quantity,
-          price: toMajorUnits(item.priceMinor, currency),
-        }));
-        this.destinations.pixel("InitiateCheckout", resolvedId, {
-          content_ids: items.map((item) => item.id),
-          content_type: "product",
-          value,
-          currency,
-          contents: items.map((item) => ({
-            id: item.id,
-            quantity: item.quantity,
-            item_price: item.price,
-          })),
-          num_items: items.reduce((total, item) => total + item.quantity, 0),
-        });
+        const eventData = initiateCheckoutEventData(input);
+        this.destinations.pixel("InitiateCheckout", resolvedId, eventData);
         this.destinations.ga4("begin_checkout", {
           event_id: resolvedId,
           transaction_id: input.orderNumber,
-          value,
-          currency,
-          items: items.map((item) => ({
-            item_id: item.id,
-            quantity: item.quantity,
-            price: item.price,
+          value: eventData.value,
+          currency: eventData.currency,
+          items: eventData.contents.map((content) => ({
+            item_id: content.id,
+            quantity: content.quantity,
+            price: content.item_price,
           })),
         });
       });
@@ -343,33 +323,17 @@ export class ChaosStorefrontAnalytics {
 
     try {
       return this.recordOnce("purchase", orderId, () => {
-        const value = toMajorUnits(input.valueMinor, currency);
-        const items = input.items.map((item) => ({
-          id: item.productVariantId,
-          quantity: item.quantity,
-          price: toMajorUnits(item.priceMinor, currency),
-        }));
-        this.destinations.pixel("Purchase", orderId, {
-          content_ids: items.map((item) => item.id),
-          content_type: "product",
-          value,
-          currency,
-          contents: items.map((item) => ({
-            id: item.id,
-            quantity: item.quantity,
-            item_price: item.price,
-          })),
-          num_items: items.reduce((total, item) => total + item.quantity, 0),
-        });
+        const eventData = purchaseEventData(input);
+        this.destinations.pixel("Purchase", orderId, eventData);
         this.destinations.ga4("purchase", {
           event_id: orderId,
           transaction_id: orderId,
-          value,
-          currency,
-          items: items.map((item) => ({
-            item_id: item.id,
-            quantity: item.quantity,
-            price: item.price,
+          value: eventData.value,
+          currency: eventData.currency,
+          items: eventData.contents.map((content) => ({
+            item_id: content.id,
+            quantity: content.quantity,
+            price: content.item_price,
           })),
         });
       });

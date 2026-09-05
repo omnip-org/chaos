@@ -1,27 +1,63 @@
 import { ChaosApiError } from "../errors.js";
-import { toPurchaseAnalyticsInput } from "../domain.js";
 import {
   createStorefrontClient,
   type ChaosStorefrontClient,
   type ClientOptions,
 } from "../client.js";
-import {
-  sendAddToCartCapi,
-  sendInitiateCheckoutCapi,
-  sendPurchaseCapi,
-  type MetaCapiConfig,
-  type MetaCapiContext,
-} from "../providers/meta-capi.js";
+import type { AddToCartAnalyticsInput, InitiateCheckoutAnalyticsInput } from "../events/types.js";
 import type {
   Cart,
   CartLine,
   CartLineMutation,
   DataEnvelope,
   EmbeddedCheckoutCreation,
-  EmbeddedCheckoutOptions,
   SubmitReviewRequest,
   OrderLookup,
 } from "../types.js";
+
+/**
+ * Per-call context a `ServerEventsPort` needs for matching/attribution — the
+ * same shape as `ChaosServerEvents`'s `MetaCapiContext`, declared locally so
+ * this file (part of the main package entry) has no static import of
+ * `events/capi.ts`/`events/server.ts`, the modules that hold the store's
+ * Meta access token. TypeScript's structural typing accepts a
+ * `ChaosServerEvents` instance here without either side importing the other.
+ */
+export interface CommerceEventContext {
+  eventSourceUrl?: string;
+  fbc?: string;
+  fbp?: string;
+  clientIpAddress?: string;
+  clientUserAgent?: string;
+  shopperToken?: string;
+}
+
+/**
+ * Structural contract for server-side commerce event delivery. Construct
+ * `ChaosServerEvents` from `@omnip-org/chaos-js/meta-capi` with the store's
+ * own Meta access token and pass it as `events` below — or supply any object
+ * matching this shape. See `CommerceEventContext` for why this file never
+ * imports the concrete class.
+ */
+export interface ServerEventsPort {
+  recordAddToCart(
+    input: AddToCartAnalyticsInput,
+    context?: CommerceEventContext,
+    eventId?: string,
+  ): Promise<string>;
+  recordInitiateCheckout(
+    input: InitiateCheckoutAnalyticsInput,
+    context?: CommerceEventContext,
+    eventId?: string,
+  ): Promise<string>;
+  recordConfirmedPurchase(
+    order: Pick<
+      OrderLookup,
+      "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines"
+    >,
+    context?: CommerceEventContext,
+  ): Promise<void>;
+}
 
 export interface StorefrontCookieOptions {
   httpOnly?: boolean;
@@ -52,11 +88,12 @@ export interface ServerClientOptions
   request?: Pick<Request, "headers">;
   session?: StorefrontSessionOptions;
   /**
-   * Server-side Meta Conversions API delivery. Provide the store's own Meta
-   * access token from this deployment's environment variables — chaos-js
-   * never stores or proxies it. Omit to send Pixel/GA4 only (no CAPI).
+   * Server-side commerce event delivery (Meta CAPI today — construct
+   * `ChaosServerEvents` from `@omnip-org/chaos-js/meta-capi` with the
+   * store's own Meta access token). Omit to send Pixel/GA4 only, no
+   * server-side event delivery.
    */
-  capi?: { meta: MetaCapiConfig };
+  events?: ServerEventsPort;
 }
 
 export interface StorefrontSession {
@@ -91,33 +128,46 @@ const DEFAULT_SESSION_COOKIE_OPTIONS: StorefrontCookieOptions = {
 };
 
 /**
- * `createServerStorefrontClient`'s `capi` option, keyed by the client it
- * belongs to instead of a field on `ChaosStorefrontClient` itself — the
- * access token must never appear on the class shared with browser bundles.
+ * `createServerStorefrontClient`'s `events` option, keyed by the client it
+ * belongs to instead of a field on `ChaosStorefrontClient` itself — keeps
+ * the shared client class free of anything provider-specific.
  */
-const serverCapiConfigs = new WeakMap<ChaosStorefrontClient, MetaCapiConfig>();
+const serverEventPorts = new WeakMap<ChaosStorefrontClient, ServerEventsPort>();
 
-/** Creates the request-scoped server client with cookie-backed shopper identity. */
+/**
+ * Creates the request-scoped server client with cookie-backed shopper
+ * identity. Returns one `ChaosServerClient` object — `chaos.cart`,
+ * `chaos.checkout`, `chaos.orders`, `chaos.reviews` already carry this
+ * request's `cookies`, so route handlers call methods directly instead of
+ * threading a client and a cookie jar through free functions. `chaos.catalog`/
+ * `chaos.payments`/`chaos.shopperSession` pass straight through to the
+ * low-level Storefront API client (no cookies needed for those reads);
+ * `chaos.client` is an escape hatch to that low-level client for anything
+ * else (`getShopperToken`, `randomUUID`, `edgeRequestContext`, `cart.get`...).
+ */
 export function createServerStorefrontClient(
   options: ServerClientOptions,
-): ChaosStorefrontClient {
-  const { cookies, request, session, capi, ...clientOptions } = options;
+): ChaosServerClient {
+  const { cookies, request, session, events, ...clientOptions } = options;
+  if (!cookies) {
+    throw new TypeError(
+      "createServerStorefrontClient requires cookies for cart/checkout/order session state",
+    );
+  }
   const resolvedSession = resolveSessionOptions(session);
   const client = createStorefrontClient({
     ...clientOptions,
-    storage: cookies
-      ? createShopperTokenStorage(
-          cookies,
-          resolvedSession.shopperTokenCookieName,
-          resolvedSession.cookieOptions,
-        )
-      : null,
+    storage: createShopperTokenStorage(
+      cookies,
+      resolvedSession.shopperTokenCookieName,
+      resolvedSession.cookieOptions,
+    ),
     ...(request ? { request } : {}),
     autoAcquireShopperToken: false,
     retryInvalidShopperToken: false,
   });
-  if (capi?.meta) serverCapiConfigs.set(client, capi.meta);
-  return client;
+  if (events) serverEventPorts.set(client, events);
+  return new ChaosServerClient(client, cookies, resolvedSession);
 }
 
 /** Bridges the SDK's shopper-token storage to an HttpOnly cookie. */
@@ -204,7 +254,7 @@ export async function addCartLine(
   persistCartSession(cookies, { cart }, options);
   const line = cart.lines.find((candidate) => candidate.product_variant_id === variantId);
   if (!line) throw new ChaosApiError(502, "cart_line_missing", "cart line missing after mutation");
-  const eventId = await recordAddToCartCapi(client, cookies, {
+  const eventId = await dispatchAddToCart(client, cookies, {
     line,
     quantity,
     currency: cart.currency,
@@ -270,7 +320,7 @@ export async function updateCartLine(
   const increase = quantity - line.quantity;
   const eventId =
     increase > 0 && newLine
-      ? await recordAddToCartCapi(client, cookies, {
+      ? await dispatchAddToCart(client, cookies, {
           line: newLine,
           quantity: increase,
           currency: cart.currency,
@@ -393,7 +443,7 @@ async function createCheckoutWithCart(
   persistCartSession(cookies, response.data, options);
   const eventId =
     response.data.source_cart.status === "active"
-      ? await recordInitiateCheckoutCapi(client, cookies, response.data, eventSourceUrl)
+      ? await dispatchInitiateCheckout(client, cookies, response.data, eventSourceUrl)
       : undefined;
   return {
     data: {
@@ -437,13 +487,14 @@ export async function lookupOrderFromRequest(
 }
 
 /**
- * Sends a confirmed, paid order to Meta CAPI once, using the `capi` config
- * passed to `createServerStorefrontClient`. No-op without that config or
- * without a confirmed+paid order — mirrors `ChaosStorefrontAnalytics.
- * recordConfirmedPurchase`, which projects the same order to the browser
- * Pixel and GA4 using the same deterministic, order-derived event ID.
+ * Sends a confirmed, paid order to the configured server event port
+ * (`events` passed to `createServerStorefrontClient`) once. No-op without
+ * that config or without a confirmed+paid order — mirrors
+ * `ChaosStorefrontAnalytics.recordConfirmedPurchase`, which projects the
+ * same order to the browser Pixel and GA4 using the same deterministic,
+ * order-derived event ID.
  */
-export async function recordConfirmedPurchaseCapi(
+export async function recordConfirmedPurchaseEvent(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
   order: Pick<
@@ -452,29 +503,20 @@ export async function recordConfirmedPurchaseCapi(
   >,
   eventSourceUrl?: string,
 ): Promise<void> {
-  const capiConfig = serverCapiConfigs.get(client);
-  if (!capiConfig) return;
-  const input = toPurchaseAnalyticsInput(order);
-  if (!input) return;
-  await sendPurchaseCapi(capiConfig, {
-    eventId: input.orderId.toLowerCase(),
-    context: metaCapiContextFrom(client, cookies, eventSourceUrl),
-    input,
-  });
+  const port = serverEventPorts.get(client);
+  if (!port) return;
+  await port.recordConfirmedPurchase(order, eventContextFrom(client, cookies, eventSourceUrl));
 }
 
-async function recordAddToCartCapi(
+async function dispatchAddToCart(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
   input: { line: CartLine; quantity: number; currency: string; cartId: string },
 ): Promise<string | undefined> {
-  const capiConfig = serverCapiConfigs.get(client);
-  if (!capiConfig) return undefined;
-  const eventId = client.randomUUID();
-  await sendAddToCartCapi(capiConfig, {
-    eventId,
-    context: metaCapiContextFrom(client, cookies),
-    input: {
+  const port = serverEventPorts.get(client);
+  if (!port) return undefined;
+  return port.recordAddToCart(
+    {
       cartId: input.cartId,
       productId: input.line.product_id,
       productVariantId: input.line.product_variant_id,
@@ -483,23 +525,20 @@ async function recordAddToCartCapi(
       valueMinor: input.line.unit_price_amount_minor * input.quantity,
       currency: input.currency,
     },
-  });
-  return eventId;
+    eventContextFrom(client, cookies),
+  );
 }
 
-async function recordInitiateCheckoutCapi(
+async function dispatchInitiateCheckout(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
   creation: EmbeddedCheckoutCreation,
   eventSourceUrl: string | undefined,
 ): Promise<string | undefined> {
-  const capiConfig = serverCapiConfigs.get(client);
-  if (!capiConfig) return undefined;
-  const eventId = client.randomUUID();
-  await sendInitiateCheckoutCapi(capiConfig, {
-    eventId,
-    context: metaCapiContextFrom(client, cookies, eventSourceUrl),
-    input: {
+  const port = serverEventPorts.get(client);
+  if (!port) return undefined;
+  return port.recordInitiateCheckout(
+    {
       cartId: creation.source_cart.id,
       orderNumber: creation.checkout.order_number,
       valueMinor: creation.source_cart.subtotal_amount_minor,
@@ -511,15 +550,15 @@ async function recordInitiateCheckoutCapi(
         priceMinor: line.unit_price_amount_minor,
       })),
     },
-  });
-  return eventId;
+    eventContextFrom(client, cookies, eventSourceUrl),
+  );
 }
 
-function metaCapiContextFrom(
+function eventContextFrom(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
   eventSourceUrl?: string,
-): MetaCapiContext {
+): CommerceEventContext {
   const edge = client.edgeRequestContext();
   const fbc = cookies.get("_fbc")?.value;
   const fbp = cookies.get("_fbp")?.value;
@@ -632,4 +671,125 @@ function invalidRequest(message: string): ChaosApiError {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Cookie/event-aware cart operations — see `ChaosServerClient`. */
+class ServerCartResource {
+  constructor(
+    private readonly client: ChaosStorefrontClient,
+    private readonly cookies: StorefrontCookieJar,
+    private readonly options: StorefrontSessionOptions,
+  ) {}
+
+  getSession(options: StorefrontSessionOptions = this.options): Promise<StorefrontSession> {
+    return getOrCreateCartSession(this.client, this.cookies, options);
+  }
+
+  peekSession(options: StorefrontSessionOptions = this.options): Promise<StorefrontSession | null> {
+    return peekCartSession(this.client, this.cookies, options);
+  }
+
+  persistSession(session: StorefrontSession, options: StorefrontSessionOptions = this.options): void {
+    persistCartSession(this.cookies, session, options);
+  }
+
+  addLine(input: AddCartLineInput, options: StorefrontSessionOptions = this.options): Promise<CartLineMutation> {
+    return addCartLine(this.client, this.cookies, input, options);
+  }
+
+  addLineFromRequest(
+    request: Request,
+    options: StorefrontSessionOptions = this.options,
+  ): Promise<CartLineMutation> {
+    return addCartLineFromRequest(this.client, this.cookies, request, options);
+  }
+
+  updateLine(input: UpdateCartLineInput, options: StorefrontSessionOptions = this.options): Promise<CartLineMutation> {
+    return updateCartLine(this.client, this.cookies, input, options);
+  }
+
+  updateLineFromRequest(
+    request: Request,
+    variantId: string,
+    options: StorefrontSessionOptions = this.options,
+  ): Promise<CartLineMutation> {
+    return updateCartLineFromRequest(this.client, this.cookies, request, variantId, options);
+  }
+}
+
+/** Cookie/event-aware checkout operations — see `ChaosServerClient`. */
+class ServerCheckoutResource {
+  constructor(
+    private readonly client: ChaosStorefrontClient,
+    private readonly cookies: StorefrontCookieJar,
+    private readonly options: StorefrontSessionOptions,
+  ) {}
+
+  createFromRequest(
+    request: Request,
+    options: StorefrontSessionOptions = this.options,
+  ): Promise<DataEnvelope<EmbeddedCheckoutCreation>> {
+    return createEmbeddedCheckoutFromRequest(this.client, this.cookies, request, options);
+  }
+}
+
+/** Cookie/event-aware order operations — see `ChaosServerClient`. */
+class ServerOrdersResource {
+  constructor(
+    private readonly client: ChaosStorefrontClient,
+    private readonly cookies: StorefrontCookieJar,
+  ) {}
+
+  lookupFromRequest(request: Request): Promise<OrderLookup> {
+    return lookupOrderFromRequest(this.client, request);
+  }
+
+  recordConfirmedPurchase(
+    order: Pick<
+      OrderLookup,
+      "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines"
+    >,
+    eventSourceUrl?: string,
+  ): Promise<void> {
+    return recordConfirmedPurchaseEvent(this.client, this.cookies, order, eventSourceUrl);
+  }
+}
+
+/** Request-parsing review submission — see `ChaosServerClient`. */
+class ServerReviewsResource {
+  constructor(private readonly client: ChaosStorefrontClient) {}
+
+  createFromRequest(request: Request, productId: string): Promise<void> {
+    return createProductReviewFromRequest(this.client, request, productId);
+  }
+}
+
+/**
+ * The package's primary server-side surface — see `createServerStorefrontClient`.
+ */
+export class ChaosServerClient {
+  /** Escape hatch to the low-level Storefront API client for anything not wrapped below. */
+  readonly client: ChaosStorefrontClient;
+  readonly catalog: ChaosStorefrontClient["catalog"];
+  readonly payments: ChaosStorefrontClient["payments"];
+  readonly shopperSession: ChaosStorefrontClient["shopperSession"];
+  readonly cart: ServerCartResource;
+  readonly checkout: ServerCheckoutResource;
+  readonly orders: ServerOrdersResource;
+  readonly reviews: ServerReviewsResource;
+
+  constructor(
+    client: ChaosStorefrontClient,
+    cookies: StorefrontCookieJar,
+    sessionOptions: StorefrontSessionOptions = {},
+  ) {
+    this.client = client;
+    this.catalog = client.catalog;
+    this.payments = client.payments;
+    this.shopperSession = client.shopperSession;
+    this.cart = new ServerCartResource(client, cookies, sessionOptions);
+    this.checkout = new ServerCheckoutResource(client, cookies, sessionOptions);
+    this.orders = new ServerOrdersResource(client, cookies);
+    this.reviews = new ServerReviewsResource(client);
+  }
 }

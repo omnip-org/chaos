@@ -7,7 +7,7 @@ import {
   sendInitiateCheckoutCapi,
   sendPurchaseCapi,
   type MetaCapiConfig,
-} from "../providers/meta-capi.js";
+} from "../events/capi.js";
 
 function sha256Hex(input: string): string {
   return createHash("sha256").update(input).digest("hex");

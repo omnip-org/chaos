@@ -1,4 +1,4 @@
-import type { PurchaseAnalyticsInput } from "./analytics-types.js";
+import type { PurchaseAnalyticsInput } from "./events/types.js";
 import type {
   OrderConfirmationState,
   OrderLookup,

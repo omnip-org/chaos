@@ -7,17 +7,46 @@ import {
   createEmbeddedCheckoutFromRequest,
   createProductReviewFromRequest,
   createServerStorefrontClient,
-  recordConfirmedPurchaseCapi,
   type StorefrontCookieJar,
 } from "../ssr/server.js";
 import {
   createStorefrontBrowserClient,
   StorefrontBrowserClient,
 } from "../ssr/browser.js";
+import { ChaosServerEvents } from "../events/server.js";
 import { ChaosApiError } from "../errors.js";
-import type { ChaosStorefrontAnalytics } from "../analytics.js";
 import type { ChaosStorefrontClient } from "../client.js";
 import type { Cart, Collection } from "../index.js";
+
+/**
+ * Minimal fake DOM so the browser bridge's internal `ChaosStorefrontAnalytics`
+ * can construct and dispatch to a fake `fbq` — just enough surface for
+ * `AnalyticsDestinations.startMeta()`/`pixel()`, not the full harness
+ * `events-browser.test.ts` uses for fbc-cookie/route-tracking behavior.
+ */
+function fakeBrowserEvents(): { document: Document; window: Window & typeof globalThis } {
+  const scripts: Array<{ id: string }> = [];
+  const document = {
+    location: { search: "", pathname: "/", href: "https://shop.example/" },
+    cookie: "",
+    title: "",
+    getElementById: (id: string) => scripts.find((script) => script.id === id),
+    createElement: () => ({ id: "", src: "", async: false }),
+    head: { appendChild: (script: { id: string }) => scripts.push(script) },
+  } as unknown as Document;
+  const window = {
+    history: { pushState: () => {}, replaceState: () => {} },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  } as unknown as Window & typeof globalThis;
+  return { document, window };
+}
+
+function fbqCalls(window: unknown): unknown[][] {
+  return (window as { fbq: { queue: unknown[][] } }).fbq.queue.filter(
+    (call) => call[0] === "track",
+  );
+}
 
 function collection(handle: string): Collection {
   return {
@@ -57,7 +86,6 @@ test("money and domain helpers are available from the public SDK", async () => {
 
 test("browser commerce bridge owns API paths, response envelopes, and mutation analytics", async () => {
   const requests: Array<{ url: string; init: RequestInit }> = [];
-  const recorded: string[] = [];
   const line = {
     product_id: "00000000-0000-4000-8000-000000000010",
     product_variant_id: "00000000-0000-4000-8000-000000000011",
@@ -75,13 +103,10 @@ test("browser commerce bridge owns API paths, response envelopes, and mutation a
     new_quantity: 2,
     removed: false,
   };
-  const analytics = {
-    recordCartMutation: () => recorded.push("cart"),
-    recordCheckoutCreation: () => recorded.push("checkout"),
-  };
+  const { document, window } = fakeBrowserEvents();
   const browser = createStorefrontBrowserClient({
     baseUrl: "/api",
-    analytics: analytics as unknown as ChaosStorefrontAnalytics,
+    events: { document, window, autoStart: false, providers: { metaPixel: { pixelId: "12345" } } },
     fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push({ url: String(input), init: init ?? {} });
       return new Response(JSON.stringify({ data: mutation }), {
@@ -99,14 +124,13 @@ test("browser commerce bridge owns API paths, response envelopes, and mutation a
     variant_id: line.product_variant_id,
     quantity: 1,
   });
-  assert.deepEqual(recorded, ["cart"]);
+  assert.ok(fbqCalls(window).some((call) => call[1] === "AddToCart"));
   assert.equal((requests[0]?.init.credentials), "same-origin");
   assert.ok(browser instanceof StorefrontBrowserClient);
 });
 
 test("browser checkout bridge forwards shared checkout options", async () => {
   const requests: Array<{ url: string; init: RequestInit }> = [];
-  const recorded: string[] = [];
   const creation = {
     checkout: {
       order_number: "W-20260830-00000041",
@@ -116,15 +140,23 @@ test("browser checkout bridge forwards shared checkout options", async () => {
         client_token: "cs_test_token",
       },
     },
-    source_cart: cart([]),
+    source_cart: cart([
+      {
+        product_id: "00000000-0000-4000-8000-000000000044",
+        product_variant_id: "00000000-0000-4000-8000-000000000045",
+        product_title: "Trail pack",
+        variant_title: "One size",
+        quantity: 1,
+        unit_price_amount_minor: 9900,
+        subtotal_amount_minor: 9900,
+        media: [],
+      },
+    ]),
     cart: cart([]),
   };
+  const { document, window } = fakeBrowserEvents();
   const browser = createStorefrontBrowserClient({
-    analytics: {
-      recordCartMutation: () => undefined,
-      recordCheckoutCreation: () => recorded.push("checkout"),
-      recordPurchase: () => recorded.push("purchase"),
-    } as unknown as ChaosStorefrontAnalytics,
+    events: { document, window, autoStart: false, providers: { metaPixel: { pixelId: "12345" } } },
     fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push({ url: String(input), init: init ?? {} });
       return new Response(JSON.stringify({ data: creation }), { status: 201 });
@@ -142,31 +174,36 @@ test("browser checkout bridge forwards shared checkout options", async () => {
     returnUrl: "https://shop.example/checkout/confirmation",
     email: "shopper@example.com",
   });
-  browser.orders.recordPurchase({
-    orderId: "00000000-0000-4000-8000-000000000041",
-    valueMinor: 9900,
+  browser.orders.recordConfirmedPurchase({
+    id: "00000000-0000-4000-8000-000000000041",
+    status: "confirmed",
+    payment_status: "paid",
     currency: "USD",
-    items: [
+    total_amount_minor: 9900,
+    lines: [
       {
-        productId: "00000000-0000-4000-8000-000000000042",
-        productVariantId: "00000000-0000-4000-8000-000000000043",
+        product_id: "00000000-0000-4000-8000-000000000042",
+        product_variant_id: "00000000-0000-4000-8000-000000000043",
+        product_title: "Trail pack",
+        variant_title: "One size",
         quantity: 1,
-        priceMinor: 9900,
+        unit_price_amount_minor: 9900,
+        subtotal_amount_minor: 9900,
       },
     ],
   });
-  assert.deepEqual(recorded, ["checkout", "purchase"]);
+  assert.deepEqual(
+    fbqCalls(window).map((call) => call[1]),
+    ["InitiateCheckout", "Purchase"],
+  );
 });
 
 test("browser catalog bridge forwards product reads and records Search/ViewContent", async () => {
   const requests: string[] = [];
-  const recorded: Array<[string, unknown]> = [];
   const product = { id: "00000000-0000-4000-8000-000000000050", handle: "trail-pack" };
+  const { document, window } = fakeBrowserEvents();
   const browser = createStorefrontBrowserClient({
-    analytics: {
-      search: (input: unknown) => recorded.push(["search", input]),
-      viewContent: (input: unknown) => recorded.push(["view_content", input]),
-    } as unknown as ChaosStorefrontAnalytics,
+    events: { document, window, autoStart: false, providers: { metaPixel: { pixelId: "12345" } } },
     fetch: (async (input: RequestInfo | URL) => {
       const url = String(input);
       requests.push(url);
@@ -185,10 +222,10 @@ test("browser catalog bridge forwards product reads and records Search/ViewConte
 
   assert.equal(requests[0], "/api/products?q=shoes");
   assert.equal(requests[1], "/api/products/trail-pack");
-  assert.deepEqual(recorded, [
-    ["search", { query: "shoes" }],
-    ["view_content", { productId: product.id }],
-  ]);
+  assert.deepEqual(
+    fbqCalls(window).map((call) => call[1]),
+    ["Search", "ViewContent"],
+  );
 });
 
 test("server checkout bridge creates a new Cart when the source Cart is terminal", async () => {
@@ -476,7 +513,7 @@ test("addCartLine sends Meta CAPI and shares the event ID with the mutation resu
     baseUrl: "https://shop.example.com/api/v1",
     cookies,
     fetch: storefrontFetch,
-    capi: {
+    events: new ChaosServerEvents({
       meta: {
         accessToken: "capi-token",
         pixelId: "pixel-1",
@@ -485,10 +522,10 @@ test("addCartLine sends Meta CAPI and shares the event ID with the mutation resu
           return jsonResponse(200, { events_received: 1 });
         }) as unknown as typeof fetch,
       },
-    },
+    }),
   });
 
-  const mutation = await addCartLine(client, cookies, {
+  const mutation = await client.cart.addLine({
     variantId: "00000000-0000-4000-8000-000000000031",
     quantity: 2,
   });
@@ -503,13 +540,14 @@ test("addCartLine sends Meta CAPI and shares the event ID with the mutation resu
   assert.equal(userData.fbp, "fb.1.1700000000000.browser");
 });
 
-test("recordConfirmedPurchaseCapi uses the same order-derived event ID as the browser recordPurchase() call", async () => {
+test("client.orders.recordConfirmedPurchase uses the same order-derived event ID as the browser recordConfirmedPurchase() call", async () => {
   const cookies: StorefrontCookieJar = { get: () => undefined, set: () => {} };
   const capiRequests: Array<Record<string, unknown>> = [];
   const client = createServerStorefrontClient({
     publishableKey: "public_test",
+    cookies,
     fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
-    capi: {
+    events: new ChaosServerEvents({
       meta: {
         accessToken: "capi-token",
         pixelId: "pixel-1",
@@ -518,10 +556,10 @@ test("recordConfirmedPurchaseCapi uses the same order-derived event ID as the br
           return jsonResponse(200, { events_received: 1 });
         }) as unknown as typeof fetch,
       },
-    },
+    }),
   });
 
-  await recordConfirmedPurchaseCapi(client, cookies, {
+  await client.orders.recordConfirmedPurchase({
     id: "00000000-0000-4000-8000-000000000099",
     status: "confirmed",
     payment_status: "paid",
@@ -546,13 +584,14 @@ test("recordConfirmedPurchaseCapi uses the same order-derived event ID as the br
   assert.equal(event.event_name, "Purchase");
 });
 
-test("recordConfirmedPurchaseCapi is a no-op for an order that is not confirmed and paid", async () => {
+test("client.orders.recordConfirmedPurchase is a no-op for an order that is not confirmed and paid", async () => {
   const cookies: StorefrontCookieJar = { get: () => undefined, set: () => {} };
   let capiCalls = 0;
   const client = createServerStorefrontClient({
     publishableKey: "public_test",
+    cookies,
     fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
-    capi: {
+    events: new ChaosServerEvents({
       meta: {
         accessToken: "capi-token",
         pixelId: "pixel-1",
@@ -561,10 +600,10 @@ test("recordConfirmedPurchaseCapi is a no-op for an order that is not confirmed 
           return jsonResponse(200, { events_received: 1 });
         }) as unknown as typeof fetch,
       },
-    },
+    }),
   });
 
-  await recordConfirmedPurchaseCapi(client, cookies, {
+  await client.orders.recordConfirmedPurchase({
     id: "00000000-0000-4000-8000-000000000098",
     status: "pending",
     payment_status: "pending",

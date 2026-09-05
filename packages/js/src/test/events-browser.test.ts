@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createStorefrontAnalytics } from "../analytics.js";
+import { createStorefrontAnalytics } from "../events/browser.js";
 
 class FakeTarget {
   private readonly listeners = new Map<string, Set<() => void>>();
@@ -282,7 +282,6 @@ test("high-level commerce methods project canonical event properties", () => {
   assert.deepEqual(metaTrack?.[2], {
     content_ids: ["00000000-0000-4000-8000-000000000003"],
     content_type: "product",
-    quantity: 2,
     value: 12.98,
     currency: "USD",
     contents: [

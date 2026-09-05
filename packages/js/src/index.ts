@@ -1,35 +1,37 @@
-export {
-  BrowserCartResource,
-  BrowserCatalogResource,
-  BrowserCheckoutResource,
-  BrowserOrderResource,
-  StorefrontBrowserClient,
-  createStorefrontBrowserClient,
-} from "./ssr/browser.js";
-export type { StorefrontBrowserOptions } from "./ssr/browser.js";
+// Browser: one class, dot into cart/catalog/checkout/orders. Event delivery
+// (Pixel/GA4) is wired up internally from `StorefrontBrowserOptions.events`
+// — there is no separate analytics class to construct or export.
+export { StorefrontBrowserClient, createStorefrontBrowserClient } from "./ssr/browser.js";
+export type { StorefrontBrowserOptions, StorefrontEventsOptions } from "./ssr/browser.js";
 
+// Server: one class, dot into cart/checkout/orders/reviews (cookie- and
+// event-aware) plus catalog/payments/shopperSession (pass-through). Meta
+// CAPI (`events` below) is likewise wired up internally by the class the
+// caller constructs from `@omnip-org/chaos-js/meta-capi` — see that
+// subpath's `ChaosServerEvents`.
 export {
-  ChaosStorefrontAnalytics,
-  createStorefrontAnalytics,
-} from "./analytics.js";
-export type { AnalyticsOptions, PageViewInput } from "./analytics.js";
+  ChaosServerClient,
+  cartItemCount,
+  createServerStorefrontClient,
+  DEFAULT_CART_COOKIE_NAME,
+  DEFAULT_SHOPPER_TOKEN_COOKIE_NAME,
+} from "./ssr/server.js";
 export type {
-  AddToCartAnalyticsInput,
-  AnalyticsCommerceItem,
-  InitiateCheckoutAnalyticsInput,
-  PurchaseAnalyticsInput,
-} from "./analytics-types.js";
+  AddCartLineInput,
+  CommerceEventContext,
+  EmbeddedCheckoutRequestInput,
+  ServerClientOptions,
+  ServerEventsPort,
+  StorefrontCookieJar,
+  StorefrontCookieOptions,
+  StorefrontSession,
+  StorefrontSessionOptions,
+  UpdateCartLineInput,
+} from "./ssr/server.js";
 
 export { ChaosApiError } from "./errors.js";
 
 export { resolveProductMedia } from "./media.js";
-
-export { CartResource } from "./resources/cart.js";
-export { CatalogResource } from "./resources/catalog.js";
-export { OrdersResource } from "./resources/orders.js";
-export { PaymentsResource } from "./resources/payments.js";
-export { ReviewsResource } from "./resources/reviews.js";
-export { ShopperSessionResource } from "./resources/shopper-session.js";
 
 export {
   currencyExponent,
@@ -47,7 +49,6 @@ export {
   isVariantAvailable,
   resolveVariant,
   selectedOptionLabel,
-  toPurchaseAnalyticsInput,
 } from "./domain.js";
 export type {
   SelectedOptions,
@@ -55,34 +56,5 @@ export type {
   VariantSelectionValue,
   VariantSelectionVariant,
 } from "./domain.js";
-
-export {
-  addCartLine,
-  addCartLineFromRequest,
-  cartItemCount,
-  createProductReviewFromRequest,
-  createEmbeddedCheckoutFromRequest,
-  createServerStorefrontClient,
-  createShopperTokenStorage,
-  getOrCreateCartSession,
-  lookupOrderFromRequest,
-  peekCartSession,
-  persistCartSession,
-  recordConfirmedPurchaseCapi,
-  updateCartLine,
-  updateCartLineFromRequest,
-  DEFAULT_CART_COOKIE_NAME,
-  DEFAULT_SHOPPER_TOKEN_COOKIE_NAME,
-} from "./ssr/server.js";
-export type {
-  AddCartLineInput,
-  EmbeddedCheckoutRequestInput,
-  ServerClientOptions,
-  StorefrontCookieJar,
-  StorefrontCookieOptions,
-  StorefrontSession,
-  StorefrontSessionOptions,
-  UpdateCartLineInput,
-} from "./ssr/server.js";
 
 export * from "./types.js";

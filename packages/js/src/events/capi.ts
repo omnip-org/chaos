@@ -1,27 +1,31 @@
+import { sha256Hex } from "../internal/sha256.js";
+import {
+  addToCartEventData,
+  initiateCheckoutEventData,
+  purchaseEventData,
+} from "./meta-payload.js";
 import type {
   AddToCartAnalyticsInput,
   InitiateCheckoutAnalyticsInput,
   PurchaseAnalyticsInput,
-} from "../analytics-types.js";
-import { sha256Hex } from "../internal/sha256.js";
-import { toMajorUnits } from "../money.js";
+} from "./types.js";
 
 /**
- * Server-only Meta Conversions API sender. This module must never be
- * imported from browser code — it sends the store's Meta access token
- * straight to graph.facebook.com, so it is published as the separate
- * `@omnip-org/chaos-js/meta-capi` subpath instead of the main entry, the
- * same way `/stripe` is kept out of the main entry for the opposite reason
- * (browser-only DOM code). The storefront supplies `accessToken`/`pixelId`
+ * Server-only Meta Conversions API sender. This module sends the store's
+ * Meta access token straight to graph.facebook.com, so it is published only
+ * through the separate `@omnip-org/chaos-js/meta-capi` subpath — the main
+ * entry (`index.ts`) never imports this file, not even transitively through
+ * `ssr/server.ts` (see that file's `ServerEventsPort`), so a browser bundle
+ * built from the main entry cannot pull this module in regardless of the
+ * bundler's tree-shaking. The storefront supplies `accessToken`/`pixelId`
  * from its own deployment's environment variables; chaos-js never stores or
  * proxies this secret.
  *
  * Ports the wire behavior of the Rust `MetaConversionsDestination` adapter
- * (event_name mapping, hashed `external_id`, `fbc`/`fbp` shape validation,
- * value/currency/contents derivation). Each event has its own explicit
- * `custom_data` shape below instead of one shared, dynamically-branching
- * builder — every call site here already has a typed commerce input, so
- * there's nothing left to infer.
+ * (event_name mapping, hashed `external_id`, `fbc`/`fbp` shape validation).
+ * `custom_data` itself comes from `./meta-payload.js`, shared with the
+ * browser Pixel sender in `./browser.ts` so both projections of one event
+ * always agree on its fields.
  */
 
 const GRAPH_API_DEFAULT_VERSION = "v21.0";
@@ -72,27 +76,12 @@ export async function sendAddToCartCapi(
   config: MetaCapiConfig,
   { eventId, occurredAt, context, input }: CommerceCapiParams<AddToCartAnalyticsInput>,
 ): Promise<void> {
-  const currency = input.currency.toUpperCase();
-  const contentId = input.productVariantId || input.productId;
   await postMetaEvent(config, {
     event_name: "AddToCart",
     eventId,
     occurredAt,
     context,
-    custom_data: compact({
-      value: toMajorUnits(input.valueMinor, currency),
-      currency,
-      content_ids: [contentId],
-      contents: [
-        compact({
-          id: contentId,
-          quantity: input.quantity,
-          item_price: toMajorUnits(input.priceMinor, currency),
-        }),
-      ],
-      content_type: "product",
-      num_items: input.quantity,
-    }),
+    custom_data: addToCartEventData(input),
   });
 }
 
@@ -101,27 +90,12 @@ export async function sendInitiateCheckoutCapi(
   config: MetaCapiConfig,
   { eventId, occurredAt, context, input }: CommerceCapiParams<InitiateCheckoutAnalyticsInput>,
 ): Promise<void> {
-  const currency = input.currency.toUpperCase();
-  const contents = input.items.map((item) =>
-    compact({
-      id: item.productVariantId || item.productId,
-      quantity: item.quantity,
-      item_price: toMajorUnits(item.priceMinor, currency),
-    }),
-  );
   await postMetaEvent(config, {
     event_name: "InitiateCheckout",
     eventId,
     occurredAt,
     context,
-    custom_data: compact({
-      value: toMajorUnits(input.valueMinor, currency),
-      currency,
-      content_ids: contents.map((content) => content.id),
-      contents,
-      content_type: "product",
-      num_items: input.items.reduce((total, item) => total + item.quantity, 0),
-    }),
+    custom_data: initiateCheckoutEventData(input),
   });
 }
 
@@ -130,27 +104,12 @@ export async function sendPurchaseCapi(
   config: MetaCapiConfig,
   { eventId, occurredAt, context, input }: CommerceCapiParams<PurchaseAnalyticsInput>,
 ): Promise<void> {
-  const currency = input.currency.toUpperCase();
-  const contents = input.items.map((item) =>
-    compact({
-      id: item.productVariantId || item.productId,
-      quantity: item.quantity,
-      item_price: toMajorUnits(item.priceMinor, currency),
-    }),
-  );
   await postMetaEvent(config, {
     event_name: "Purchase",
     eventId,
     occurredAt,
     context,
-    custom_data: compact({
-      value: toMajorUnits(input.valueMinor, currency),
-      currency,
-      content_ids: contents.map((content) => content.id),
-      contents,
-      content_type: "product",
-      num_items: input.items.reduce((total, item) => total + item.quantity, 0),
-    }),
+    custom_data: purchaseEventData(input),
   });
 }
 

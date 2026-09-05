@@ -1,12 +1,13 @@
 /**
- * SDK-invented analytics input shapes — camelCase, not the Storefront API's
- * snake_case wire contract (see `types.ts`). These are what a caller builds
- * to hand to `ChaosStorefrontAnalytics`/`@omnip-org/chaos-js/meta-capi`, kept
- * separate from `types.ts` so that file's wire-format contract stays exactly
- * that.
+ * SDK-invented commerce event input shapes — camelCase, not the Storefront
+ * API's snake_case wire contract (see `../types.ts`). These are what a
+ * caller builds to hand to `ChaosStorefrontAnalytics` (events/browser.ts) or
+ * `ChaosServerEvents` (events/server.ts, `@omnip-org/chaos-js/meta-capi`),
+ * kept separate from `../types.ts` so that file's wire-format contract stays
+ * exactly that.
  */
 
-import type { CurrencyCode, UUID } from "./types.js";
+import type { CurrencyCode, UUID } from "../types.js";
 
 /** Canonical item shape shared by every browser/CAPI commerce event. */
 export interface AnalyticsCommerceItem {

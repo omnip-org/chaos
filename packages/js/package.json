@@ -16,8 +16,8 @@
       "default": "./dist/providers/stripe.js"
     },
     "./meta-capi": {
-      "types": "./dist/providers/meta-capi.d.ts",
-      "default": "./dist/providers/meta-capi.js"
+      "types": "./dist/events/server.d.ts",
+      "default": "./dist/events/server.js"
     }
   },
   "files": ["dist", "!dist/test", "README.md"],
