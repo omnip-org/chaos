@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createStorefrontAnalytics } from "../events/browser.js";
+import { ChaosStorefrontAnalytics } from "../events/browser.js";
 
 class FakeTarget {
   private readonly listeners = new Map<string, Set<() => void>>();
@@ -94,7 +94,7 @@ function harness(
     },
     navigator: { userAgent: options.userAgent ?? "ChaosTest/1.0" },
   });
-  const analytics = createStorefrontAnalytics({
+  const analytics = new ChaosStorefrontAnalytics({
     publishableKey: "public_test",
     document: document as unknown as Document,
     window: window as unknown as Window & typeof globalThis,
@@ -154,7 +154,7 @@ test("keeps history observation active when one of multiple analytics clients st
     autoStart: false,
     providers: { ga4: { measurementId: "G-TEST1234" } },
   });
-  const second = createStorefrontAnalytics({
+  const second = new ChaosStorefrontAnalytics({
     publishableKey: "public_test",
     document: first.document as unknown as Document,
     window: first.window as unknown as Window & typeof globalThis,

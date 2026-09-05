@@ -2,7 +2,6 @@ import { ChaosApiError } from "../errors.js";
 import type { ChaosStorefrontClient } from "../client.js";
 import type {
   Cart,
-  CreateCartRequest,
   DataEnvelope,
   SetCartLineRequest,
 } from "../types.js";
@@ -12,7 +11,7 @@ export class CartResource {
 
   constructor(private readonly client: ChaosStorefrontClient) {}
 
-  create(body: CreateCartRequest = {}): Promise<DataEnvelope<Cart>> {
+  create(body: Record<string, never> = {}): Promise<DataEnvelope<Cart>> {
     return this.client.request("/carts", {
       method: "POST",
       body,

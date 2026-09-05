@@ -1,4 +1,5 @@
 import { sha256Hex } from "../internal/sha256.js";
+import { compact, isValidMetaBrowserId } from "../internal/meta.js";
 import {
   addToCartEventData,
   initiateCheckoutEventData,
@@ -29,13 +30,12 @@ import type {
  */
 
 const GRAPH_API_DEFAULT_VERSION = "v21.0";
-const MAX_META_BROWSER_ID_LENGTH = 2_048;
 
 export interface MetaCapiConfig {
   accessToken: string;
   pixelId: string;
   testEventCode?: string;
-  /** Graph API version segment, e.g. "v21.0". Defaults to a current stable version. */
+  /** Graph API version segment, e.g. "v21.0". Defaults to "v21.0". */
   apiVersion?: string;
   fetch?: typeof fetch;
   /**
@@ -71,6 +71,7 @@ interface CommerceCapiParams<Input> {
  * delivery failure is swallowed rather than thrown, matching every other
  * analytics call site in this SDK — Meta CAPI must never turn a successful
  * commerce operation into a failed one.
+ * @internal
  */
 export async function sendAddToCartCapi(
   config: MetaCapiConfig,
@@ -85,7 +86,11 @@ export async function sendAddToCartCapi(
   });
 }
 
-/** Sends an InitiateCheckout event to Meta's Conversions API. See `sendAddToCartCapi`. */
+/**
+ * Sends an InitiateCheckout event to Meta's Conversions API.
+ * See `sendAddToCartCapi`.
+ * @internal
+ */
 export async function sendInitiateCheckoutCapi(
   config: MetaCapiConfig,
   { eventId, occurredAt, context, input }: CommerceCapiParams<InitiateCheckoutAnalyticsInput>,
@@ -99,7 +104,11 @@ export async function sendInitiateCheckoutCapi(
   });
 }
 
-/** Sends a Purchase event to Meta's Conversions API. See `sendAddToCartCapi`. */
+/**
+ * Sends a Purchase event to Meta's Conversions API.
+ * See `sendAddToCartCapi`.
+ * @internal
+ */
 export async function sendPurchaseCapi(
   config: MetaCapiConfig,
   { eventId, occurredAt, context, input }: CommerceCapiParams<PurchaseAnalyticsInput>,
@@ -188,18 +197,4 @@ async function buildUserData(
     client_ip_address: context?.clientIpAddress,
     client_user_agent: context?.clientUserAgent,
   });
-}
-
-function isValidMetaBrowserId(value: string | undefined): value is string {
-  if (!value || value.length > MAX_META_BROWSER_ID_LENGTH) return false;
-  const match = /^fb\.\d+\.(\d{13})\.[^\s]+$/.exec(value);
-  return match !== null && Number.isSafeInteger(Number(match[1]));
-}
-
-function compact<T extends Record<string, unknown>>(
-  value: T,
-): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, item]) => item !== undefined),
-  );
 }

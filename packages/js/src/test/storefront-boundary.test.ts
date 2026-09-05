@@ -4,15 +4,12 @@ import test from "node:test";
 import { CatalogResource } from "../resources/catalog.js";
 import {
   addCartLine,
+  StorefrontServerClient,
   createEmbeddedCheckoutFromRequest,
   createProductReviewFromRequest,
-  createServerStorefrontClient,
   type StorefrontCookieJar,
 } from "../ssr/server.js";
-import {
-  createStorefrontBrowserClient,
-  StorefrontBrowserClient,
-} from "../ssr/browser.js";
+import { StorefrontBrowserClient } from "../ssr/browser.js";
 import { ChaosServerEvents } from "../events/server.js";
 import { ChaosApiError } from "../errors.js";
 import type { ChaosStorefrontClient } from "../client.js";
@@ -104,7 +101,7 @@ test("browser commerce bridge owns API paths, response envelopes, and mutation a
     removed: false,
   };
   const { document, window } = fakeBrowserEvents();
-  const browser = createStorefrontBrowserClient({
+  const browser = new StorefrontBrowserClient({
     baseUrl: "/api",
     events: { document, window, autoStart: false, providers: { metaPixel: { pixelId: "12345" } } },
     fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -155,7 +152,7 @@ test("browser checkout bridge forwards shared checkout options", async () => {
     cart: cart([]),
   };
   const { document, window } = fakeBrowserEvents();
-  const browser = createStorefrontBrowserClient({
+  const browser = new StorefrontBrowserClient({
     events: { document, window, autoStart: false, providers: { metaPixel: { pixelId: "12345" } } },
     fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push({ url: String(input), init: init ?? {} });
@@ -202,7 +199,7 @@ test("browser catalog bridge forwards product reads and records Search/ViewConte
   const requests: string[] = [];
   const product = { id: "00000000-0000-4000-8000-000000000050", handle: "trail-pack" };
   const { document, window } = fakeBrowserEvents();
-  const browser = createStorefrontBrowserClient({
+  const browser = new StorefrontBrowserClient({
     events: { document, window, autoStart: false, providers: { metaPixel: { pixelId: "12345" } } },
     fetch: (async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -508,7 +505,7 @@ test("addCartLine sends Meta CAPI and shares the event ID with the mutation resu
   }) as unknown as typeof fetch;
 
   const capiRequests: Array<Record<string, unknown>> = [];
-  const client = createServerStorefrontClient({
+  const client = new StorefrontServerClient({
     publishableKey: "public_test",
     baseUrl: "https://shop.example.com/api/v1",
     cookies,
@@ -543,7 +540,7 @@ test("addCartLine sends Meta CAPI and shares the event ID with the mutation resu
 test("client.orders.recordConfirmedPurchase uses the same order-derived event ID as the browser recordConfirmedPurchase() call", async () => {
   const cookies: StorefrontCookieJar = { get: () => undefined, set: () => {} };
   const capiRequests: Array<Record<string, unknown>> = [];
-  const client = createServerStorefrontClient({
+  const client = new StorefrontServerClient({
     publishableKey: "public_test",
     cookies,
     fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
@@ -587,7 +584,7 @@ test("client.orders.recordConfirmedPurchase uses the same order-derived event ID
 test("client.orders.recordConfirmedPurchase is a no-op for an order that is not confirmed and paid", async () => {
   const cookies: StorefrontCookieJar = { get: () => undefined, set: () => {} };
   let capiCalls = 0;
-  const client = createServerStorefrontClient({
+  const client = new StorefrontServerClient({
     publishableKey: "public_test",
     cookies,
     fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,

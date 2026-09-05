@@ -1,5 +1,8 @@
-import { createStorefrontAnalytics, type AnalyticsOptions } from "../events/browser.js";
+import { ChaosStorefrontAnalytics, type AnalyticsOptions } from "../events/browser.js";
 import { ChaosApiError, throwForResponse } from "../errors.js";
+import { isRecord, requireData } from "../internal/response.js";
+import type { GetProductParams, ListProductsParams } from "../resources/catalog.js";
+import type { OrderLookupParams } from "../resources/orders.js";
 import type {
   CartLineMutation,
   DataEnvelope,
@@ -34,16 +37,14 @@ export class StorefrontBrowserClient {
 
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
-  private readonly analytics: ReturnType<typeof createStorefrontAnalytics>;
+  private readonly analytics: ChaosStorefrontAnalytics;
 
   constructor(options: StorefrontBrowserOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "/api").replace(/\/+$/, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
     if (!this.fetchImpl) throw new TypeError("fetch is required");
-    // The namespace only needs to be a stable per-storefront string — reused
-    // here from `baseUrl` instead of asking for a publishable key, which
-    // this SSR-only client never holds (see `ssr/server.ts`).
-    this.analytics = createStorefrontAnalytics({
+    // Reuse the route prefix as a stable namespace for browser analytics.
+    this.analytics = new ChaosStorefrontAnalytics({
       publishableKey: this.baseUrl,
       ...options.events,
     });
@@ -53,6 +54,7 @@ export class StorefrontBrowserClient {
     this.orders = new BrowserOrderResource(this);
   }
 
+  /** @internal Used by the resource facades. */
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/json");
@@ -69,6 +71,7 @@ export class StorefrontBrowserClient {
     }
   }
 
+  /** @internal Used by the cart facade. */
   recordCartMutation(mutation: CartLineMutation): void {
     try {
       this.analytics.recordCartMutation(mutation);
@@ -77,6 +80,7 @@ export class StorefrontBrowserClient {
     }
   }
 
+  /** @internal Used by the checkout facade. */
   recordCheckoutCreation(creation: EmbeddedCheckoutCreation): void {
     try {
       this.analytics.recordCheckoutCreation(creation);
@@ -85,6 +89,7 @@ export class StorefrontBrowserClient {
     }
   }
 
+  /** @internal Used by the order facade. */
   recordConfirmedPurchase(
     order: Pick<
       OrderLookup,
@@ -98,6 +103,7 @@ export class StorefrontBrowserClient {
     }
   }
 
+  /** @internal Used by the catalog facade. */
   recordSearch(input: { query: string }): void {
     try {
       this.analytics.search(input);
@@ -106,6 +112,7 @@ export class StorefrontBrowserClient {
     }
   }
 
+  /** @internal Used by the catalog facade. */
   recordViewContent(input: { productId: string; productVariantId?: string }): void {
     try {
       this.analytics.viewContent(input);
@@ -119,7 +126,7 @@ export class BrowserCartResource {
   constructor(private readonly client: StorefrontBrowserClient) {}
 
   async addLine(variantId: string, quantity = 1): Promise<CartLineMutation> {
-    if (!variantId.trim()) throw new TypeError("variantId is required");
+    requireVariantId(variantId);
     if (!Number.isSafeInteger(quantity) || quantity < 1) {
       throw new RangeError("quantity must be a positive safe integer");
     }
@@ -131,23 +138,13 @@ export class BrowserCartResource {
         body: JSON.stringify({ variant_id: variantId, quantity }),
       },
     );
-    const mutation = requireData<CartLineMutation>(
-      response,
-      "invalid_cart_mutation_response",
-    );
-    if (!isCartLineMutation(mutation)) {
-      throw new ChaosApiError(
-        502,
-        "invalid_cart_mutation_response",
-        "cart mutation response is invalid",
-      );
-    }
+    const mutation = requireCartLineMutation(response);
     this.client.recordCartMutation(mutation);
     return mutation;
   }
 
   updateLine(variantId: string, quantity: number): Promise<CartLineMutation> {
-    if (!variantId.trim()) throw new TypeError("variantId is required");
+    requireVariantId(variantId);
     if (!Number.isSafeInteger(quantity) || quantity < 1) {
       throw new RangeError("quantity must be a positive safe integer");
     }
@@ -155,7 +152,7 @@ export class BrowserCartResource {
   }
 
   removeLine(variantId: string): Promise<CartLineMutation> {
-    if (!variantId.trim()) throw new TypeError("variantId is required");
+    requireVariantId(variantId);
     return this.mutateLine(variantId, { intent: "remove" });
   }
 
@@ -171,35 +168,17 @@ export class BrowserCartResource {
         body: JSON.stringify(values),
       },
     );
-    const mutation = requireData<CartLineMutation>(
-      response,
-      "invalid_cart_mutation_response",
-    );
-    if (!isCartLineMutation(mutation)) {
-      throw new ChaosApiError(
-        502,
-        "invalid_cart_mutation_response",
-        "cart mutation response is invalid",
-      );
-    }
+    const mutation = requireCartLineMutation(response);
     this.client.recordCartMutation(mutation);
     return mutation;
   }
-}
-
-export interface BrowserListProductsParams {
-  q?: string;
-  collection?: string;
-  cursor?: string;
-  limit?: number;
-  currency?: string;
 }
 
 /** Forwards catalog reads to the storefront's own same-origin route and records the matching Search/ViewContent event. */
 export class BrowserCatalogResource {
   constructor(private readonly client: StorefrontBrowserClient) {}
 
-  async listProducts(params: BrowserListProductsParams = {}): Promise<PageEnvelope<Product>> {
+  async listProducts(params: ListProductsParams = {}): Promise<PageEnvelope<Product>> {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
       if (value !== undefined) search.set(key, String(value));
@@ -212,7 +191,7 @@ export class BrowserCatalogResource {
     return response;
   }
 
-  async getProduct(handle: string, params: { currency?: string } = {}): Promise<DataEnvelope<Product>> {
+  async getProduct(handle: string, params: GetProductParams = {}): Promise<DataEnvelope<Product>> {
     const query = params.currency ? `?currency=${encodeURIComponent(params.currency)}` : "";
     const response = await this.client.request<DataEnvelope<Product>>(
       `/products/${encodeURIComponent(handle)}${query}`,
@@ -258,7 +237,6 @@ export class BrowserCheckoutResource {
     this.client.recordCheckoutCreation(creation);
     return creation;
   }
-
 }
 
 export class BrowserOrderResource {
@@ -278,7 +256,7 @@ export class BrowserOrderResource {
     this.client.recordConfirmedPurchase(order);
   }
 
-  async lookupOrder(params: { orderNumber: string; email: string }): Promise<OrderLookup> {
+  async lookupOrder(params: OrderLookupParams): Promise<OrderLookup> {
     const orderNumber = params.orderNumber?.trim() ?? "";
     const email = params.email?.trim() ?? "";
     if (!/^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$/.test(orderNumber)) {
@@ -300,19 +278,6 @@ export class BrowserOrderResource {
   }
 }
 
-export function createStorefrontBrowserClient(
-  options: StorefrontBrowserOptions = {},
-): StorefrontBrowserClient {
-  return new StorefrontBrowserClient(options);
-}
-
-function requireData<T>(value: unknown, code: string): T {
-  if (!isRecord(value) || !("data" in value) || value.data === null) {
-    throw new ChaosApiError(502, code, "storefront response is invalid");
-  }
-  return value.data as T;
-}
-
 function isCartLineMutation(value: unknown): value is CartLineMutation {
   if (!isRecord(value) || !isRecord(value.cart)) return false;
   return (
@@ -322,6 +287,25 @@ function isCartLineMutation(value: unknown): value is CartLineMutation {
     typeof value.removed === "boolean" &&
     isCart(value.cart)
   );
+}
+
+function requireCartLineMutation(value: unknown): CartLineMutation {
+  const mutation = requireData<CartLineMutation>(
+    value,
+    "invalid_cart_mutation_response",
+  );
+  if (!isCartLineMutation(mutation)) {
+    throw new ChaosApiError(
+      502,
+      "invalid_cart_mutation_response",
+      "cart mutation response is invalid",
+    );
+  }
+  return mutation;
+}
+
+function requireVariantId(variantId: string): void {
+  if (!variantId.trim()) throw new TypeError("variantId is required");
 }
 
 function isEmbeddedCheckoutCreation(
@@ -361,8 +345,4 @@ function isCart(value: Record<string, unknown>): boolean {
         Number.isSafeInteger(line.unit_price_amount_minor),
     )
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

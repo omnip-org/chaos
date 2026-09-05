@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createStorefrontClient } from "../client.js";
+import { ChaosStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
 
 class MemoryStorage {
@@ -34,7 +34,7 @@ test("defers shopper session creation until a browser request needs it", async (
   });
   const requests: string[] = [];
   try {
-    const client = createStorefrontClient({
+    const client = new ChaosStorefrontClient({
       publishableKey: "public_test",
       storage: null,
       fetch: (async (url: string) => {
@@ -63,7 +63,7 @@ test("acquires a shopper session on the first shopper-scoped request and reuses 
   const requests: Array<{ url: string; headers: Record<string, string> }> = [];
   let sequence = 0;
   const storage = new MemoryStorage();
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage,
     randomUUID: () => `id-${++sequence}`,
@@ -100,7 +100,7 @@ test("acquires a shopper session on the first shopper-scoped request and reuses 
 
 test("reuses a shopper token persisted from a previous session", async () => {
   const storage = new MemoryStorage();
-  const firstClient = createStorefrontClient({
+  const firstClient = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage,
     fetch: (async () =>
@@ -108,7 +108,7 @@ test("reuses a shopper token persisted from a previous session", async () => {
   });
   firstClient.setShopperToken("existing-token");
   const requests: string[] = [];
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage,
     fetch: (async (url: string) => {
@@ -125,7 +125,7 @@ test("reuses a shopper token persisted from a previous session", async () => {
 
 test("explicit shopper sessions update the client token", async () => {
   const storage = new MemoryStorage();
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage,
     fetch: (async () =>
@@ -140,7 +140,7 @@ test("explicit shopper sessions update the client token", async () => {
 });
 
 test("edgeRequestContext reads the edge-observed client IP and user agent", () => {
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage: null,
     request: new Request("https://shop.example.com/api/checkout", {
@@ -159,7 +159,7 @@ test("edgeRequestContext reads the edge-observed client IP and user agent", () =
 });
 
 test("edgeRequestContext is empty without a request-scoped server client", () => {
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage: null,
     fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
@@ -171,7 +171,7 @@ test("edgeRequestContext is empty without a request-scoped server client", () =>
 test("refreshes a stale shopper token once and retries the request", async () => {
   const storage = new MemoryStorage();
   const requests: Array<{ url: string; token: string | undefined }> = [];
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage,
     retryInvalidShopperToken: true,
@@ -202,7 +202,7 @@ test("refreshes a stale shopper token once and retries the request", async () =>
 
 test("can fail on a stale shopper token without silently changing identity", async () => {
   const requests: string[] = [];
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     baseUrl: "https://shop.example.com/api/v1",
     storage: null,
@@ -224,7 +224,7 @@ test("can fail on a stale shopper token without silently changing identity", asy
 
 test("can require an explicitly seeded shopper token", async () => {
   let requestCount = 0;
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage: null,
     autoAcquireShopperToken: false,
@@ -245,7 +245,7 @@ test("can require an explicitly seeded shopper token", async () => {
 
 test("creates a fresh cart when the stored cart is locked", async () => {
   const requests: Array<{ url: string; token: string | null }> = [];
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     baseUrl: "https://shop.example.com/api/v1",
     storage: null,
@@ -282,7 +282,7 @@ test("creates a fresh cart when the stored cart is locked", async () => {
 
 test("shares one shopper-session request across concurrent explicit acquisitions", async () => {
   let sessionRequests = 0;
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage: null,
     fetch: (async (url: string) => {
@@ -307,7 +307,7 @@ test("shares one shopper-session request across concurrent explicit acquisitions
 test("serializes concurrent addLine calls for one cart", async () => {
   let quantity = 1;
   let version = 0;
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage: null,
     randomUUID: () => "random-id",
@@ -346,7 +346,7 @@ test("serializes concurrent addLine calls for one cart", async () => {
 });
 
 test("maps non-2xx responses to a typed ChaosApiError with server details", async () => {
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage: new MemoryStorage(),
     fetch: (async () =>
@@ -372,7 +372,7 @@ test("maps non-2xx responses to a typed ChaosApiError with server details", asyn
 
 test("catalog.listProducts forwards query parameters", async () => {
   const captured: { url: URL | null } = { url: null };
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     baseUrl: "https://shop.example.com/api/v1",
     storage: new MemoryStorage(),
@@ -405,7 +405,7 @@ test("payments create an embedded Checkout session with SDK-owned request detail
     body: string | undefined;
   }> = [];
   let sequence = 0;
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage: null,
     randomUUID: () => `id-${++sequence}`,
@@ -501,7 +501,7 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
     subtotal_amount_minor: 0,
     lines: [],
   };
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage: null,
     fetch: (async (url: string, init: RequestInit) => {
@@ -543,7 +543,7 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
 
 test("payments reject a checkout response that is missing required fields", async () => {
   let sequence = 0;
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage: null,
     randomUUID: () => `id-${++sequence}`,
@@ -580,7 +580,7 @@ test("payments reject a checkout response that is missing required fields", asyn
 test("payments create an embedded Checkout session without an email", async () => {
   const requests: Array<{ url: string; body: string | undefined }> = [];
   let sequence = 0;
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage: null,
     randomUUID: () => `id-${++sequence}`,
@@ -635,7 +635,7 @@ test("checkout idempotency follows the cart snapshot instead of the cart id", as
   let cartVersion = 4;
   let cartQuantity = 1;
   const idempotencyKeys: string[] = [];
-  const client = createStorefrontClient({
+  const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage: null,
     fetch: (async (url: string, init: RequestInit) => {
@@ -694,4 +694,3 @@ test("checkout idempotency follows the cart snapshot instead of the cart id", as
   assert.equal(idempotencyKeys[1], idempotencyKeys[2]);
   assert.notEqual(idempotencyKeys[2], idempotencyKeys[3]);
 });
-

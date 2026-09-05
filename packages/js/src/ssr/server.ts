@@ -1,9 +1,6 @@
 import { ChaosApiError } from "../errors.js";
-import {
-  createStorefrontClient,
-  type ChaosStorefrontClient,
-  type ClientOptions,
-} from "../client.js";
+import { ChaosStorefrontClient, type ClientOptions } from "../client.js";
+import { isRecord } from "../internal/response.js";
 import type { AddToCartAnalyticsInput, InitiateCheckoutAnalyticsInput } from "../events/types.js";
 import type {
   Cart,
@@ -111,13 +108,8 @@ export interface UpdateCartLineInput {
   intent?: "remove";
 }
 
-export interface EmbeddedCheckoutRequestInput {
-  returnUrl: string;
-  email?: string;
-}
-
-export const DEFAULT_CART_COOKIE_NAME = "chaos_cart_id";
-export const DEFAULT_SHOPPER_TOKEN_COOKIE_NAME = "chaos_shopper_token";
+const DEFAULT_CART_COOKIE_NAME = "chaos_cart_id";
+const DEFAULT_SHOPPER_TOKEN_COOKIE_NAME = "chaos_shopper_token";
 
 const DEFAULT_SESSION_COOKIE_OPTIONS: StorefrontCookieOptions = {
   httpOnly: true,
@@ -128,49 +120,16 @@ const DEFAULT_SESSION_COOKIE_OPTIONS: StorefrontCookieOptions = {
 };
 
 /**
- * `createServerStorefrontClient`'s `events` option, keyed by the client it
+ * `StorefrontServerClient`'s `events` option, keyed by the low-level client it
  * belongs to instead of a field on `ChaosStorefrontClient` itself — keeps
- * the shared client class free of anything provider-specific.
+ * that class free of anything provider-specific.
  */
 const serverEventPorts = new WeakMap<ChaosStorefrontClient, ServerEventsPort>();
 
 /**
- * Creates the request-scoped server client with cookie-backed shopper
- * identity. Returns one `ChaosServerClient` object — `chaos.cart`,
- * `chaos.checkout`, `chaos.orders`, `chaos.reviews` already carry this
- * request's `cookies`, so route handlers call methods directly instead of
- * threading a client and a cookie jar through free functions. `chaos.catalog`/
- * `chaos.payments`/`chaos.shopperSession` pass straight through to the
- * low-level Storefront API client (no cookies needed for those reads);
- * `chaos.client` is an escape hatch to that low-level client for anything
- * else (`getShopperToken`, `randomUUID`, `edgeRequestContext`, `cart.get`...).
+ * Bridges the SDK's shopper-token storage to an HttpOnly cookie.
+ * @internal
  */
-export function createServerStorefrontClient(
-  options: ServerClientOptions,
-): ChaosServerClient {
-  const { cookies, request, session, events, ...clientOptions } = options;
-  if (!cookies) {
-    throw new TypeError(
-      "createServerStorefrontClient requires cookies for cart/checkout/order session state",
-    );
-  }
-  const resolvedSession = resolveSessionOptions(session);
-  const client = createStorefrontClient({
-    ...clientOptions,
-    storage: createShopperTokenStorage(
-      cookies,
-      resolvedSession.shopperTokenCookieName,
-      resolvedSession.cookieOptions,
-    ),
-    ...(request ? { request } : {}),
-    autoAcquireShopperToken: false,
-    retryInvalidShopperToken: false,
-  });
-  if (events) serverEventPorts.set(client, events);
-  return new ChaosServerClient(client, cookies, resolvedSession);
-}
-
-/** Bridges the SDK's shopper-token storage to an HttpOnly cookie. */
 export function createShopperTokenStorage(
   cookies: StorefrontCookieJar,
   cookieName = DEFAULT_SHOPPER_TOKEN_COOKIE_NAME,
@@ -188,7 +147,10 @@ export function createShopperTokenStorage(
   };
 }
 
-/** Reads an existing cart or explicitly creates a new cart session. */
+/**
+ * Reads an existing cart or explicitly creates a new cart session.
+ * @internal
+ */
 export async function getOrCreateCartSession(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
@@ -201,7 +163,10 @@ export async function getOrCreateCartSession(
   return { cart };
 }
 
-/** Reads an existing active cart without minting a session for a visitor with no cart. */
+/**
+ * Reads an existing active cart without minting a session for a visitor with no cart.
+ * @internal
+ */
 export async function peekCartSession(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
@@ -220,6 +185,7 @@ export async function peekCartSession(
   return null;
 }
 
+/** @internal */
 export function persistCartSession(
   cookies: StorefrontCookieJar,
   session: StorefrontSession,
@@ -233,7 +199,10 @@ export function persistCartSession(
   );
 }
 
-/** Adds a line to the active shopper cart and returns the canonical mutation result. */
+/**
+ * Adds a line to the active shopper cart and returns the canonical mutation result.
+ * @internal
+ */
 export async function addCartLine(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
@@ -270,7 +239,10 @@ export async function addCartLine(
   };
 }
 
-/** Updates or removes a line while keeping quantity validation in the shared commerce layer. */
+/**
+ * Updates or removes a line while keeping quantity validation in the shared commerce layer.
+ * @internal
+ */
 export async function updateCartLine(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
@@ -337,7 +309,10 @@ export async function updateCartLine(
   };
 }
 
-/** Parses and executes the standard JSON add-to-cart request contract. */
+/**
+ * Parses and executes the standard JSON add-to-cart request contract.
+ * @internal
+ */
 export async function addCartLineFromRequest(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
@@ -358,7 +333,10 @@ export async function addCartLineFromRequest(
   );
 }
 
-/** Parses and executes the standard JSON cart-line update/remove request contract. */
+/**
+ * Parses and executes the standard JSON cart-line update/remove request contract.
+ * @internal
+ */
 export async function updateCartLineFromRequest(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
@@ -381,7 +359,10 @@ export async function updateCartLineFromRequest(
   );
 }
 
-/** Creates checkout from the cookie-backed Cart and rotates to a new active Cart. */
+/**
+ * Creates checkout from the cookie-backed Cart and rotates to a new active Cart.
+ * @internal
+ */
 export async function createEmbeddedCheckoutFromRequest(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
@@ -462,7 +443,10 @@ function isRecoverableCartCheckoutError(error: unknown): boolean {
   );
 }
 
-/** Parses and validates a guest order-number + email pair before calling the shared order resource. */
+/**
+ * Parses and validates a guest order-number + email pair before calling the shared order resource.
+ * @internal
+ */
 export async function lookupOrderFromRequest(
   client: ChaosStorefrontClient,
   request: Request,
@@ -488,11 +472,12 @@ export async function lookupOrderFromRequest(
 
 /**
  * Sends a confirmed, paid order to the configured server event port
- * (`events` passed to `createServerStorefrontClient`) once. No-op without
+ * (`events` passed to `StorefrontServerClient`) once. No-op without
  * that config or without a confirmed+paid order — mirrors
  * `ChaosStorefrontAnalytics.recordConfirmedPurchase`, which projects the
  * same order to the browser Pixel and GA4 using the same deterministic,
  * order-derived event ID.
+ * @internal
  */
 export async function recordConfirmedPurchaseEvent(
   client: ChaosStorefrontClient,
@@ -572,7 +557,10 @@ function eventContextFrom(
   };
 }
 
-/** Parses and submits the standard JSON product review request contract. */
+/**
+ * Parses and submits the standard JSON product review request contract.
+ * @internal
+ */
 export async function createProductReviewFromRequest(
   client: ChaosStorefrontClient,
   request: Request,
@@ -609,10 +597,6 @@ export async function createProductReviewFromRequest(
       : {}),
   };
   await client.reviews.submit(requireText(productId, "productId"), payload);
-}
-
-export function cartItemCount(cart: Cart): number {
-  return cart.lines.reduce((total, line) => total + line.quantity, 0);
 }
 
 function resolveSessionOptions(options: StorefrontSessionOptions | undefined) {
@@ -669,11 +653,7 @@ function invalidRequest(message: string): ChaosApiError {
   return new ChaosApiError(400, "invalid_storefront_request", message);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Cookie/event-aware cart operations — see `ChaosServerClient`. */
+/** Cookie/event-aware cart operations — see `StorefrontServerClient`. */
 class ServerCartResource {
   constructor(
     private readonly client: ChaosStorefrontClient,
@@ -717,7 +697,7 @@ class ServerCartResource {
   }
 }
 
-/** Cookie/event-aware checkout operations — see `ChaosServerClient`. */
+/** Cookie/event-aware checkout operations — see `StorefrontServerClient`. */
 class ServerCheckoutResource {
   constructor(
     private readonly client: ChaosStorefrontClient,
@@ -733,7 +713,7 @@ class ServerCheckoutResource {
   }
 }
 
-/** Cookie/event-aware order operations — see `ChaosServerClient`. */
+/** Cookie/event-aware order operations — see `StorefrontServerClient`. */
 class ServerOrdersResource {
   constructor(
     private readonly client: ChaosStorefrontClient,
@@ -755,7 +735,7 @@ class ServerOrdersResource {
   }
 }
 
-/** Request-parsing review submission — see `ChaosServerClient`. */
+/** Request-parsing review submission — see `StorefrontServerClient`. */
 class ServerReviewsResource {
   constructor(private readonly client: ChaosStorefrontClient) {}
 
@@ -765,9 +745,9 @@ class ServerReviewsResource {
 }
 
 /**
- * The package's primary server-side surface — see `createServerStorefrontClient`.
+ * The package's primary server-side surface.
  */
-export class ChaosServerClient {
+export class StorefrontServerClient {
   /** Escape hatch to the low-level Storefront API client for anything not wrapped below. */
   readonly client: ChaosStorefrontClient;
   readonly catalog: ChaosStorefrontClient["catalog"];
@@ -778,17 +758,33 @@ export class ChaosServerClient {
   readonly orders: ServerOrdersResource;
   readonly reviews: ServerReviewsResource;
 
-  constructor(
-    client: ChaosStorefrontClient,
-    cookies: StorefrontCookieJar,
-    sessionOptions: StorefrontSessionOptions = {},
-  ) {
+  constructor(options: ServerClientOptions) {
+    const { cookies, request, session, events, ...clientOptions } = options;
+    if (!cookies) {
+      throw new TypeError(
+        "StorefrontServerClient requires cookies for cart/checkout/order session state",
+      );
+    }
+    const resolvedSession = resolveSessionOptions(session);
+    const client = new ChaosStorefrontClient({
+      ...clientOptions,
+      storage: createShopperTokenStorage(
+        cookies,
+        resolvedSession.shopperTokenCookieName,
+        resolvedSession.cookieOptions,
+      ),
+      ...(request ? { request } : {}),
+      autoAcquireShopperToken: false,
+      retryInvalidShopperToken: false,
+    });
+    if (events) serverEventPorts.set(client, events);
+
     this.client = client;
     this.catalog = client.catalog;
     this.payments = client.payments;
     this.shopperSession = client.shopperSession;
-    this.cart = new ServerCartResource(client, cookies, sessionOptions);
-    this.checkout = new ServerCheckoutResource(client, cookies, sessionOptions);
+    this.cart = new ServerCartResource(client, cookies, resolvedSession);
+    this.checkout = new ServerCheckoutResource(client, cookies, resolvedSession);
     this.orders = new ServerOrdersResource(client, cookies);
     this.reviews = new ServerReviewsResource(client);
   }

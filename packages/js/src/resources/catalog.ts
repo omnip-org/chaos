@@ -70,8 +70,10 @@ export class CatalogResource {
     return promise;
   }
 
-  getCollection(handle: string, params: Record<string, never> = {}): Promise<DataEnvelope<Collection>> {
-    return this.client.request(`/collections/${encodeURIComponent(handle)}`, { method: "GET", query: params });
+  getCollection(handle: string): Promise<DataEnvelope<Collection>> {
+    return this.client.request(`/collections/${encodeURIComponent(handle)}`, {
+      method: "GET",
+    });
   }
 }
 

@@ -1,6 +1,7 @@
 import type { ChaosStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
 import { fnv1a32 } from "../internal/hash.js";
+import { isRecord, requireData } from "../internal/response.js";
 import type {
   Cart,
   DataEnvelope,
@@ -80,17 +81,6 @@ function requireEmbeddedCheckoutSession(
     );
   }
   return { data };
-}
-
-function requireData(value: unknown, code: string): unknown {
-  if (!isRecord(value) || !("data" in value) || value.data === null) {
-    throw new ChaosApiError(502, code, "storefront response is invalid");
-  }
-  return value.data;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isNonEmptyString(value: unknown): value is string {

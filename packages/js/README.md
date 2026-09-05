@@ -3,25 +3,25 @@
 A typed client for the Chaos Commerce Storefront API, built for a storefront
 with its own server-side deployment (SSR/edge/Worker) — the publishable key
 and shopper token live server-side only, never in a browser bundle. The
-storefront's server calls `createServerStorefrontClient` to get one
-`ChaosServerClient` (`chaos.cart`, `chaos.checkout`, `chaos.orders`,
-`chaos.reviews`, `chaos.catalog`, ...), and exposes a few thin same-origin
-routes that its browser code calls through one `StorefrontBrowserClient`
-(`storefront.cart`, `storefront.catalog`, `storefront.checkout`,
-`storefront.orders`) from `createStorefrontBrowserClient`.
+storefront's server `new`s one `StorefrontServerClient` (`chaos.cart`,
+`chaos.checkout`, `chaos.orders`, `chaos.reviews`, `chaos.catalog`, ...), and
+exposes a few thin same-origin routes that its browser code calls through one
+`StorefrontBrowserClient` (`storefront.cart`, `storefront.catalog`,
+`storefront.checkout`, `storefront.orders`). Both are plain classes — no
+factory function to call, just construct the one you need.
 
 Event delivery (Meta Pixel/GA4 in the browser, Meta Conversions API on the
 server) is wired up internally by these two classes from plain config — there
 is no separate analytics class to construct, start, or export. Pass
-`providers.metaPixel`/`providers.ga4` to `createStorefrontBrowserClient`'s
-`events` option to turn on Pixel/GA4; omit either to leave it off. Server-side
+`providers.metaPixel`/`providers.ga4` to `StorefrontBrowserClient`'s `events`
+option to turn on Pixel/GA4; omit either to leave it off. Server-side
 CAPI needs the store's own Meta access token, so it stays behind the separate
 `@omnip-org/chaos-js/meta-capi` subpath — see
 [Server-side Meta Conversions API](#server-side-meta-conversions-api).
 
 Commerce operations (`ssr/server.ts`, `ssr/browser.ts`) and event delivery
 (`events/browser.ts`, `events/server.ts`/`meta-capi.ts`) are separate layers:
-`ChaosServerClient` only knows about a small `ServerEventsPort` interface
+`StorefrontServerClient` only knows about a small `ServerEventsPort` interface
 (three methods), never about Meta specifically, and never statically imports
 the module that holds the access token — that isolation is enforced
 structurally (see `events/capi.ts`'s module doc), not just by convention.
@@ -47,7 +47,7 @@ npm install @omnip-org/chaos-js
 
 This SDK requires a storefront with its own server-side deployment. There is
 no supported pure-browser mode: the publishable key and the shopper token are
-only ever held by `ChaosServerClient`, on the server. A storefront exposes a
+only ever held by `StorefrontServerClient`, on the server. A storefront exposes a
 few thin same-origin routes backed by that client, and its browser code talks
 only to those routes through `StorefrontBrowserClient` — never directly to
 Chaos.
@@ -56,12 +56,9 @@ Chaos.
 // Server: request-scoped, holds the publishable key and the shopper's
 // HttpOnly-cookie-backed token. `cookies` is any jar with get(name) and
 // set(name, value, options).
-import {
-  createServerStorefrontClient,
-  resolveProductMedia,
-} from "@omnip-org/chaos-js";
+import { StorefrontServerClient, resolveProductMedia } from "@omnip-org/chaos-js";
 
-const chaos = createServerStorefrontClient({
+const chaos = new StorefrontServerClient({
   publishableKey: process.env.CHAOS_PUBLISHABLE_KEY!,
   baseUrl: "https://chaos.example/api/v1",
   cookies,
@@ -98,16 +95,16 @@ const creation = await chaos.checkout.createFromRequest(request);
 
 ```ts
 // Browser: talks only to the storefront's own same-origin routes above.
-import { createStorefrontBrowserClient } from "@omnip-org/chaos-js";
+import { StorefrontBrowserClient } from "@omnip-org/chaos-js";
 import { mountEmbeddedCheckout } from "@omnip-org/chaos-js/stripe";
 
-const storefront = createStorefrontBrowserClient({
+const storefront = new StorefrontBrowserClient({
   baseUrl: "/api",
   events: {
     providers: {
       // Browser Meta Pixel ID. The storefront's backend configures the same
-      // (or a different) Pixel/dataset ID again via
-      // createServerStorefrontClient's `events` option, for Meta CAPI.
+      // (or a different) Pixel/dataset ID again via `StorefrontServerClient`'s
+      // `events` option, for Meta CAPI.
       metaPixel: { pixelId: "1234567890" },
       ga4: { measurementId: "G-EXAMPLE123" },
     },
@@ -149,7 +146,7 @@ storefront.orders.recordConfirmedPurchase(order);
 ### Contract boundary
 
 This package is the canonical Storefront wire contract. A consuming storefront
-must import its request helpers and types and use `ChaosServerClient`/
+must use the exported wire types and `StorefrontServerClient`/
 `StorefrontBrowserClient` for every Chaos-facing operation; it must not
 duplicate Chaos DTOs, construct equivalent API paths, or cast a raw response
 into a local interface. TypeScript generics are not runtime validation, so
@@ -158,17 +155,17 @@ returning them. When the API contract changes, publish this package first,
 update the consumer's lockfile to that exact release, and run the SDK and
 consumer checks against the same version.
 
-Event delivery starts as soon as `createStorefrontBrowserClient` is
-constructed; a destination (Pixel, GA4) stays off until its config key is
-present in `events.providers` — there is no separate start/stop call.
+Event delivery starts as soon as `StorefrontBrowserClient` is constructed; a
+destination (Pixel, GA4) stays off until its config key is present in
+`events.providers` — there is no separate start/stop call.
 
 The server client automatically acquires and persists the signed shopper
-token, in the HttpOnly cookie set up by `createServerStorefrontClient`, used
-to associate commerce operations on the first shopper-scoped request.
+token in its HttpOnly cookie, associating commerce operations on the first
+shopper-scoped request.
 Advanced/uncommon operations (`getShopperToken`, `randomUUID`,
 `edgeRequestContext`, the raw `cart.getActive()`/`cart.getOrCreate()`) are
 reachable through `chaos.client`, the escape hatch to the low-level
-Storefront API client `ChaosServerClient` wraps. Invalid shopper-token
+Storefront API client `StorefrontServerClient` wraps. Invalid shopper-token
 retries are opt-in because silently minting a replacement can orphan a cart
 or hide an order.
 
@@ -186,10 +183,10 @@ The browser bridge (`StorefrontBrowserClient`) projects `AddToCart`/
 request never carries an event field — sharing one event ID between the
 ledger-free Pixel/GA4 projection and, when a storefront also configured
 server-side Meta CAPI (see below), the matching CAPI call. Commerce item
-properties use `product_id` and `product_variant_id`. Multi-item events repeat
-these fields inside each `items[]` entry; single-item events also expose the
-corresponding IDs at the top level. The Meta adapter uses the variant ID as
-the Meta content ID when present, otherwise the product ID.
+inputs retain `product_id` and `product_variant_id` for custom
+`ServerEventsPort` implementations. Built-in Meta Pixel/CAPI and GA4
+commerce projections use `product_variant_id` as the item/content ID;
+`view_content` falls back to `product_id` when no variant is supplied.
 
 `purchase` is a projection, not a first-party fact: the SDK never infers it
 from browser activity, only from a confirmed, paid order the storefront
@@ -211,16 +208,16 @@ reads that cookie for `user_data.fbc`.
 Meta CAPI delivery holds the store's own Meta access token, so `ChaosServerEvents`
 lives outside the main SDK entry, as the separate `@omnip-org/chaos-js/meta-capi`
 subpath — import it only from server-side code, never from a browser bundle.
-`ChaosServerClient` never imports this subpath itself (see `ServerEventsPort`),
+`StorefrontServerClient` never imports this subpath itself (see `ServerEventsPort`),
 so a bundler cannot pull the access-token-sending code into a browser build
 through the main entry even by mistake — this is a structural guarantee,
 checked by `test/capi-isolation.test.ts` against the compiled output.
 
 ```ts
-import { createServerStorefrontClient } from "@omnip-org/chaos-js";
+import { StorefrontServerClient } from "@omnip-org/chaos-js";
 import { ChaosServerEvents } from "@omnip-org/chaos-js/meta-capi";
 
-const chaos = createServerStorefrontClient({
+const chaos = new StorefrontServerClient({
   publishableKey: process.env.CHAOS_PUBLISHABLE_KEY!,
   baseUrl: "https://shop.example.com/api/v1",
   cookies,
@@ -299,7 +296,7 @@ import { ChaosApiError } from "@omnip-org/chaos-js";
 
 try {
   // chaos.client is the escape hatch to the low-level Storefront API client
-  // for operations ChaosServerClient doesn't wrap directly.
+  // for operations StorefrontServerClient doesn't wrap directly.
   await chaos.client.cart.setLine(cart.id, variantId, { quantity: 0 });
 } catch (error) {
   if (error instanceof ChaosApiError && error.status === 422) {

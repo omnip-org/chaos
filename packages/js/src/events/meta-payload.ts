@@ -12,6 +12,7 @@ import type {
  * once so `events/browser.ts` (Pixel) and `events/capi.ts` (CAPI) always
  * project the same fields for the same event, instead of each maintaining
  * its own near-duplicate mapping.
+ * @internal
  */
 export interface MetaCommerceEventData {
   [key: string]: unknown;
@@ -21,6 +22,12 @@ export interface MetaCommerceEventData {
   content_type: "product";
   contents: Array<{ id: string; quantity: number; item_price: number }>;
   num_items: number;
+}
+
+interface CommerceEventInput {
+  valueMinor: number;
+  currency: string;
+  items: AnalyticsCommerceItem[];
 }
 
 function toContents(
@@ -34,12 +41,14 @@ function toContents(
   }));
 }
 
+/** @internal */
 export function addToCartEventData(
   input: AddToCartAnalyticsInput,
 ): MetaCommerceEventData {
-  const currency = input.currency.toUpperCase();
-  const contents = toContents(
-    [
+  return commerceEventData({
+    valueMinor: input.valueMinor,
+    currency: input.currency,
+    items: [
       {
         productId: input.productId,
         productVariantId: input.productVariantId,
@@ -47,35 +56,25 @@ export function addToCartEventData(
         priceMinor: input.priceMinor,
       },
     ],
-    currency,
-  );
-  return {
-    value: toMajorUnits(input.valueMinor, currency),
-    currency,
-    content_ids: contents.map((content) => content.id),
-    content_type: "product",
-    contents,
-    num_items: input.quantity,
-  };
+  });
 }
 
+/** @internal */
 export function initiateCheckoutEventData(
   input: InitiateCheckoutAnalyticsInput,
 ): MetaCommerceEventData {
-  const currency = input.currency.toUpperCase();
-  const contents = toContents(input.items, currency);
-  return {
-    value: toMajorUnits(input.valueMinor, currency),
-    currency,
-    content_ids: contents.map((content) => content.id),
-    content_type: "product",
-    contents,
-    num_items: input.items.reduce((total, item) => total + item.quantity, 0),
-  };
+  return commerceEventData(input);
 }
 
+/** @internal */
 export function purchaseEventData(
   input: PurchaseAnalyticsInput,
+): MetaCommerceEventData {
+  return commerceEventData(input);
+}
+
+function commerceEventData(
+  input: CommerceEventInput,
 ): MetaCommerceEventData {
   const currency = input.currency.toUpperCase();
   const contents = toContents(input.items, currency);

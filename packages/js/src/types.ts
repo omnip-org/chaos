@@ -127,11 +127,6 @@ export interface ShopperSession {
   shopper_token: string;
 }
 
-// A Store trades in exactly one currency, so a Cart never chooses one — it
-// always inherits the Store's active Price List.
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface CreateCartRequest {}
-
 export interface CartLine {
   product_id: UUID;
   product_variant_id: UUID;

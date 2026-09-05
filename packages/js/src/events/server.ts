@@ -1,11 +1,3 @@
-export {
-  sendAddToCartCapi,
-  sendInitiateCheckoutCapi,
-  sendPurchaseCapi,
-  type MetaCapiConfig,
-  type MetaCapiContext,
-} from "./capi.js";
-
 import { toPurchaseAnalyticsInput } from "../domain.js";
 import type { OrderLookup } from "../types.js";
 import {
@@ -17,6 +9,8 @@ import {
 } from "./capi.js";
 import type { AddToCartAnalyticsInput, InitiateCheckoutAnalyticsInput } from "./types.js";
 
+export type { MetaCapiConfig, MetaCapiContext };
+
 export interface ServerEventsOptions {
   /** The store's own Meta access token, from this deployment's environment variables. */
   meta: MetaCapiConfig;
@@ -27,10 +21,9 @@ export interface ServerEventsOptions {
  * Server-only Meta CAPI dispatcher — the CAPI-sending counterpart to the
  * browser's `ChaosStorefrontAnalytics` (`@omnip-org/chaos-js`'s
  * `events/browser.ts`). Pass an instance as `events` to
- * `createServerStorefrontClient` (see `ssr/server.ts`'s `ServerEventsPort`)
- * to have `addCartLine`/`updateCartLine`/`createEmbeddedCheckoutFromRequest`
- * send Meta CAPI automatically, sharing their event ID with the matching
- * browser Pixel projection.
+ * `StorefrontServerClient` (see `ssr/server.ts`'s `ServerEventsPort`)
+ * so its cart and checkout facades send Meta CAPI automatically, sharing
+ * their event IDs with the matching browser Pixel projections.
  *
  * Lives behind the `/meta-capi` subpath, never the main entry, because it
  * holds the store's Meta access token.
@@ -94,8 +87,4 @@ export class ChaosServerEvents {
       input,
     });
   }
-}
-
-export function createServerEvents(options: ServerEventsOptions): ChaosServerEvents {
-  return new ChaosServerEvents(options);
 }

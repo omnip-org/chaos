@@ -1,13 +1,20 @@
 import { toPurchaseAnalyticsInput } from "../domain.js";
 import { fnv1a32 } from "../internal/hash.js";
+import {
+  compact,
+  isValidMetaBrowserId,
+  MAX_META_BROWSER_ID_LENGTH,
+} from "../internal/meta.js";
 import type { CartLineMutation, EmbeddedCheckoutCreation, OrderLookup } from "../types.js";
 import {
   addToCartEventData,
   initiateCheckoutEventData,
   purchaseEventData,
+  type MetaCommerceEventData,
 } from "./meta-payload.js";
 import type {
   AddToCartAnalyticsInput,
+  AnalyticsCommerceItem,
   InitiateCheckoutAnalyticsInput,
   PurchaseAnalyticsInput,
 } from "./types.js";
@@ -29,7 +36,6 @@ import type {
  * each.
  */
 
-const MAX_META_BROWSER_ID_LENGTH = 2_048;
 const META_FBC_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
 const PROVIDER_EVENT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 
@@ -65,7 +71,6 @@ export interface AnalyticsOptions {
 }
 
 export class ChaosStorefrontAnalytics {
-  private readonly publishableKey: string;
   private readonly documentRef: Document;
   private readonly windowRef: Window & typeof globalThis;
   private readonly storage?: Storage;
@@ -84,7 +89,6 @@ export class ChaosStorefrontAnalytics {
     if (!options?.publishableKey) {
       throw new TypeError("publishableKey is required");
     }
-    this.publishableKey = options.publishableKey;
     this.documentRef = options.document ?? globalThis.document;
     this.windowRef =
       options.window ?? (globalThis as unknown as Window & typeof globalThis);
@@ -105,7 +109,7 @@ export class ChaosStorefrontAnalytics {
       options.onError,
     );
 
-    const storageNamespace = analyticsStorageNamespace(this.publishableKey);
+    const storageNamespace = analyticsStorageNamespace(options.publishableKey);
     this.metaFbcStorageKey = `chaos.analytics.${storageNamespace}.meta.fbc.v2`;
     this.providerEventStoragePrefix = `chaos.analytics.${storageNamespace}.provider_event.v1.`;
     this.pruneExpiredProviderEvents();
@@ -150,23 +154,15 @@ export class ChaosStorefrontAnalytics {
    * `@omnip-org/chaos-js/meta-capi`) share the same event ID for Meta's
    * Pixel+CAPI deduplication, instead of minting a second one.
    *
-   * Warning: if a server-side CAPI call for this same action already ran
-   * (directly, or through `addCartLine`/`updateCartLine` in `ssr/server.ts`),
-   * always pass its `eventId` here. Calling this without it while CAPI is
-   * also configured sends Meta two independent events for one action, which
-   * it cannot deduplicate — `recordCartMutation` does this pairing for you
-   * when you go through the `ssr/server.ts` + `StorefrontBrowserClient` pair.
+   * Warning: if the matching server-side CAPI call already ran through the
+   * server cart facade, always pass its `eventId` here. Calling this without
+   * it while CAPI is also configured sends Meta two independent events for
+   * one action, which it cannot deduplicate — `recordCartMutation` does this
+   * pairing for the `ssr/server.ts` + `StorefrontBrowserClient` pair.
    */
   recordAddToCart(input: AddToCartAnalyticsInput, eventId?: string): string | null {
     validateMoney(input.valueMinor, input.currency);
-    if (!isUuid(input.productId))
-      throw new TypeError("productId must be a valid UUID");
-    if (!isUuid(input.productVariantId))
-      throw new TypeError("productVariantId must be a valid UUID");
-    if (!Number.isSafeInteger(input.quantity) || input.quantity < 1)
-      throw new RangeError("quantity must be a positive safe integer");
-    if (!Number.isSafeInteger(input.priceMinor) || input.priceMinor < 0)
-      throw new RangeError("priceMinor must be a non-negative safe integer");
+    validateCommerceItem(input);
     if (input.cartId !== undefined && !isUuid(input.cartId))
       throw new TypeError("cartId must be a valid UUID");
 
@@ -179,9 +175,7 @@ export class ChaosStorefrontAnalytics {
           event_id: resolvedId,
           value: eventData.value,
           currency: eventData.currency,
-          items: [
-            { item_id: input.productVariantId, quantity: input.quantity, price: eventData.contents[0]!.item_price },
-          ],
+          items: toGa4Items(eventData.contents),
         });
       });
     } catch {
@@ -202,16 +196,7 @@ export class ChaosStorefrontAnalytics {
       throw new TypeError("orderNumber must be a non-empty string");
     if (!Array.isArray(input.items) || input.items.length === 0)
       throw new TypeError("items must contain at least one checkout item");
-    for (const item of input.items) {
-      if (!isUuid(item.productId))
-        throw new TypeError("productId must be a valid UUID");
-      if (!isUuid(item.productVariantId))
-        throw new TypeError("productVariantId must be a valid UUID");
-      if (!Number.isSafeInteger(item.quantity) || item.quantity < 1)
-        throw new RangeError("quantity must be a positive safe integer");
-      if (!Number.isSafeInteger(item.priceMinor) || item.priceMinor < 0)
-        throw new RangeError("priceMinor must be a non-negative safe integer");
-    }
+    for (const item of input.items) validateCommerceItem(item);
 
     const resolvedId = canonicalEventId(eventId, this.randomUUID());
     try {
@@ -223,11 +208,7 @@ export class ChaosStorefrontAnalytics {
           transaction_id: input.orderNumber,
           value: eventData.value,
           currency: eventData.currency,
-          items: eventData.contents.map((content) => ({
-            item_id: content.id,
-            quantity: content.quantity,
-            price: content.item_price,
-          })),
+          items: toGa4Items(eventData.contents),
         });
       });
     } catch {
@@ -314,9 +295,6 @@ export class ChaosStorefrontAnalytics {
   /** Projects a server-confirmed Purchase to browser providers exactly once per Order. */
   recordPurchase(input: PurchaseAnalyticsInput): string | null {
     validateMoney(input.valueMinor, input.currency);
-    const currency = input.currency.toUpperCase();
-    if (!/^[A-Z]{3}$/.test(currency))
-      throw new TypeError("currency must be an ISO 4217 code");
     if (!isUuid(input.orderId))
       throw new TypeError("orderId must be a valid UUID");
     const orderId = input.orderId.toLowerCase();
@@ -330,11 +308,7 @@ export class ChaosStorefrontAnalytics {
           transaction_id: orderId,
           value: eventData.value,
           currency: eventData.currency,
-          items: eventData.contents.map((content) => ({
-            item_id: content.id,
-            quantity: content.quantity,
-            price: content.item_price,
-          })),
+          items: toGa4Items(eventData.contents),
         });
       });
     } catch {
@@ -429,12 +403,12 @@ export class ChaosStorefrontAnalytics {
       !Array.isArray(stored) &&
       (stored as Record<string, unknown>).fbclid === fbclid &&
       typeof (stored as Record<string, unknown>).fbc === "string" &&
-      validFbc((stored as Record<string, string>).fbc)
+      isValidMetaBrowserId((stored as Record<string, string>).fbc)
     ) {
       return (stored as Record<string, string>).fbc;
     }
     const fbc = `fb.1.${Math.floor(this.now())}.${fbclid}`;
-    if (!validFbc(fbc)) return undefined;
+    if (!isValidMetaBrowserId(fbc)) return undefined;
     writeStoredJson(this.sessionStorageRef, this.metaFbcStorageKey, {
       fbclid,
       fbc,
@@ -608,6 +582,29 @@ function validateMoney(valueMinor: number, currency: string): void {
     throw new TypeError("currency must be an ISO 4217 code");
 }
 
+function validateCommerceItem(item: AnalyticsCommerceItem): void {
+  if (!isUuid(item.productId))
+    throw new TypeError("productId must be a valid UUID");
+  if (!isUuid(item.productVariantId))
+    throw new TypeError("productVariantId must be a valid UUID");
+  if (!Number.isSafeInteger(item.quantity) || item.quantity < 1)
+    throw new RangeError("quantity must be a positive safe integer");
+  if (!Number.isSafeInteger(item.priceMinor) || item.priceMinor < 0)
+    throw new RangeError("priceMinor must be a non-negative safe integer");
+}
+
+function toGa4Items(contents: MetaCommerceEventData["contents"]): Array<{
+  item_id: string;
+  quantity: number;
+  price: number;
+}> {
+  return contents.map((content) => ({
+    item_id: content.id,
+    quantity: content.quantity,
+    price: content.item_price,
+  }));
+}
+
 function analyticsStorageNamespace(publishableKey: string): string {
   return fnv1a32(publishableKey).toString(36);
 }
@@ -664,12 +661,6 @@ interface HistoryObserverState {
 
 const historyObservers = new WeakMap<History, HistoryObserverState>();
 
-export function createStorefrontAnalytics(
-  options: AnalyticsOptions,
-): ChaosStorefrontAnalytics {
-  return new ChaosStorefrontAnalytics(options);
-}
-
 function isUuid(value: string | null | undefined): boolean {
   return (
     typeof value === "string" &&
@@ -724,14 +715,6 @@ function boundedText(
     : undefined;
 }
 
-function compact<T extends Record<string, unknown>>(
-  value: T,
-): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, item]) => item !== undefined),
-  );
-}
-
 function readStoredJson(storage: Storage | undefined, key: string): unknown {
   try {
     const value = storage?.getItem(key);
@@ -751,10 +734,4 @@ function writeStoredJson(
   } catch {
     // Storage is optional; the fbc pairing is best-effort.
   }
-}
-
-function validFbc(value: string | undefined): value is string {
-  if (!value || value.length > MAX_META_BROWSER_ID_LENGTH) return false;
-  const match = /^fb\.\d+\.(\d{13})\.[^\s]+$/.exec(value);
-  return match !== null && Number.isSafeInteger(Number(match[1]));
 }

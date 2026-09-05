@@ -188,7 +188,7 @@ export class ChaosStorefrontClient {
 
   /**
    * Reads the edge-observed client IP and user agent from the request passed
-   * to `createServerStorefrontClient`, for a server-side Meta CAPI call to
+   * to `StorefrontServerClient`, for a server-side Meta CAPI call to
    * include in `user_data`. Returns an empty object outside a request-scoped
    * server client.
    * @internal
@@ -290,12 +290,6 @@ export class ChaosStorefrontClient {
   }
 }
 
-export function createStorefrontClient(
-  options: ClientOptions,
-): ChaosStorefrontClient {
-  return new ChaosStorefrontClient(options);
-}
-
 function scopedShopperTokenKey(
   baseUrl: string,
   publishableKey: string,
@@ -303,4 +297,3 @@ function scopedShopperTokenKey(
   const hash = fnv1a32(`${baseUrl}\0${publishableKey}`);
   return `${SHOPPER_TOKEN_STORAGE_PREFIX}.${hash.toString(36)}`;
 }
-
