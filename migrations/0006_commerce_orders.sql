@@ -34,9 +34,6 @@ CREATE TABLE commerce.carts (
             AND pg_column_size(payment_client_action) <= 8192
         )
     ),
-    -- Ad-platform attribution captured at checkout creation, namespaced by
-    -- platform (e.g. "meta") so a future platform is an additive JSON key,
-    -- not a schema change: {"source_url": ..., "meta": {"fbc": ..., "fbp": ...}}.
     CONSTRAINT carts_attribution_check            CHECK (
         attribution IS NULL
         OR (jsonb_typeof(attribution) = 'object' AND pg_column_size(attribution) <= 4096)

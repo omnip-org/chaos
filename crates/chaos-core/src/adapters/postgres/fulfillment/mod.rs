@@ -204,7 +204,6 @@ impl PostgresFulfillmentRepository {
                     "store_id": store_id.as_uuid(),
                     "order_id": order_id.as_uuid(),
                     "fulfillment_id": id.as_uuid(),
-                    "event_name": "order.fulfillment.shipped",
                     "fulfillment_provider_account_id": fulfillment.fulfillment_provider_account_id().as_uuid(),
                     "tracking_number": fulfillment.tracking_number(),
                     "tracking_url": fulfillment.tracking_url(),
@@ -250,7 +249,6 @@ impl PostgresFulfillmentRepository {
                     "store_id": store_id.as_uuid(),
                     "order_id": order_id.as_uuid(),
                     "fulfillment_id": id.as_uuid(),
-                    "event_name": "order.fulfillment.delivered",
                 }),
             )
             .await?;

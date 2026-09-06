@@ -54,6 +54,11 @@ pub struct TopicEventJob {
     pub msg_id: i64,
     pub payload: Value,
     pub attempts: u32,
+    /// The routing key that delivered this message, read back from the PGMQ
+    /// message header. Empty only for a message enqueued outside
+    /// `integration.publish_topic_event`. A consumer on a fan-in queue
+    /// dispatches on this rather than a field it hopes the producer set.
+    pub routing_key: String,
 }
 
 #[async_trait]

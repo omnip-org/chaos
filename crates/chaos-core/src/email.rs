@@ -539,7 +539,7 @@ impl EmailWorkers {
             .await?;
         for job in &jobs {
             let result = self
-                .execute(&job.payload)
+                .execute(&job.routing_key, &job.payload)
                 .await
                 .map_err(|error| error.to_string());
             self.queue
@@ -549,9 +549,13 @@ impl EmailWorkers {
         Ok(jobs.len())
     }
 
-    async fn execute(&self, payload: &serde_json::Value) -> Result<(), ApplicationError> {
-        match payload.get("event_name").and_then(serde_json::Value::as_str) {
-            Some("purchase") => self.send_order_confirmation(payload).await,
+    async fn execute(
+        &self,
+        routing_key: &str,
+        payload: &serde_json::Value,
+    ) -> Result<(), ApplicationError> {
+        match routing_key {
+            "order.payment.completed" => self.send_order_confirmation(payload).await,
             other => {
                 // TODO(notification-email): render and send the fulfillment
                 // notices (order.fulfillment.shipped / order.fulfillment.delivered).
@@ -559,8 +563,8 @@ impl EmailWorkers {
                 // migrations/0004_integration.sql, but no templates exist yet,
                 // so the events are acknowledged and dropped here.
                 tracing::info!(
-                    event = other.unwrap_or("unknown"),
-                    "notification email for this event type is not implemented yet"
+                    routing_key = other,
+                    "notification email for this routing key is not implemented yet"
                 );
                 Ok(())
             }

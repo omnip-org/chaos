@@ -97,7 +97,12 @@ LANGUAGE SQL
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    SELECT pgmq.send_topic(routing_key, payload);
+    SELECT pgmq.send_topic(
+        routing_key,
+        payload,
+        jsonb_build_object('routing_key', routing_key),
+        0
+    );
 $$;
 
 CREATE FUNCTION integration.claim_topic_queue (
@@ -105,16 +110,18 @@ CREATE FUNCTION integration.claim_topic_queue (
     batch_size            INTEGER
 )
 RETURNS TABLE (
-    msg_id    BIGINT,
-    payload   JSONB,
-    attempts  INTEGER
+    msg_id       BIGINT,
+    payload      JSONB,
+    attempts     INTEGER,
+    routing_key  TEXT
 )
 LANGUAGE SQL
 VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    SELECT queued.msg_id, queued.message, queued.read_ct
+    SELECT queued.msg_id, queued.message, queued.read_ct,
+           COALESCE(queued.headers ->> 'routing_key', '')
     FROM pgmq.read(
         requested_queue_name,
         120,

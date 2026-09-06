@@ -37,8 +37,9 @@ impl IntegrationQueue for PostgresIntegrationQueue {
         queue_name: &str,
         limit: u16,
     ) -> Result<Vec<TopicEventJob>, ApplicationError> {
-        sqlx::query_as::<_, (i64, Value, i32)>(
-            "SELECT msg_id, payload, attempts FROM integration.claim_topic_queue($1, $2)",
+        sqlx::query_as::<_, (i64, Value, i32, String)>(
+            "SELECT msg_id, payload, attempts, routing_key \
+             FROM integration.claim_topic_queue($1, $2)",
         )
         .bind(queue_name)
         .bind(i32::from(limit.clamp(1, 100)))
@@ -46,12 +47,13 @@ impl IntegrationQueue for PostgresIntegrationQueue {
         .await
         .map_err(database_error)?
         .into_iter()
-        .map(|(msg_id, payload, attempts)| {
+        .map(|(msg_id, payload, attempts, routing_key)| {
             Ok(TopicEventJob {
                 msg_id,
                 payload,
                 attempts: u32::try_from(attempts)
                     .map_err(|error| ApplicationError::Unexpected(error.into()))?,
+                routing_key,
             })
         })
         .collect()
