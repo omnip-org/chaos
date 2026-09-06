@@ -20,7 +20,7 @@ pub struct CreateCartInput {
 }
 
 /// Request-side context captured when a shopper session is first issued and
-/// stored on `commerce.shoppers.meta`, so later attribution and support
+/// stored on `commerce.shoppers.attribution`, so later attribution and support
 /// lookups can see where the visitor came from. All fields are best-effort:
 /// the browser controls most of them and any of them can be absent.
 #[derive(Default)]
@@ -111,7 +111,7 @@ impl StorefrontSales {
     ) -> Result<chaos_domain::sales::ShopperId, ApplicationError> {
         actor.require_sales_channel()?;
         self.repository
-            .create_shopper(actor, shopper_session_meta(context))
+            .create_shopper(actor, shopper_session_attribution(context))
             .await
     }
 
@@ -241,14 +241,11 @@ fn sanitized_attribution_string(value: Option<String>) -> Option<String> {
     })
 }
 
-/// Shape the acquisition snapshot into `{ "first_seen": .., "last_seen": .. }`.
-/// Both start identical; a later "seen" touch overwrites `last_seen` (and the
-/// row's `last_seen_at`) in place.
-///
-/// ponytail: only the create path is wired — `last_seen` is refreshed just
-/// here, not on subsequent shopper requests. Add a touch in the shopper
-/// context path if per-visit recency actually gets used.
-fn shopper_session_meta(context: ShopperSessionContext) -> Option<Value> {
+/// Shape the acquisition snapshot into `{ "first_seen": .., "last_seen": .. }`
+/// for `commerce.shoppers.attribution`. Both are identical at create; there is
+/// no per-visit refresh, so `last_seen` only diverges if a future touch path
+/// writes it.
+fn shopper_session_attribution(context: ShopperSessionContext) -> Option<Value> {
     let snapshot = shopper_seen_snapshot(context)?;
     Some(json!({ "first_seen": snapshot.clone(), "last_seen": snapshot }))
 }
@@ -309,7 +306,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shopper_session_meta_records_first_and_last_seen_with_nested_utm() {
+    fn shopper_session_attribution_records_first_and_last_seen_with_nested_utm() {
         let context = ShopperSessionContext {
             user_agent: Some("Mozilla/5.0".into()),
             ip_address: Some("203.0.113.7".into()),
@@ -320,19 +317,19 @@ mod tests {
             },
         };
 
-        let meta = shopper_session_meta(context).expect("some meta");
+        let attribution = shopper_session_attribution(context).expect("some attribution");
 
         let expected = json!({
             "user_agent": "Mozilla/5.0",
             "ip": "203.0.113.7",
             "utm": {"utm_source": "newsletter", "utm_medium": "email"},
         });
-        assert_eq!(meta["first_seen"], expected);
-        assert_eq!(meta["last_seen"], expected);
+        assert_eq!(attribution["first_seen"], expected);
+        assert_eq!(attribution["last_seen"], expected);
     }
 
     #[test]
-    fn shopper_session_meta_is_none_when_nothing_was_captured() {
-        assert!(shopper_session_meta(ShopperSessionContext::default()).is_none());
+    fn shopper_session_attribution_is_none_when_nothing_was_captured() {
+        assert!(shopper_session_attribution(ShopperSessionContext::default()).is_none());
     }
 }

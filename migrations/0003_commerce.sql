@@ -49,14 +49,16 @@ CREATE TABLE commerce.shoppers (
     id           UUID          NOT NULL PRIMARY KEY,
     store_id     UUID          NOT NULL,
     meta         JSONB,
-    last_seen_at TIMESTAMPTZ   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    attribution  JSONB,
     created_at   TIMESTAMPTZ   NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   TIMESTAMPTZ   NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT shoppers_store_id_id_key       UNIQUE (store_id, id),
-    CONSTRAINT shoppers_store_id_fkey         FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT shoppers_meta_size_check       CHECK (meta IS NULL OR pg_column_size(meta) <= 32768),
-    CONSTRAINT shoppers_meta_is_object_check  CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
+    CONSTRAINT shoppers_store_id_id_key              UNIQUE (store_id, id),
+    CONSTRAINT shoppers_store_id_fkey                FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT shoppers_meta_size_check              CHECK (meta IS NULL OR pg_column_size(meta) <= 32768),
+    CONSTRAINT shoppers_meta_is_object_check         CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object'),
+    CONSTRAINT shoppers_attribution_size_check       CHECK (attribution IS NULL OR pg_column_size(attribution) <= 32768),
+    CONSTRAINT shoppers_attribution_is_object_check  CHECK (attribution IS NULL OR jsonb_typeof(attribution) = 'object')
 );
 
 CREATE TABLE commerce.channels (
@@ -93,7 +95,6 @@ CREATE TABLE commerce.channel_publishable_keys (
 );
 
 CREATE INDEX stores_status_idx ON commerce.stores (status);
-CREATE INDEX shoppers_store_seen_idx ON commerce.shoppers (store_id, last_seen_at DESC, id DESC);
 CREATE INDEX store_memberships_user_idx ON commerce.store_memberships (user_id, store_id);
 CREATE INDEX channels_store_status_idx ON commerce.channels (store_id, status);
 CREATE INDEX channel_publishable_keys_store_created_idx ON commerce.channel_publishable_keys (store_id, created_at DESC, id DESC);

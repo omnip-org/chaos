@@ -30,15 +30,15 @@ impl PostgresStorefrontSalesRepository {
     pub(crate) async fn create_shopper(
         &self,
         actor: &MachineActor,
-        meta: Option<Value>,
+        attribution: Option<Value>,
     ) -> Result<ShopperId, ApplicationError> {
         require_channel(actor)?;
         let shopper_id = ShopperId::new();
         let mut transaction = self.begin(actor).await?;
-        sqlx::query("INSERT INTO commerce.shoppers (id, store_id, meta) VALUES ($1, $2, $3)")
+        sqlx::query("INSERT INTO commerce.shoppers (id, store_id, attribution) VALUES ($1, $2, $3)")
             .bind(shopper_id.as_uuid())
             .bind(actor.store_id.as_uuid())
-            .bind(meta)
+            .bind(attribution)
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
