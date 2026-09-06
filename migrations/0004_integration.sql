@@ -3,6 +3,7 @@ CREATE SCHEMA integration;
 SELECT pgmq.create('search_index_queue');
 SELECT pgmq.create('analytics_capi_queue');
 SELECT pgmq.create('notification_email_queue');
+SELECT pgmq.create('provider_webhooks_queue');
 
 SELECT pgmq.bind_topic('product.updated',                  'search_index_queue');
 SELECT pgmq.bind_topic('order.payment.initiated',          'analytics_capi_queue');
@@ -12,6 +13,7 @@ SELECT pgmq.bind_topic('order.payment.partially_refunded', 'notification_email_q
 SELECT pgmq.bind_topic('order.payment.refunded',           'notification_email_queue');
 SELECT pgmq.bind_topic('order.fulfillment.shipped',        'notification_email_queue');
 SELECT pgmq.bind_topic('order.fulfillment.delivered',      'notification_email_queue');
+SELECT pgmq.bind_topic('provider.webhook.received',        'provider_webhooks_queue');
 
 CREATE TYPE integration.provider_capability AS ENUM ('email', 'payment', 'shipping', 'analytics');
 
@@ -44,9 +46,11 @@ CREATE INDEX provider_accounts_store_capability_created_idx ON integration.provi
 
 -- Every verified provider webhook lands here first: one append-only row per
 -- (provider account, provider event id). The insert is the dedup — a provider
--- retry hits the unique constraint and the caller skips reprocessing. Payload
--- interpretation stays in the capability service, which runs synchronously in
--- the same request right after this row commits.
+-- retry hits the unique constraint and no second job is enqueued. The same
+-- transaction publishes `provider.webhook.received` onto
+-- `provider_webhooks_queue`; a worker drains that queue, applies the event
+-- through the owning capability, and stamps `processed_at`. `processed_at IS
+-- NULL` past a grace period is the "stuck webhook" signal.
 CREATE TABLE integration.provider_webhook_audit (
     id                     UUID                            NOT NULL PRIMARY KEY,
     store_id               UUID                            NOT NULL,
@@ -58,6 +62,7 @@ CREATE TABLE integration.provider_webhook_audit (
     normalized_event_type  TEXT,
     payload                JSONB                           NOT NULL,
     received_at            TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processed_at           TIMESTAMPTZ,
 
     CONSTRAINT provider_webhook_audit_dedup_key              UNIQUE (provider_account_id, provider_event_id),
     CONSTRAINT provider_webhook_audit_account_fkey           FOREIGN KEY (store_id, provider_account_id) REFERENCES integration.provider_accounts (store_id, id) ON DELETE CASCADE,
@@ -67,6 +72,7 @@ CREATE TABLE integration.provider_webhook_audit (
 );
 
 CREATE INDEX provider_webhook_audit_store_received_idx ON integration.provider_webhook_audit (store_id, received_at DESC, id DESC);
+CREATE INDEX provider_webhook_audit_unprocessed_idx ON integration.provider_webhook_audit (received_at) WHERE processed_at IS NULL;
 
 CREATE FUNCTION integration.prevent_provider_account_identity_change ()
 RETURNS TRIGGER
@@ -252,6 +258,7 @@ GRANT UPDATE (
 REVOKE DELETE, TRUNCATE ON integration.provider_accounts FROM chaos_runtime;
 
 REVOKE UPDATE, DELETE, TRUNCATE ON integration.provider_webhook_audit FROM chaos_runtime;
+GRANT UPDATE (processed_at) ON integration.provider_webhook_audit TO chaos_runtime;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA integration GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
 

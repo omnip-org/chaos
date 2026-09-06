@@ -13,6 +13,7 @@ pub mod pricing;
 pub mod runtime;
 pub mod sales;
 pub mod store;
+pub mod webhooks;
 
 mod email_templates;
 mod error;

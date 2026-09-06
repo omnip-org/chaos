@@ -320,11 +320,11 @@ impl PaymentService {
         })
     }
 
-    /// Verifies the wire payload, appends it to the provider webhook audit,
-    /// then processes it synchronously in the same request. A processing
-    /// error propagates out as a non-2xx response, which the provider
-    /// retries; the audit row's uniqueness makes that retry a no-op for the
-    /// side effects that already committed.
+    /// Verifies the wire payload and appends it to the provider webhook audit,
+    /// which enqueues a `provider.webhook.received` job. The event is applied
+    /// asynchronously by `crate::webhooks::ProviderWebhookWorker`, so the HTTP
+    /// caller only ever gets a fast verify + persist. A verification failure
+    /// propagates as a non-2xx and the provider retries.
     pub async fn receive_provider_webhook(
         &self,
         provider: &str,
@@ -353,45 +353,8 @@ impl PaymentService {
             payload: event.payload,
             verified_at: event.verified_at,
         };
-        let Some(store_id) = self.webhook_inbox.record(&envelope).await? else {
-            // Already audited under this (provider account, event id) — a
-            // provider retry. The first delivery already did the work.
-            return Ok(());
-        };
-        let Some(normalized_event_type) = envelope.normalized_event_type.as_deref() else {
-            // Verified but not a shape this version understands. Recorded for
-            // the audit trail; nothing to act on.
-            tracing::info!(
-                provider,
-                provider_event_type = %envelope.provider_event_type,
-                "unsupported payment webhook"
-            );
-            return Ok(());
-        };
-        let reconciliation = self
-            .repository
-            .process_webhook_job(
-                store_id,
-                normalized_event_type,
-                envelope.provider_account_id,
-                &envelope.payload,
-                received_at,
-            )
-            .await?;
-        if let Some(context) = reconciliation {
-            let gateway = self
-                .payment_providers
-                .get(provider)
-                .ok_or_else(payment_provider_not_supported)?;
-            let observations = gateway
-                .list_refunds(
-                    &context.credential_secret_reference,
-                    &context.payment_provider_reference,
-                )
-                .await?;
-            self.repository
-                .apply_refund_reconciliation(&context, &observations, received_at)
-                .await?;
+        if !self.webhook_inbox.record(&envelope).await? {
+            tracing::debug!(provider, "duplicate payment webhook ignored");
         }
         Ok(())
     }

@@ -12,6 +12,11 @@ pub async fn run(
         runtime.email_workers.clone(),
         lifecycle.clone(),
     ));
+    let provider_webhook_worker = tokio::spawn(provider_webhook_worker_loop(
+        runtime.provider_webhook_worker.clone(),
+        runtime.clock.clone(),
+        lifecycle.clone(),
+    ));
     let capi_worker = tokio::spawn(capi_worker_loop(
         runtime.capi_worker.clone(),
         lifecycle.clone(),
@@ -29,10 +34,34 @@ pub async fn run(
     shutdown_signal(lifecycle).await;
     tokio::join!(
         drain_worker("email", email_worker, worker_shutdown_timeout),
+        drain_worker(
+            "provider-webhook",
+            provider_webhook_worker,
+            worker_shutdown_timeout
+        ),
         drain_worker("capi", capi_worker, worker_shutdown_timeout),
         drain_worker("search", search_worker, worker_shutdown_timeout),
         drain_worker("maintenance", maintenance_worker, worker_shutdown_timeout),
     );
+}
+
+async fn provider_webhook_worker_loop(
+    worker: std::sync::Arc<chaos_core::webhooks::ProviderWebhookWorker>,
+    clock: std::sync::Arc<dyn chaos_core::contracts::Clock>,
+    lifecycle: Lifecycle,
+) {
+    let worker_id = Uuid::now_v7();
+    let mut backoff = PollBackoff::new();
+    while lifecycle.is_accepting_traffic() {
+        let processed = match worker.run_batch(clock.now(), 10).await {
+            Ok(count) => count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "provider webhook batch failed");
+                0
+            }
+        };
+        tokio::time::sleep(backoff.observe(processed)).await;
+    }
 }
 
 async fn email_worker_loop(

@@ -13,7 +13,9 @@ mod webhooks;
 pub use accounts::PostgresIntegrationAccountRepository;
 pub use email::PostgresEmailRepository;
 pub(crate) use email::{EmailBrandWrite, EmailProviderAccountWrite};
-pub use webhooks::PostgresIntegrationWebhookRepository;
+pub use webhooks::{
+    PostgresIntegrationWebhookRepository, PostgresProviderWebhookAudit, ProviderWebhookAuditRow,
+};
 
 /// PostgreSQL-backed leasing for every topic-routed queue. Provider-specific
 /// payload interpretation stays in the owning application service; this

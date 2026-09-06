@@ -27,11 +27,13 @@ pub struct VerifiedWebhookEvent {
 
 #[async_trait]
 pub trait WebhookInbox: Send + Sync {
-    /// Appends the verified event to `integration.provider_webhook_audit`.
-    /// Returns the resolved store id when the row was newly written, or
-    /// `None` when `(provider_account_id, provider_event_id)` was already
-    /// audited (a provider retry) and the caller must not reprocess it.
-    async fn record(&self, event: &VerifiedWebhookEvent) -> Result<Option<Uuid>, ApplicationError>;
+    /// Appends the verified event to `integration.provider_webhook_audit` and,
+    /// in the same transaction, publishes `provider.webhook.received` onto
+    /// `provider_webhooks_queue` for the drain worker to apply. Returns `true`
+    /// when the row was newly written, `false` when
+    /// `(provider_account_id, provider_event_id)` was already audited (a
+    /// provider retry) and no new job was enqueued.
+    async fn record(&self, event: &VerifiedWebhookEvent) -> Result<bool, ApplicationError>;
 }
 
 #[async_trait]
