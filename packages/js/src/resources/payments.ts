@@ -1,6 +1,5 @@
 import type { ChaosStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
-import { fnv1a32 } from "../internal/hash.js";
 import { isRecord, requireData } from "../internal/response.js";
 import { readUtmTags } from "../internal/utm.js";
 import type {
@@ -19,7 +18,25 @@ interface EmbeddedCheckoutRequest {
 }
 
 export class PaymentsResource {
+  /**
+   * One idempotency key per cart id, minted on the first checkout attempt and
+   * reused for every later attempt on that cart. A dropped response therefore
+   * retries under the same key (the server returns the existing checkout
+   * instead of starting a second one); a cart id is single-use for checkout
+   * anyway, since the first success locks it.
+   */
+  private readonly idempotencyKeys = new Map<string, string>();
+
   constructor(private readonly client: ChaosStorefrontClient) {}
+
+  private checkoutIdempotencyKey(cartId: string): string {
+    let key = this.idempotencyKeys.get(cartId);
+    if (!key) {
+      key = this.client.randomUUID();
+      this.idempotencyKeys.set(cartId, key);
+    }
+    return key;
+  }
 
   async createEmbeddedCheckout(
     cartId: string,
@@ -65,7 +82,7 @@ export class PaymentsResource {
         method: "POST",
         body,
         requiresShopperToken: true,
-        idempotencyKey: checkoutIdempotencyKey(cart, body),
+        idempotencyKey: this.checkoutIdempotencyKey(cart.id),
       },
     );
     return requireEmbeddedCheckoutSession(response);
@@ -145,51 +162,4 @@ function readCookie(name: string): string | undefined {
   const prefix = `${name}=`;
   const entry = cookie.split("; ").find((value) => value.startsWith(prefix));
   return entry ? decodeURIComponent(entry.slice(prefix.length)) : undefined;
-}
-
-function checkoutIdempotencyKey(
-  cart: Cart,
-  request: EmbeddedCheckoutRequest,
-): string {
-  // The source Cart changes status and version when checkout starts. Exclude
-  // those server-side lifecycle fields so a lost response can safely retry
-  // with the same key; include the actual cart snapshot so a real cart edit
-  // receives a new key. `attribution` is best-effort enrichment (it can
-  // legitimately differ between an initial call and a retry, e.g. a cookie
-  // that finishes writing in between) and must not mint a second checkout.
-  const { attribution: _attribution, ...fingerprintedRequest } = request;
-  return stableUuid(
-    JSON.stringify([
-      "embedded-checkout-v3",
-      cart.id,
-      cart.currency,
-      cart.lines.map((line) => [
-        line.product_id,
-        line.product_variant_id,
-        line.product_title,
-        line.variant_title,
-        line.sku,
-        line.quantity,
-        line.unit_price_amount_minor,
-      ]),
-      fingerprintedRequest,
-    ]),
-  );
-}
-
-const STABLE_UUID_SEEDS = [
-  2_166_136_261, 2_246_822_519, 3_266_489_909, 3_432_918_353,
-];
-
-function stableUuid(input: string): string {
-  const hashes = STABLE_UUID_SEEDS.map((seed) => fnv1a32(input, seed, true));
-  const bytes = new Uint8Array(16);
-  const view = new DataView(bytes.buffer);
-  hashes.forEach((hash, index) => view.setUint32(index * 4, hash));
-  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0"));
-  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex
-    .slice(6, 8)
-    .join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
 }

@@ -45,14 +45,12 @@ pub struct SetCartLineInput {
     pub cart_id: CartId,
     pub product_variant_id: ProductVariantId,
     pub quantity: u32,
-    pub expected_version: u64,
 }
 
 pub struct RemoveCartLineInput {
     pub actor: ShopperActor,
     pub cart_id: CartId,
     pub product_variant_id: ProductVariantId,
-    pub expected_version: u64,
 }
 
 pub struct CreateStripeCheckoutInput {
@@ -151,7 +149,6 @@ impl StorefrontSales {
                 input.cart_id,
                 input.product_variant_id,
                 input.quantity,
-                input.expected_version,
             )
             .await
     }
@@ -162,12 +159,7 @@ impl StorefrontSales {
     ) -> Result<CartDetail, ApplicationError> {
         input.actor.machine.require_sales_channel()?;
         self.repository
-            .remove_cart_line(
-                &input.actor,
-                input.cart_id,
-                input.product_variant_id,
-                input.expected_version,
-            )
+            .remove_cart_line(&input.actor, input.cart_id, input.product_variant_id)
             .await
     }
 

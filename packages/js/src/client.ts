@@ -62,8 +62,6 @@ export interface RequestOptions<Query extends object = Record<string, never>> {
   requestId?: string;
   /** Business idempotency key sent as Idempotency-Key. */
   idempotencyKey?: string;
-  /** Optimistic concurrency validator sent as If-Match. */
-  ifMatch?: string;
 }
 
 export class ChaosStorefrontClient {
@@ -281,9 +279,6 @@ export class ChaosStorefrontClient {
     }
     if (options.idempotencyKey) {
       headers["Idempotency-Key"] = options.idempotencyKey;
-    }
-    if (options.ifMatch) {
-      headers["If-Match"] = options.ifMatch;
     }
     if (options.requiresShopperToken) {
       headers["x-chaos-shopper-token"] = await this.ensureShopperToken();

@@ -53,7 +53,6 @@ struct CartData {
     id: Uuid,
     currency: String,
     status: &'static str,
-    version: u64,
     lines: Vec<CartLineData>,
     subtotal_amount_minor: i64,
     created_at: ApiDateTime,
@@ -96,7 +95,6 @@ fn cart_data(cart: CartDetail) -> Result<CartData, ApplicationError> {
         id: cart.id.as_uuid(),
         currency: cart.currency.as_str().to_owned(),
         status: cart.status.as_str(),
-        version: cart.version,
         lines: cart.lines.into_iter().map(cart_line_data).collect(),
         subtotal_amount_minor: cart.subtotal_amount_minor,
         created_at: cart.created_at.into(),
@@ -146,19 +144,6 @@ fn cart_media_data(media: StorefrontMediaAsset) -> CartMediaData {
         position: media.position,
         url: media.url,
     }
-}
-
-/// The `If-Match` header carries the Cart version the client last saw, so a
-/// concurrent edit is rejected instead of silently lost.
-fn expected_cart_version(headers: &HeaderMap) -> Result<u64, ApiError> {
-    let value = headers
-        .get("if-match")
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.trim().trim_matches('"'))
-        .filter(|value| !value.is_empty())
-        .and_then(|value| value.parse::<u64>().ok())
-        .ok_or_else(|| invalid_value("If-Match", "must contain the Cart version"))?;
-    Ok(value)
 }
 
 // ===== POST /carts =====
@@ -214,12 +199,10 @@ mod set_cart_line {
 
     pub(super) async fn handler(
         State(state): State<ApiState>,
-        headers: HeaderMap,
         ShopperContext(actor): ShopperContext,
         ApiPath(path): ApiPath<CartLinePath>,
         ApiJson(body): ApiJson<SetCartLineBody>,
     ) -> Result<ApiResponse<CartData>, ApiError> {
-        let expected_version = expected_cart_version(&headers)?;
         let cart = state
             .storefront_sales
             .set_cart_line(SetCartLineInput {
@@ -227,7 +210,6 @@ mod set_cart_line {
                 cart_id: CartId::from_uuid(path.cart_id),
                 product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
                 quantity: body.quantity,
-                expected_version,
             })
             .await?;
         Ok(ApiResponse::ok(cart_data(cart)?))
@@ -241,18 +223,15 @@ mod remove_cart_line {
 
     pub(super) async fn handler(
         State(state): State<ApiState>,
-        headers: HeaderMap,
         ShopperContext(actor): ShopperContext,
         ApiPath(path): ApiPath<CartLinePath>,
     ) -> Result<ApiResponse<CartData>, ApiError> {
-        let expected_version = expected_cart_version(&headers)?;
         let cart = state
             .storefront_sales
             .remove_cart_line(RemoveCartLineInput {
                 actor,
                 cart_id: CartId::from_uuid(path.cart_id),
                 product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
-                expected_version,
             })
             .await?;
         Ok(ApiResponse::ok(cart_data(cart)?))

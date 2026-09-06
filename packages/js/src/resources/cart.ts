@@ -87,18 +87,10 @@ export class CartResource {
     cartId: string,
     productVariantId: string,
     body: SetCartLineRequest,
-    expectedVersion?: number,
   ): Promise<DataEnvelope<Cart>> {
     return this.enqueueMutation(cartId, async () => {
-      const current =
-        expectedVersion === undefined ? await this.get(cartId) : undefined;
-      return this.setLineRequest(
-        cartId,
-        productVariantId,
-        body,
-        expectedVersion ?? current!.data.version,
-        current?.data,
-      );
+      const current = await this.get(cartId);
+      return this.setLineRequest(cartId, productVariantId, body, current.data);
     });
   }
 
@@ -122,7 +114,6 @@ export class CartResource {
         {
           quantity: (existing?.quantity ?? 0) + quantity,
         },
-        current.data.version,
         current.data,
       );
     });
@@ -142,7 +133,6 @@ export class CartResource {
         {
           method: "DELETE",
           requiresShopperToken: true,
-          ifMatch: String(current.data.version),
         },
       );
       this.client.recordCartMutation({
@@ -160,10 +150,9 @@ export class CartResource {
     cartId: string,
     productVariantId: string,
     body: SetCartLineRequest,
-    expectedVersion: number,
-    previousCart: Cart | undefined,
+    previousCart: Cart,
   ): Promise<DataEnvelope<Cart>> {
-    const previousQuantity = previousCart?.lines.find(
+    const previousQuantity = previousCart.lines.find(
       (line) => line.product_variant_id === productVariantId,
     )?.quantity;
     const response = await this.client.request<DataEnvelope<Cart>>(
@@ -172,7 +161,6 @@ export class CartResource {
         method: "PUT",
         body,
         requiresShopperToken: true,
-        ifMatch: String(expectedVersion),
       },
     );
     const newQuantity = response.data.lines.find(

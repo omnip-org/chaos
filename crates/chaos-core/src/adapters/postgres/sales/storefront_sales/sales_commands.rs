@@ -141,13 +141,11 @@ impl PostgresStorefrontSalesRepository {
         cart_id: CartId,
         product_variant_id: ProductVariantId,
         quantity: u32,
-        expected_version: u64,
     ) -> Result<CartDetail, ApplicationError> {
         let actor = &shopper.machine;
         let mut transaction = self.begin_shopper(shopper).await?;
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
         let header = lock_active_cart(&mut transaction, actor, cart_id).await?;
-        ensure_cart_version(header.4, expected_version)?;
         let currency = parse_currency(&header.2)?;
         let row = resolve_variant(
             &mut transaction,
@@ -197,13 +195,12 @@ impl PostgresStorefrontSalesRepository {
         shopper: &ShopperActor,
         cart_id: CartId,
         product_variant_id: ProductVariantId,
-        expected_version: u64,
     ) -> Result<CartDetail, ApplicationError> {
         let actor = &shopper.machine;
         let mut transaction = self.begin_shopper(shopper).await?;
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
-        let header = lock_active_cart(&mut transaction, actor, cart_id).await?;
-        ensure_cart_version(header.4, expected_version)?;
+        // Serializes against concurrent line mutations and rejects a non-active Cart.
+        lock_active_cart(&mut transaction, actor, cart_id).await?;
         sqlx::query(
             "DELETE FROM commerce.cart_lines WHERE store_id = $1 \
              AND cart_id = $2 AND product_variant_id = $3",
@@ -336,7 +333,7 @@ impl PostgresStorefrontSalesRepository {
         // line snapshot. Any later failure rolls the whole handoff back.
         let cart_locked = sqlx::query(
             "UPDATE commerce.carts SET status = 'locked'::commerce.cart_status, \
-                    version = version + 1, updated_at = $3, attribution = $4 \
+                    updated_at = $3, attribution = $4 \
              WHERE store_id = $1 AND id = $2 AND status = 'active'",
         )
         .bind(actor.store_id.as_uuid())
@@ -557,17 +554,6 @@ async fn existing_checkout_draft(
         subtotal_amount_minor: row.5,
         event_id: row.0,
     }))
-}
-
-fn ensure_cart_version(current: i64, expected: u64) -> Result<(), ApplicationError> {
-    if u64::try_from(current).ok() == Some(expected) {
-        Ok(())
-    } else {
-        Err(ApplicationError::Conflict {
-            code: "cart_version_conflict",
-            message: "the Cart changed; reload it before retrying the mutation",
-        })
-    }
 }
 
 async fn insert_order_lines(

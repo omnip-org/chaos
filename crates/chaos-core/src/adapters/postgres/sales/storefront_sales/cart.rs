@@ -99,7 +99,7 @@ async fn bump_cart(
     cart_id: CartId,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "UPDATE commerce.carts SET version = version + 1, updated_at = CURRENT_TIMESTAMP \
+        "UPDATE commerce.carts SET updated_at = CURRENT_TIMESTAMP \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(actor.store_id.as_uuid())
@@ -114,7 +114,7 @@ async fn lock_active_cart(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     cart_id: CartId,
-) -> Result<(Uuid, Uuid, String, String, i64), ApplicationError> {
+) -> Result<(Uuid, Uuid, String, String), ApplicationError> {
     let row = lock_cart(transaction, actor, cart_id).await?;
     if row.3 != "active" {
         return Err(cart_not_active());
@@ -126,10 +126,10 @@ async fn lock_cart(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     cart_id: CartId,
-) -> Result<(Uuid, Uuid, String, String, i64), ApplicationError> {
-    let row = sqlx::query_as::<_, (Uuid, Uuid, String, String, i64)>(
+) -> Result<(Uuid, Uuid, String, String), ApplicationError> {
+    let row = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
         "SELECT cart.channel_id, cart.price_list_id, price_list.currency::text, \
-                cart.status::text, cart.version \
+                cart.status::text \
          FROM commerce.carts AS cart \
          INNER JOIN commerce.price_lists AS price_list \
            ON price_list.store_id = cart.store_id AND price_list.id = cart.price_list_id \
@@ -153,7 +153,7 @@ async fn load_cart(
 ) -> Result<Option<CartDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, CartHeaderRow>(
         "SELECT cart.id, cart.shopper_id, cart.price_list_id, price_list.currency::text, \
-                cart.status::text, cart.version, cart.created_at, cart.updated_at \
+                cart.status::text, cart.created_at, cart.updated_at \
          FROM commerce.carts AS cart \
          INNER JOIN commerce.price_lists AS price_list \
            ON price_list.store_id = cart.store_id AND price_list.id = cart.price_list_id \
@@ -197,11 +197,10 @@ async fn load_cart(
         price_list_id: PriceListId::from_uuid(row.2),
         currency,
         status,
-        version: u64::try_from(row.5).map_err(unexpected_conversion)?,
         lines: items,
         subtotal_amount_minor: subtotal.amount_minor(),
-        created_at: row.6,
-        updated_at: row.7,
+        created_at: row.5,
+        updated_at: row.6,
     }))
 }
 

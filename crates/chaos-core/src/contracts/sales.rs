@@ -33,7 +33,6 @@ pub struct CartDetail {
     pub price_list_id: PriceListId,
     pub currency: CurrencyCode,
     pub status: CartStatus,
-    pub version: u64,
     pub lines: Vec<CartLineItem>,
     pub subtotal_amount_minor: i64,
     pub created_at: OffsetDateTime,

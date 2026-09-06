@@ -61,7 +61,6 @@ type CartHeaderRow = (
     Uuid,
     String,
     String,
-    i64,
     OffsetDateTime,
     OffsetDateTime,
 );

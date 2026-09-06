@@ -145,7 +145,6 @@ export interface Cart {
   id: UUID;
   currency: CurrencyCode;
   status: "active" | "locked" | "completed" | "abandoned";
-  version: number;
   lines: CartLine[];
   subtotal_amount_minor: number;
   created_at: string;

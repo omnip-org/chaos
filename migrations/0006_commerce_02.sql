@@ -13,7 +13,6 @@ CREATE TABLE commerce.carts (
     status                commerce.cart_status    NOT NULL DEFAULT 'active',
     payment_client_action JSONB,
     attribution           JSONB,
-    version               BIGINT                  NOT NULL DEFAULT 0,
     created_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -23,7 +22,6 @@ CREATE TABLE commerce.carts (
     CONSTRAINT carts_store_id_channel_fkey        FOREIGN KEY (store_id, channel_id) REFERENCES commerce.channels (store_id, id),
     CONSTRAINT carts_store_id_shopper_fkey        FOREIGN KEY (store_id, shopper_id) REFERENCES commerce.shoppers (store_id, id),
     CONSTRAINT carts_store_id_price_list_fkey     FOREIGN KEY (store_id, price_list_id) REFERENCES commerce.price_lists (store_id, id),
-    CONSTRAINT carts_version_nonnegative_check    CHECK (version >= 0),
     CONSTRAINT carts_payment_client_action_check  CHECK (
         payment_client_action IS NULL
         OR (

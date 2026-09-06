@@ -277,7 +277,6 @@ test("shares one shopper-session request across concurrent explicit acquisitions
 
 test("serializes concurrent addLine calls for one cart", async () => {
   let quantity = 1;
-  let version = 0;
   const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage: null,
@@ -291,17 +290,14 @@ test("serializes concurrent addLine calls for one cart", async () => {
         return jsonResponse(200, {
           data: {
             id: "cart-1",
-            version,
             lines: [{ product_variant_id: "variant-1", quantity }],
           },
         });
       }
       quantity = JSON.parse(String(init.body)).quantity;
-      version += 1;
       return jsonResponse(200, {
         data: {
           id: "cart-1",
-          version,
           lines: [{ product_variant_id: "variant-1", quantity }],
         },
       });
@@ -394,7 +390,6 @@ test("payments create an embedded Checkout session with SDK-owned request detail
         return jsonResponse(200, {
           data: {
             id: "cart-1",
-            version: 4,
             currency: "USD",
             subtotal_amount_minor: 2_000,
             lines: [],
@@ -428,10 +423,7 @@ test("payments create an embedded Checkout session with SDK-owned request detail
     requests[2]?.headers.get("x-chaos-shopper-token"),
     "shopper-token",
   );
-  assert.match(
-    requests[2]?.headers.get("idempotency-key") ?? "",
-    /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-  );
+  assert.equal(requests[2]?.headers.get("idempotency-key"), "id-1");
   assert.deepEqual(JSON.parse(requests[2]?.body ?? "{}"), {
     payment_provider: "stripe",
     return_url: "https://shop.example.com/checkout/success",
@@ -459,7 +451,7 @@ test("checkout attaches explicit attribution and excludes it from the idempotenc
       }
       if (url.endsWith("/carts/cart-1")) {
         return jsonResponse(200, {
-          data: { id: "cart-1", version: 4, currency: "USD", subtotal_amount_minor: 2_000, lines: [] },
+          data: { id: "cart-1", currency: "USD", subtotal_amount_minor: 2_000, lines: [] },
         });
       }
       if (url.endsWith("/checkout")) {
@@ -520,7 +512,7 @@ test("checkout defaults source_url to the current page in a browser", async () =
         }
         if (url.endsWith("/carts/cart-1")) {
           return jsonResponse(200, {
-            data: { id: "cart-1", version: 4, currency: "USD", subtotal_amount_minor: 2_000, lines: [] },
+            data: { id: "cart-1", currency: "USD", subtotal_amount_minor: 2_000, lines: [] },
           });
         }
         if (url.endsWith("/checkout")) {
@@ -578,7 +570,7 @@ test("checkout captures utm_* tags from the current page URL", async () => {
         }
         if (url.endsWith("/carts/cart-1")) {
           return jsonResponse(200, {
-            data: { id: "cart-1", version: 4, currency: "USD", subtotal_amount_minor: 2_000, lines: [] },
+            data: { id: "cart-1", currency: "USD", subtotal_amount_minor: 2_000, lines: [] },
           });
         }
         if (url.endsWith("/checkout")) {
@@ -671,7 +663,6 @@ test("cart line mutations report the resulting quantity delta to analytics", asy
         return jsonResponse(200, {
           data: {
             id: "cart-1",
-            version: 4,
             currency: "USD",
             subtotal_amount_minor: 2_000,
             lines: [{ product_id: "p-1", product_variant_id: "v-1", quantity: 1, unit_price_amount_minor: 500 }],
@@ -682,7 +673,6 @@ test("cart line mutations report the resulting quantity delta to analytics", asy
       return jsonResponse(200, {
         data: {
           id: "cart-1",
-          version: 5,
           currency: "USD",
           subtotal_amount_minor: 1_500,
           lines: [{ product_id: "p-1", product_variant_id: "v-1", quantity: 3, unit_price_amount_minor: 500 }],
@@ -698,7 +688,6 @@ test("cart line mutations report the resulting quantity delta to analytics", asy
     {
       cart: {
         id: "cart-1",
-        version: 5,
         currency: "USD",
         subtotal_amount_minor: 1_500,
         lines: [{ product_id: "p-1", product_variant_id: "v-1", quantity: 3, unit_price_amount_minor: 500 }],
@@ -716,7 +705,6 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
     id: "cart-1",
     currency: "USD",
     status: "active",
-    version: 4,
     subtotal_amount_minor: 2_000,
     lines: [
       {
@@ -735,7 +723,6 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
     ...sourceCart,
     id: "active-cart",
     status: "active",
-    version: 1,
     subtotal_amount_minor: 0,
     lines: [],
   };
@@ -803,7 +790,6 @@ test("payments reject a checkout response that is missing required fields", asyn
         return jsonResponse(200, {
           data: {
             id: "cart-1",
-            version: 4,
             currency: "USD",
             subtotal_amount_minor: 2_000,
             lines: [],
@@ -844,7 +830,6 @@ test("payments create an embedded Checkout session with no attribution outside a
         return jsonResponse(200, {
           data: {
             id: "cart-1",
-            version: 4,
             currency: "USD",
             subtotal_amount_minor: 2_000,
             lines: [],
@@ -880,22 +865,22 @@ test("payments create an embedded Checkout session with no attribution outside a
   });
 });
 
-test("checkout idempotency follows the cart snapshot instead of the cart id", async () => {
-  let cartVersion = 4;
+test("checkout reuses one idempotency key per cart so a retry cannot double-charge", async () => {
   let cartQuantity = 1;
+  let sequence = 0;
   const idempotencyKeys: string[] = [];
   const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage: null,
+    randomUUID: () => `key-${++sequence}`,
     fetch: (async (url: string, init: RequestInit) => {
       if (url.endsWith("/shopper/sessions")) {
         return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
       }
-      if (url.endsWith("/carts/cart-1")) {
+      if (url.endsWith("/carts/cart-1") || url.endsWith("/carts/cart-2")) {
         return jsonResponse(200, {
           data: {
-            id: "cart-1",
-            version: cartVersion,
+            id: url.endsWith("cart-2") ? "cart-2" : "cart-1",
             currency: "USD",
             subtotal_amount_minor: 2_000,
             lines: [
@@ -934,11 +919,12 @@ test("checkout idempotency follows the cart snapshot instead of the cart id", as
   const options = { returnUrl: "https://shop.example.com/checkout/success" };
   await client.payments.createEmbeddedCheckout("cart-1", options);
   await client.payments.createEmbeddedCheckout("cart-1", options);
-  cartVersion = 5;
-  await client.payments.createEmbeddedCheckout("cart-1", options);
   cartQuantity = 2;
   await client.payments.createEmbeddedCheckout("cart-1", options);
+  await client.payments.createEmbeddedCheckout("cart-2", options);
 
+  // Same cart id -> same key on every retry, regardless of cart contents; a
+  // different cart id gets its own key.
   assert.equal(idempotencyKeys.length, 4);
   assert.equal(idempotencyKeys[0], idempotencyKeys[1]);
   assert.equal(idempotencyKeys[1], idempotencyKeys[2]);

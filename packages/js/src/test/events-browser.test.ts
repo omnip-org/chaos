@@ -301,7 +301,6 @@ test("recordCartMutation reuses a server-supplied event ID", () => {
       id: "00000000-0000-4000-8000-000000000030",
       currency: "USD",
       status: "active",
-      version: 1,
       lines: [
         {
           product_id: "00000000-0000-4000-8000-000000000031",
@@ -375,7 +374,6 @@ test("attributes server checkout creation to the source Cart", () => {
       id: "00000000-0000-4000-8000-000000000021",
       currency: "USD",
       status: "locked",
-      version: 1,
       lines: [
         {
           product_id: "00000000-0000-4000-8000-000000000024",
@@ -396,7 +394,6 @@ test("attributes server checkout creation to the source Cart", () => {
       id: "00000000-0000-4000-8000-000000000026",
       currency: "USD",
       status: "active",
-      version: 1,
       lines: [],
       subtotal_amount_minor: 0,
       created_at: "2026-08-16T00:00:00Z",
