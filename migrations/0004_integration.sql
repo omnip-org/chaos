@@ -51,7 +51,7 @@ CREATE INDEX provider_accounts_store_capability_created_idx ON integration.provi
 -- `provider_webhooks_queue`; a worker drains that queue, applies the event
 -- through the owning capability, and stamps `processed_at`. `processed_at IS
 -- NULL` past a grace period is the "stuck webhook" signal.
-CREATE TABLE integration.provider_webhook_audit (
+CREATE TABLE integration.provider_webhooks (
     id                     UUID                            NOT NULL PRIMARY KEY,
     store_id               UUID                            NOT NULL,
     provider_account_id    UUID                            NOT NULL,
@@ -64,15 +64,15 @@ CREATE TABLE integration.provider_webhook_audit (
     received_at            TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     processed_at           TIMESTAMPTZ,
 
-    CONSTRAINT provider_webhook_audit_dedup_key              UNIQUE (provider_account_id, provider_event_id),
-    CONSTRAINT provider_webhook_audit_account_fkey           FOREIGN KEY (store_id, provider_account_id) REFERENCES integration.provider_accounts (store_id, id) ON DELETE CASCADE,
-    CONSTRAINT provider_webhook_audit_provider_format_check  CHECK (provider ~ '^[a-z][a-z0-9_]*$'),
-    CONSTRAINT provider_webhook_audit_payload_object_check   CHECK (jsonb_typeof(payload) = 'object'),
-    CONSTRAINT provider_webhook_audit_payload_size_check     CHECK (pg_column_size(payload) <= 524288)
+    CONSTRAINT provider_webhooks_dedup_key              UNIQUE (provider_account_id, provider_event_id),
+    CONSTRAINT provider_webhooks_account_fkey           FOREIGN KEY (store_id, provider_account_id) REFERENCES integration.provider_accounts (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT provider_webhooks_provider_format_check  CHECK (provider ~ '^[a-z][a-z0-9_]*$'),
+    CONSTRAINT provider_webhooks_payload_object_check   CHECK (jsonb_typeof(payload) = 'object'),
+    CONSTRAINT provider_webhooks_payload_size_check     CHECK (pg_column_size(payload) <= 524288)
 );
 
-CREATE INDEX provider_webhook_audit_store_received_idx ON integration.provider_webhook_audit (store_id, received_at DESC, id DESC);
-CREATE INDEX provider_webhook_audit_unprocessed_idx ON integration.provider_webhook_audit (received_at) WHERE processed_at IS NULL;
+CREATE INDEX provider_webhooks_store_received_idx ON integration.provider_webhooks (store_id, received_at DESC, id DESC);
+CREATE INDEX provider_webhooks_unprocessed_idx ON integration.provider_webhooks (received_at) WHERE processed_at IS NULL;
 
 CREATE FUNCTION integration.prevent_provider_account_identity_change ()
 RETURNS TRIGGER
@@ -220,9 +220,9 @@ CREATE POLICY store_isolation ON integration.provider_accounts
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-ALTER TABLE integration.provider_webhook_audit ENABLE ROW LEVEL SECURITY;
+ALTER TABLE integration.provider_webhooks ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY store_isolation ON integration.provider_webhook_audit
+CREATE POLICY store_isolation ON integration.provider_webhooks
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
@@ -257,8 +257,8 @@ GRANT UPDATE (
     ON integration.provider_accounts TO chaos_runtime;
 REVOKE DELETE, TRUNCATE ON integration.provider_accounts FROM chaos_runtime;
 
-REVOKE UPDATE, DELETE, TRUNCATE ON integration.provider_webhook_audit FROM chaos_runtime;
-GRANT UPDATE (processed_at) ON integration.provider_webhook_audit TO chaos_runtime;
+REVOKE UPDATE, DELETE, TRUNCATE ON integration.provider_webhooks FROM chaos_runtime;
+GRANT UPDATE (processed_at) ON integration.provider_webhooks TO chaos_runtime;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA integration GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
 

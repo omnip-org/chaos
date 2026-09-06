@@ -12,7 +12,7 @@ use crate::{
 };
 
 /// Verifies and normalizes wire payloads only; it does not interpret them. A
-/// verified webhook is appended to `integration.provider_webhook_audit` (one
+/// verified webhook is appended to `integration.provider_webhooks` (one
 /// row per `(provider_account_id, provider_event_id)` — the unique constraint
 /// is the dedup) and, in the same transaction, a `provider.webhook.received`
 /// job is published onto `provider_webhooks_queue`. The drain worker
@@ -54,7 +54,7 @@ impl WebhookInbox for PostgresIntegrationWebhookRepository {
 
         let audit_id = Uuid::now_v7();
         let inserted = sqlx::query(
-            "INSERT INTO integration.provider_webhook_audit \
+            "INSERT INTO integration.provider_webhooks \
                  (id, store_id, provider_account_id, capability, provider, provider_event_id, \
                   provider_event_type, normalized_event_type, payload) \
              VALUES ($1, $2, $3, $4::integration.provider_capability, $5, $6, $7, $8, $9) \
@@ -89,7 +89,7 @@ impl WebhookInbox for PostgresIntegrationWebhookRepository {
     }
 }
 
-/// Reads and closes out `integration.provider_webhook_audit` rows on behalf of
+/// Reads and closes out `integration.provider_webhooks` rows on behalf of
 /// the drain worker. Every method scopes itself to one store's rows through
 /// the row-level security policy.
 #[derive(Clone)]
@@ -97,7 +97,7 @@ pub struct PostgresProviderWebhookAudit {
     pool: PgPool,
 }
 
-/// One `integration.provider_webhook_audit` row, as the drain worker needs it.
+/// One `integration.provider_webhooks` row, as the drain worker needs it.
 pub struct ProviderWebhookAuditRow {
     pub store_id: Uuid,
     pub provider_account_id: Uuid,
@@ -142,7 +142,7 @@ impl PostgresProviderWebhookAudit {
         >(
             "SELECT store_id, provider_account_id, capability::text, provider, \
                     provider_event_type, normalized_event_type, payload, processed_at \
-             FROM integration.provider_webhook_audit WHERE id = $1",
+             FROM integration.provider_webhooks WHERE id = $1",
         )
         .bind(audit_id)
         .fetch_optional(&mut *transaction)
@@ -176,7 +176,7 @@ impl PostgresProviderWebhookAudit {
             .await
             .map_err(database_error)?;
         sqlx::query(
-            "UPDATE integration.provider_webhook_audit SET processed_at = $2 \
+            "UPDATE integration.provider_webhooks SET processed_at = $2 \
              WHERE id = $1 AND processed_at IS NULL",
         )
         .bind(audit_id)

@@ -27,7 +27,7 @@ pub struct VerifiedWebhookEvent {
 
 #[async_trait]
 pub trait WebhookInbox: Send + Sync {
-    /// Appends the verified event to `integration.provider_webhook_audit` and,
+    /// Appends the verified event to `integration.provider_webhooks` and,
     /// in the same transaction, publishes `provider.webhook.received` onto
     /// `provider_webhooks_queue` for the drain worker to apply. Returns `true`
     /// when the row was newly written, `false` when
