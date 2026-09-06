@@ -2,12 +2,12 @@
 
 use crate::{
     ApplicationError,
-    contracts::{AdminActor, FulfillmentDetail, ShippingProviderAccountDetail},
+    contracts::{AdminActor, FulfillmentDetail, FulfillmentProviderAccountDetail},
     error::database_error,
 };
 use chaos_domain::{
-    fulfillment::{Fulfillment, FulfillmentId, FulfillmentStatus, ShippingProviderAccountId},
-    integration::ShippingProvider,
+    fulfillment::{Fulfillment, FulfillmentId, FulfillmentStatus, FulfillmentProviderAccountId},
+    integration::FulfillmentProvider,
     sales::OrderId,
     store::StoreId,
 };
@@ -16,7 +16,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(sqlx::FromRow)]
-struct ShippingProviderAccountRow {
+struct FulfillmentProviderAccountRow {
     id: Uuid,
     provider: String,
     display_name: String,
@@ -69,9 +69,9 @@ impl PostgresFulfillmentRepository {
         &self,
         actor: AdminActor,
         store_id: StoreId,
-    ) -> Result<Vec<ShippingProviderAccountDetail>, ApplicationError> {
+    ) -> Result<Vec<FulfillmentProviderAccountDetail>, ApplicationError> {
         let mut transaction = self.begin_admin(&actor).await?;
-        let rows = sqlx::query_as::<_, ShippingProviderAccountRow>(
+        let rows = sqlx::query_as::<_, FulfillmentProviderAccountRow>(
             "SELECT id, provider::text, display_name, created_at, updated_at \
              FROM integration.provider_accounts \
              WHERE store_id = $1 AND capability = 'shipping' ORDER BY created_at, id",
@@ -91,7 +91,7 @@ impl PostgresFulfillmentRepository {
         actor: AdminActor,
         store_id: StoreId,
         order_id: OrderId,
-        provider_account_id: ShippingProviderAccountId,
+        provider_account_id: FulfillmentProviderAccountId,
         tracking_number: Option<String>,
         tracking_url: Option<String>,
     ) -> Result<FulfillmentDetail, ApplicationError> {
@@ -385,7 +385,7 @@ async fn load_domain_fulfillment(
     Ok(Fulfillment::rehydrate(
         FulfillmentId::from_uuid(row.id),
         OrderId::from_uuid(row.order_id),
-        ShippingProviderAccountId::from_uuid(row.provider_account_id),
+        FulfillmentProviderAccountId::from_uuid(row.provider_account_id),
         FulfillmentStatus::parse(&row.status).ok_or_else(corrupt_state)?,
         row.tracking_number,
         row.tracking_url,
@@ -416,7 +416,7 @@ fn fulfillment_detail(row: FulfillmentRow) -> Result<FulfillmentDetail, Applicat
     Ok(FulfillmentDetail {
         id: FulfillmentId::from_uuid(row.id),
         order_id: OrderId::from_uuid(row.order_id),
-        provider_account_id: ShippingProviderAccountId::from_uuid(
+        provider_account_id: FulfillmentProviderAccountId::from_uuid(
             row.provider_account_id,
         ),
         provider_reference_id: row.provider_reference_id,
@@ -432,11 +432,11 @@ fn fulfillment_detail(row: FulfillmentRow) -> Result<FulfillmentDetail, Applicat
 }
 
 fn shipping_provider_account_detail(
-    row: ShippingProviderAccountRow,
-) -> Result<ShippingProviderAccountDetail, ApplicationError> {
-    Ok(ShippingProviderAccountDetail {
-        id: ShippingProviderAccountId::from_uuid(row.id),
-        provider: ShippingProvider::parse(&row.provider).ok_or_else(corrupt_state)?,
+    row: FulfillmentProviderAccountRow,
+) -> Result<FulfillmentProviderAccountDetail, ApplicationError> {
+    Ok(FulfillmentProviderAccountDetail {
+        id: FulfillmentProviderAccountId::from_uuid(row.id),
+        provider: FulfillmentProvider::parse(&row.provider).ok_or_else(corrupt_state)?,
         display_name: row.display_name,
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -457,7 +457,7 @@ fn fulfillment_not_found(id: FulfillmentId) -> ApplicationError {
     }
 }
 
-fn shipping_provider_account_not_found(id: ShippingProviderAccountId) -> ApplicationError {
+fn shipping_provider_account_not_found(id: FulfillmentProviderAccountId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "shipping_provider_account",
         id: id.as_uuid().to_string(),

@@ -67,11 +67,11 @@ impl PaymentProvider {
 /// modeled as a provider so the shipping flow is selected explicitly rather
 /// than inferred from a nullable account or free-form text.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum ShippingProvider {
+pub enum FulfillmentProvider {
     Manual,
 }
 
-impl ShippingProvider {
+impl FulfillmentProvider {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Manual => "manual",
@@ -88,7 +88,7 @@ impl ShippingProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmailProvider, IntegrationCapability, PaymentProvider, ShippingProvider};
+    use super::{EmailProvider, IntegrationCapability, PaymentProvider, FulfillmentProvider};
 
     #[test]
     fn providers_round_trip_their_database_values() {
@@ -97,11 +97,11 @@ mod tests {
             Some(PaymentProvider::Stripe)
         );
         assert_eq!(
-            ShippingProvider::parse("manual"),
-            Some(ShippingProvider::Manual)
+            FulfillmentProvider::parse("manual"),
+            Some(FulfillmentProvider::Manual)
         );
         assert_eq!(PaymentProvider::Stripe.as_str(), "stripe");
-        assert_eq!(ShippingProvider::Manual.as_str(), "manual");
+        assert_eq!(FulfillmentProvider::Manual.as_str(), "manual");
         assert_eq!(EmailProvider::parse("resend"), Some(EmailProvider::Resend));
         assert_eq!(IntegrationCapability::Payment.as_str(), "payment");
     }

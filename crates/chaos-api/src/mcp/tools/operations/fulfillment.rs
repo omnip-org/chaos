@@ -20,7 +20,7 @@ use crate::mcp::{
 };
 
 #[derive(Deserialize, JsonSchema)]
-pub struct ListShippingProviderAccountsParams {
+pub struct ListFulfillmentProviderAccountsParams {
     /// The Store UUID whose shipping accounts should be listed.
     pub store_id: String,
 }
@@ -79,7 +79,7 @@ impl ChaosMcp {
     async fn list_shipping_provider_accounts(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<ListShippingProviderAccountsParams>,
+        Parameters(params): Parameters<ListFulfillmentProviderAccountsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.mcp_oauth,
@@ -146,7 +146,7 @@ impl ChaosMcp {
             &params.provider_account_id,
             "provider_account_id",
         ) {
-            Ok(id) => chaos_domain::fulfillment::ShippingProviderAccountId::from_uuid(id),
+            Ok(id) => chaos_domain::fulfillment::FulfillmentProviderAccountId::from_uuid(id),
             Err(result) => return Ok(result),
         };
         match self

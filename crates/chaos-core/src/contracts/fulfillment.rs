@@ -1,13 +1,13 @@
 use chaos_domain::{
-    fulfillment::{FulfillmentId, FulfillmentStatus, ShippingProviderAccountId},
-    integration::ShippingProvider,
+    fulfillment::{FulfillmentId, FulfillmentStatus, FulfillmentProviderAccountId},
+    integration::FulfillmentProvider,
     sales::OrderId,
 };
 use time::OffsetDateTime;
 
-pub struct ShippingProviderAccountDetail {
-    pub id: ShippingProviderAccountId,
-    pub provider: ShippingProvider,
+pub struct FulfillmentProviderAccountDetail {
+    pub id: FulfillmentProviderAccountId,
+    pub provider: FulfillmentProvider,
     pub display_name: String,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -16,7 +16,7 @@ pub struct ShippingProviderAccountDetail {
 pub struct FulfillmentDetail {
     pub id: FulfillmentId,
     pub order_id: OrderId,
-    pub provider_account_id: ShippingProviderAccountId,
+    pub provider_account_id: FulfillmentProviderAccountId,
     pub provider_reference_id: Option<String>,
     pub status: FulfillmentStatus,
     pub tracking_number: Option<String>,

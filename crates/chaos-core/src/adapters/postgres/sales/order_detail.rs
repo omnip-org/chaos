@@ -10,8 +10,8 @@ use crate::{
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductVariantId},
-    fulfillment::{FulfillmentId, FulfillmentStatus, ShippingProviderAccountId},
-    integration::{PaymentProvider, ShippingProvider},
+    fulfillment::{FulfillmentId, FulfillmentStatus, FulfillmentProviderAccountId},
+    integration::{PaymentProvider, FulfillmentProvider},
     payments::{PaymentAttemptStatus, RefundId, RefundStatus},
     pricing::PriceListId,
     sales::{
@@ -592,10 +592,10 @@ fn refund_item(row: RefundRow) -> Result<OrderRefundItem, ApplicationError> {
 fn fulfillment_item(row: FulfillmentRow) -> Result<OrderFulfillmentItem, ApplicationError> {
     Ok(OrderFulfillmentItem {
         id: FulfillmentId::from_uuid(row.id),
-        provider_account_id: ShippingProviderAccountId::from_uuid(
+        provider_account_id: FulfillmentProviderAccountId::from_uuid(
             row.provider_account_id,
         ),
-        shipping_provider: ShippingProvider::parse(&row.shipping_provider)
+        shipping_provider: FulfillmentProvider::parse(&row.shipping_provider)
             .ok_or_else(corrupt_state)?,
         provider_reference_id: row.provider_reference_id,
         status: FulfillmentStatus::parse(&row.status).ok_or_else(corrupt_state)?,

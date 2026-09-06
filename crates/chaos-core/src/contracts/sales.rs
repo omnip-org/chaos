@@ -1,8 +1,8 @@
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductVariantId},
-    fulfillment::{FulfillmentId, FulfillmentStatus, ShippingProviderAccountId},
-    integration::{PaymentProvider, ShippingProvider},
+    fulfillment::{FulfillmentId, FulfillmentStatus, FulfillmentProviderAccountId},
+    integration::{PaymentProvider, FulfillmentProvider},
     payments::{PaymentAttemptStatus, RefundId, RefundStatus},
     pricing::PriceListId,
     sales::{
@@ -92,8 +92,8 @@ pub struct OrderRefundItem {
 /// `commerce.order_fulfillments`.
 pub struct OrderFulfillmentItem {
     pub id: FulfillmentId,
-    pub provider_account_id: ShippingProviderAccountId,
-    pub shipping_provider: ShippingProvider,
+    pub provider_account_id: FulfillmentProviderAccountId,
+    pub shipping_provider: FulfillmentProvider,
     pub provider_reference_id: Option<String>,
     pub status: FulfillmentStatus,
     pub tracking_number: Option<String>,

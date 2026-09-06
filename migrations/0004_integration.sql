@@ -40,8 +40,6 @@ CREATE TABLE integration.provider_accounts (
     CONSTRAINT provider_accounts_configuration_size_check          CHECK (pg_column_size(configuration) <= 32768)
 );
 
-CREATE INDEX provider_accounts_store_capability_created_idx ON integration.provider_accounts (store_id, capability, created_at DESC, id DESC);
-
 CREATE TABLE integration.provider_webhooks (
     id                     UUID                            NOT NULL PRIMARY KEY,
     store_id               UUID                            NOT NULL,
@@ -62,6 +60,7 @@ CREATE TABLE integration.provider_webhooks (
     CONSTRAINT provider_webhooks_payload_size_check     CHECK (pg_column_size(payload) <= 524288)
 );
 
+CREATE INDEX provider_accounts_store_capability_created_idx ON integration.provider_accounts (store_id, capability, created_at DESC, id DESC);
 CREATE INDEX provider_webhooks_store_received_idx ON integration.provider_webhooks (store_id, received_at DESC, id DESC);
 CREATE INDEX provider_webhooks_unprocessed_idx ON integration.provider_webhooks (received_at) WHERE processed_at IS NULL;
 

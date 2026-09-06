@@ -41,7 +41,7 @@ pub use email::{
     EmailMessage, EmailOrderLineItem, EmailProvider, EmailProviderAccountDetail,
     EmailProviderAccountPage, EmailWebhookVerifier, VerifiedEmailWebhook,
 };
-pub use fulfillment::{FulfillmentDetail, ShippingProviderAccountDetail};
+pub use fulfillment::{FulfillmentDetail, FulfillmentProviderAccountDetail};
 pub use identity::{
     ExternalIdentityVerifier, IdentityAuthentication, IdentityRepository, VerifiedExternalIdentity,
 };
