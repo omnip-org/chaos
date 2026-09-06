@@ -152,7 +152,7 @@ pub(crate) async fn load(
     order_id: OrderId,
 ) -> Result<Option<OrderDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, OrderHeaderRow>(
-        "SELECT order_row.id, order_row.order_number, order_row.shopper_id, order_row.price_list_id, order_row.currency::text AS currency, \
+        "SELECT order_row.id, order_row.order_number, order_row.shopper_id, cart.price_list_id, order_row.currency::text AS currency, \
                 order_row.status::text AS status, order_row.payment_status::text AS payment_status, \
                 order_row.fulfillment_status::text AS fulfillment_status, order_row.subtotal_amount_minor, \
                 order_row.discount_amount_minor, order_row.tax_amount_minor, \
@@ -169,6 +169,8 @@ pub(crate) async fn load(
                 order_row.shipping_postal_code, order_row.shipping_country_code::text AS shipping_country_code, \
                 order_row.created_at, order_row.updated_at \
          FROM commerce.orders AS order_row \
+         INNER JOIN commerce.carts AS cart \
+           ON cart.store_id = order_row.store_id AND cart.id = order_row.cart_id \
          INNER JOIN integration.provider_accounts AS payment_account \
            ON payment_account.id = order_row.payment_provider_account_id \
           AND payment_account.store_id = order_row.store_id \
@@ -284,7 +286,7 @@ pub(crate) async fn load_many(
     }
 
     let rows = sqlx::query_as::<_, OrderHeaderRow>(
-        "SELECT order_row.id, order_row.order_number, order_row.shopper_id, order_row.price_list_id, order_row.currency::text AS currency, \
+        "SELECT order_row.id, order_row.order_number, order_row.shopper_id, cart.price_list_id, order_row.currency::text AS currency, \
                 order_row.status::text AS status, order_row.payment_status::text AS payment_status, \
                 order_row.fulfillment_status::text AS fulfillment_status, order_row.subtotal_amount_minor, \
                 order_row.discount_amount_minor, order_row.tax_amount_minor, \
@@ -301,6 +303,8 @@ pub(crate) async fn load_many(
                 order_row.shipping_postal_code, order_row.shipping_country_code::text AS shipping_country_code, \
                 order_row.created_at, order_row.updated_at \
          FROM commerce.orders AS order_row \
+         INNER JOIN commerce.carts AS cart \
+           ON cart.store_id = order_row.store_id AND cart.id = order_row.cart_id \
          INNER JOIN integration.provider_accounts AS payment_account \
            ON payment_account.id = order_row.payment_provider_account_id \
           AND payment_account.store_id = order_row.store_id \

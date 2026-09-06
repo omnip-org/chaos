@@ -365,10 +365,10 @@ impl PostgresStorefrontSalesRepository {
             let inserted = sqlx::query(
                 "INSERT INTO commerce.orders \
                  (id, store_id, order_number, channel_id, cart_id, shopper_id, \
-                  price_list_id, currency, payment_provider_account_id, contact_email, \
+                  currency, payment_provider_account_id, contact_email, \
                  subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
                  shipping_amount_minor, total_amount_minor, created_at, updated_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,0,0,0,$12,$12) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0,0,0,0,$11,$11) \
                  ON CONFLICT ON CONSTRAINT orders_store_id_order_number_key DO NOTHING",
             )
             .bind(requested_order_id.as_uuid())
@@ -377,7 +377,6 @@ impl PostgresStorefrontSalesRepository {
             .bind(channel_id.as_uuid())
             .bind(cart_id.as_uuid())
             .bind(shopper.shopper_id.as_uuid())
-            .bind(header.1)
             .bind(currency.as_str())
             .bind(payment_provider_account_id)
             .bind(None::<&str>)

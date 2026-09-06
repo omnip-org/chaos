@@ -5,21 +5,21 @@ CREATE TYPE commerce.order_refund_status AS ENUM ('pending', 'succeeded', 'faile
 CREATE TYPE commerce.order_fulfillment_status AS ENUM ('pending', 'shipped', 'delivered', 'cancelled');
 
 CREATE TABLE commerce.carts (
-    id                    UUID                    NOT NULL PRIMARY KEY,
-    store_id              UUID                    NOT NULL,
-    channel_id            UUID                    NOT NULL,
-    shopper_id            UUID                    NOT NULL,
-    price_list_id         UUID                    NOT NULL,
-    status                commerce.cart_status    NOT NULL DEFAULT 'active',
-    payment_client_action JSONB,
-    attribution           JSONB,
+    id                           UUID                    NOT NULL PRIMARY KEY,
+    store_id                     UUID                    NOT NULL,
+    channel_id                   UUID                    NOT NULL,
+    shopper_id                   UUID                    NOT NULL,
+    price_list_id                UUID                    NOT NULL,
+    status                       commerce.cart_status    NOT NULL DEFAULT 'active',
+    payment_client_action        JSONB,
+    attribution                  JSONB,
     checkout_idempotency_key     UUID,
     checkout_request_fingerprint BYTEA,
-    created_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at                   TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                   TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT carts_store_id_id_key              UNIQUE (store_id, id),
-    CONSTRAINT carts_store_id_id_channel_id_shopper_id_price_list_id_key UNIQUE (store_id, id, channel_id, shopper_id, price_list_id),
+    CONSTRAINT carts_store_id_id_channel_id_shopper_id_key UNIQUE (store_id, id, channel_id, shopper_id),
     CONSTRAINT carts_store_id_fkey                FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
     CONSTRAINT carts_store_id_channel_fkey        FOREIGN KEY (store_id, channel_id) REFERENCES commerce.channels (store_id, id),
     CONSTRAINT carts_store_id_shopper_fkey        FOREIGN KEY (store_id, shopper_id) REFERENCES commerce.shoppers (store_id, id),
@@ -74,7 +74,6 @@ CREATE TABLE commerce.orders (
     channel_id                      UUID                            NOT NULL,
     shopper_id                      UUID                            NOT NULL,
     cart_id                         UUID                            NOT NULL,
-    price_list_id                   UUID                            NOT NULL,
     currency                        CHAR(3)                         NOT NULL,
     status                          commerce.order_status           NOT NULL DEFAULT 'pending',
     payment_status                  commerce.order_payment_status   NOT NULL DEFAULT 'pending',
@@ -111,8 +110,7 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_store_id_id_key                         UNIQUE (store_id, id),
     CONSTRAINT orders_store_id_order_number_key               UNIQUE (store_id, order_number),
     CONSTRAINT orders_store_id_id_currency_key                UNIQUE (store_id, id, currency),
-    CONSTRAINT orders_store_cart_context_fkey                 FOREIGN KEY (store_id, cart_id, channel_id, shopper_id, price_list_id) REFERENCES commerce.carts (store_id, id, channel_id, shopper_id, price_list_id),
-    CONSTRAINT orders_store_id_price_list_currency_fkey       FOREIGN KEY (store_id, price_list_id, currency) REFERENCES commerce.price_lists (store_id, id, currency),
+    CONSTRAINT orders_store_cart_context_fkey                 FOREIGN KEY (store_id, cart_id, channel_id, shopper_id) REFERENCES commerce.carts (store_id, id, channel_id, shopper_id),
     CONSTRAINT orders_store_id_payment_provider_account_fkey  FOREIGN KEY (store_id, payment_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
     CONSTRAINT orders_currency_format_check                   CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT orders_order_number_check                      CHECK (order_number ~ '^W-[0-9A-HJKMNP-TV-Z]{8}$'),
@@ -333,7 +331,6 @@ CREATE INDEX orders_store_status_id_idx ON commerce.orders (store_id, status, id
 CREATE INDEX orders_store_contact_email_id_idx ON commerce.orders (store_id, contact_email, id DESC) WHERE contact_email IS NOT NULL;
 CREATE UNIQUE INDEX orders_one_order_per_cart_key ON commerce.orders (store_id, cart_id);
 CREATE INDEX orders_store_shopper_idx ON commerce.orders (store_id, shopper_id);
-CREATE INDEX orders_store_price_list_currency_idx ON commerce.orders (store_id, price_list_id, currency);
 CREATE UNIQUE INDEX orders_payment_provider_reference_key ON commerce.orders (store_id, payment_provider_account_id, payment_provider_reference_id) WHERE payment_provider_reference_id IS NOT NULL;
 CREATE UNIQUE INDEX fulfillments_provider_reference_key ON commerce.order_fulfillments (store_id, provider_account_id, provider_reference_id) WHERE provider_reference_id IS NOT NULL;
 CREATE INDEX refunds_order_created_idx ON commerce.order_refunds (store_id, order_id, created_at DESC);
@@ -402,7 +399,6 @@ BEGIN
        OR NEW.channel_id IS DISTINCT FROM OLD.channel_id
        OR NEW.shopper_id IS DISTINCT FROM OLD.shopper_id
        OR NEW.cart_id IS DISTINCT FROM OLD.cart_id
-       OR NEW.price_list_id IS DISTINCT FROM OLD.price_list_id
        OR NEW.currency IS DISTINCT FROM OLD.currency
        OR NEW.payment_provider_account_id IS DISTINCT FROM OLD.payment_provider_account_id THEN
         RAISE EXCEPTION 'Order identity and payment provider binding are immutable after creation'
@@ -419,7 +415,7 @@ CREATE TRIGGER orders_payment_provider_capability_check
 
 CREATE TRIGGER orders_identity_immutable
     BEFORE UPDATE OF id, order_number, store_id, channel_id, shopper_id, cart_id,
-        price_list_id, currency, payment_provider_account_id
+        currency, payment_provider_account_id
     ON commerce.orders
     FOR EACH ROW EXECUTE FUNCTION commerce.prevent_order_identity_change();
 
