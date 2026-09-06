@@ -253,14 +253,10 @@ GRANT SELECT, INSERT, UPDATE, DELETE
        commerce.store_shipping_countries
     TO chaos_runtime;
 
-REVOKE UPDATE ON commerce.stores, commerce.channels, commerce.channel_publishable_keys
-    FROM chaos_runtime;
-GRANT UPDATE (name, region, meta, status, updated_at)
-    ON commerce.stores TO chaos_runtime;
-GRANT UPDATE (name, origin, status, updated_at)
-    ON commerce.channels TO chaos_runtime;
-GRANT UPDATE (revoked_at, updated_at)
-    ON commerce.channel_publishable_keys TO chaos_runtime;
+REVOKE UPDATE ON commerce.stores, commerce.channels, commerce.channel_publishable_keys FROM chaos_runtime;
+GRANT UPDATE (name, region, meta, status, updated_at) ON commerce.stores TO chaos_runtime;
+GRANT UPDATE (name, origin, status, updated_at) ON commerce.channels TO chaos_runtime;
+GRANT UPDATE (revoked_at, updated_at) ON commerce.channel_publishable_keys TO chaos_runtime;
 
 REVOKE DELETE, TRUNCATE ON commerce.stores,
     commerce.shoppers,
@@ -271,10 +267,7 @@ REVOKE DELETE, TRUNCATE ON commerce.stores,
 
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
-    GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
-    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA commerce GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA commerce GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
 GRANT USAGE ON SCHEMA commerce TO chaos_runtime;
