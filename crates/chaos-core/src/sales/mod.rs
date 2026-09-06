@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chaos_domain::{
     FieldViolation, catalog::ProductVariantId, integration::PaymentProvider, sales::CartId,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use time::OffsetDateTime;
 
 use crate::{
@@ -17,6 +17,27 @@ pub use order_management::{ChangeOrderStatusInput, OrderManagement};
 
 pub struct CreateCartInput {
     pub actor: ShopperActor,
+}
+
+/// Request-side context captured when a shopper session is first issued and
+/// stored on `commerce.shoppers.meta`, so later attribution and support
+/// lookups can see where the visitor came from. All fields are best-effort:
+/// the browser controls most of them and any of them can be absent.
+#[derive(Default)]
+pub struct ShopperSessionContext {
+    pub user_agent: Option<String>,
+    pub ip_address: Option<String>,
+    pub utm: UtmTags,
+}
+
+/// Standard `utm_*` campaign tags, minus the redundant `utm_` prefix.
+#[derive(Default)]
+pub struct UtmTags {
+    pub source: Option<String>,
+    pub medium: Option<String>,
+    pub campaign: Option<String>,
+    pub term: Option<String>,
+    pub content: Option<String>,
 }
 
 pub struct SetCartLineInput {
@@ -63,6 +84,9 @@ pub struct CheckoutAttributionInput {
     /// `window.location`. Not platform-specific, so it sits alongside
     /// `meta_*` rather than inside a platform namespace.
     pub source_url: Option<String>,
+    /// Campaign tags the browser read off the checkout page URL. Like
+    /// `source_url`, not tied to any one ad platform.
+    pub utm: UtmTags,
 }
 
 pub(crate) struct StripeCheckoutRequest {
@@ -85,9 +109,12 @@ impl StorefrontSales {
     pub async fn create_shopper(
         &self,
         actor: &MachineActor,
+        context: ShopperSessionContext,
     ) -> Result<chaos_domain::sales::ShopperId, ApplicationError> {
         actor.require_sales_channel()?;
-        self.repository.create_shopper(actor).await
+        self.repository
+            .create_shopper(actor, shopper_session_meta(context))
+            .await
     }
 
     pub async fn create_cart(
@@ -202,9 +229,13 @@ fn checkout_attribution_value(input: Option<CheckoutAttributionInput>) -> Option
             meta.insert(key.into(), Value::String(value));
         }
     }
+    let utm = utm_map(input.utm);
     let mut attribution = serde_json::Map::new();
     if let Some(source_url) = sanitized_attribution_string(input.source_url) {
         attribution.insert("source_url".into(), Value::String(source_url));
+    }
+    if !utm.is_empty() {
+        attribution.insert("utm".into(), Value::Object(utm));
     }
     if !meta.is_empty() {
         attribution.insert("meta".into(), Value::Object(meta));
@@ -216,6 +247,53 @@ fn sanitized_attribution_string(value: Option<String>) -> Option<String> {
     value.filter(|value| {
         !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
     })
+}
+
+/// Shape the acquisition snapshot into `{ "first_seen": .., "last_seen": .. }`.
+/// Both start identical; a later "seen" touch overwrites `last_seen` (and the
+/// row's `last_seen_at`) in place.
+///
+/// ponytail: only the create path is wired — `last_seen` is refreshed just
+/// here, not on subsequent shopper requests. Add a touch in the shopper
+/// context path if per-visit recency actually gets used.
+fn shopper_session_meta(context: ShopperSessionContext) -> Option<Value> {
+    let snapshot = shopper_seen_snapshot(context)?;
+    Some(json!({ "first_seen": snapshot.clone(), "last_seen": snapshot }))
+}
+
+fn shopper_seen_snapshot(context: ShopperSessionContext) -> Option<Value> {
+    let mut snapshot = serde_json::Map::new();
+    for (key, value) in [
+        ("user_agent", context.user_agent),
+        ("ip", context.ip_address),
+    ] {
+        if let Some(value) = sanitized_attribution_string(value) {
+            snapshot.insert(key.into(), Value::String(value));
+        }
+    }
+    let utm = utm_map(context.utm);
+    if !utm.is_empty() {
+        snapshot.insert("utm".into(), Value::Object(utm));
+    }
+    (!snapshot.is_empty()).then_some(Value::Object(snapshot))
+}
+
+/// The `utm_*`-keyed subset of an attribution snapshot; empty when no tag
+/// survived sanitizing. Shared by checkout attribution and shopper sessions.
+fn utm_map(utm: UtmTags) -> serde_json::Map<String, Value> {
+    let mut map = serde_json::Map::new();
+    for (key, value) in [
+        ("utm_source", utm.source),
+        ("utm_medium", utm.medium),
+        ("utm_campaign", utm.campaign),
+        ("utm_term", utm.term),
+        ("utm_content", utm.content),
+    ] {
+        if let Some(value) = sanitized_attribution_string(value) {
+            map.insert(key.into(), Value::String(value));
+        }
+    }
+    map
 }
 
 fn cart_not_found(cart_id: CartId) -> ApplicationError {
@@ -231,5 +309,38 @@ fn validation(field: &'static str, reason: &'static str) -> ApplicationError {
             field,
             reason: reason.into(),
         }],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shopper_session_meta_records_first_and_last_seen_with_nested_utm() {
+        let context = ShopperSessionContext {
+            user_agent: Some("Mozilla/5.0".into()),
+            ip_address: Some("203.0.113.7".into()),
+            utm: UtmTags {
+                source: Some("newsletter".into()),
+                medium: Some("email".into()),
+                ..UtmTags::default()
+            },
+        };
+
+        let meta = shopper_session_meta(context).expect("some meta");
+
+        let expected = json!({
+            "user_agent": "Mozilla/5.0",
+            "ip": "203.0.113.7",
+            "utm": {"utm_source": "newsletter", "utm_medium": "email"},
+        });
+        assert_eq!(meta["first_seen"], expected);
+        assert_eq!(meta["last_seen"], expected);
+    }
+
+    #[test]
+    fn shopper_session_meta_is_none_when_nothing_was_captured() {
+        assert!(shopper_session_meta(ShopperSessionContext::default()).is_none());
     }
 }

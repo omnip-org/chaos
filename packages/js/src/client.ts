@@ -4,6 +4,7 @@ import {
   type AnalyticsOptions,
 } from "./events/browser.js";
 import { fnv1a32 } from "./internal/hash.js";
+import { utmRequestParams, type UtmRequestParams } from "./internal/utm.js";
 import { CartResource } from "./resources/cart.js";
 import { CatalogResource } from "./resources/catalog.js";
 import { OrdersResource } from "./resources/orders.js";
@@ -185,9 +186,9 @@ export class ChaosStorefrontClient {
   }
 
   private async createShopperSession(): Promise<string> {
-    const envelope = await this.request<{ data: ShopperSession }>(
+    const envelope = await this.request<{ data: ShopperSession }, UtmRequestParams>(
       "/shopper/sessions",
-      { method: "POST" },
+      { method: "POST", query: utmRequestParams() },
     );
     this.setShopperToken(envelope.data.shopper_token);
     return envelope.data.shopper_token;

@@ -101,6 +101,11 @@ pub(crate) fn splice_attribution(properties: &mut Value, attribution: &Value) {
     if let Some(source_url) = attribution.get("source_url") {
         meta.insert("source_url".into(), source_url.clone());
     }
+    if let Some(utm) = attribution.get("utm").and_then(Value::as_object) {
+        for (key, value) in utm {
+            meta.insert(key.clone(), value.clone());
+        }
+    }
     if let Some(platform_meta) = attribution.get("meta").and_then(Value::as_object) {
         for (key, value) in platform_meta {
             meta.insert(key.clone(), value.clone());
@@ -409,5 +414,18 @@ mod tests {
         );
         assert_eq!(properties["_meta"]["fbc"], "fb.1.123.click");
         assert_eq!(properties["_meta"]["fbp"], "fb.1.123.browser");
+    }
+
+    #[test]
+    fn splices_cart_attribution_utm_tags_into_meta() {
+        let mut properties = json!({"order_id": "o-1"});
+        let attribution = json!({
+            "utm": {"utm_source": "newsletter", "utm_medium": "email"}
+        });
+
+        splice_attribution(&mut properties, &attribution);
+
+        assert_eq!(properties["_meta"]["utm_source"], "newsletter");
+        assert_eq!(properties["_meta"]["utm_medium"], "email");
     }
 }

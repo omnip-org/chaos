@@ -557,6 +557,107 @@ test("checkout defaults source_url to the current page in a browser", async () =
   }
 });
 
+test("checkout captures utm_* tags from the current page URL", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    value: {
+      location: {
+        href: "https://shop.example.com/checkout?utm_source=newsletter&utm_medium=email&utm_campaign=fall",
+      },
+    },
+    configurable: true,
+  });
+  try {
+    let checkoutBody: string | undefined;
+    const client = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      storage: null,
+      fetch: (async (url: string, init: RequestInit) => {
+        if (url.includes("/shopper/sessions")) {
+          return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+        }
+        if (url.endsWith("/carts/cart-1")) {
+          return jsonResponse(200, {
+            data: { id: "cart-1", version: 4, currency: "USD", subtotal_amount_minor: 2_000, lines: [] },
+          });
+        }
+        if (url.endsWith("/checkout")) {
+          checkoutBody = typeof init.body === "string" ? init.body : undefined;
+          return jsonResponse(201, {
+            data: {
+              order_number: "W-20260830-00000001",
+              event_id: "W-20260830-00000001",
+              client_action: {
+                type: "mount_embedded_checkout",
+                public_key: "pk_test_stripe",
+                client_token: "cs_test_secret",
+              },
+            },
+          });
+        }
+        return jsonResponse(404, { error: { code: "not_found", message: "not found" } });
+      }) as unknown as typeof fetch,
+    });
+
+    await client.payments.createEmbeddedCheckout("cart-1", {
+      returnUrl: "https://shop.example.com/checkout/success",
+    });
+
+    assert.deepEqual(JSON.parse(checkoutBody ?? "{}").attribution, {
+      source_url:
+        "https://shop.example.com/checkout?utm_source=newsletter&utm_medium=email&utm_campaign=fall",
+      utm: { source: "newsletter", medium: "email", campaign: "fall" },
+    });
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(globalThis, "window", descriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+  }
+});
+
+test("shopper session creation forwards utm_* tags from the current page URL", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    value: {
+      location: { href: "https://shop.example.com/?utm_source=newsletter&utm_campaign=fall&other=x" },
+    },
+    configurable: true,
+  });
+  const requests: string[] = [];
+  try {
+    const client = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      baseUrl: "https://shop.example.com/api/v1",
+      storage: null,
+      fetch: (async (url: string) => {
+        requests.push(String(url));
+        if (String(url).includes("/shopper/sessions")) {
+          return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+        }
+        return jsonResponse(201, { data: { id: "cart-1", lines: [] } });
+      }) as unknown as typeof fetch,
+    });
+
+    await client.cart.create();
+
+    const sessionUrl = requests.find((url) => url.includes("/shopper/sessions"));
+    assert.ok(sessionUrl, "a shopper session was created");
+    const params = new URL(sessionUrl!).searchParams;
+    assert.equal(params.get("utm_source"), "newsletter");
+    assert.equal(params.get("utm_campaign"), "fall");
+    assert.equal(params.get("utm_medium"), null);
+    assert.equal(params.get("other"), null, "only utm_* params are forwarded");
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(globalThis, "window", descriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+  }
+});
+
 test("cart line mutations report the resulting quantity delta to analytics", async () => {
   const mutations: unknown[] = [];
   const client = new ChaosStorefrontClient({

@@ -2,6 +2,7 @@ import type { ChaosStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
 import { fnv1a32 } from "../internal/hash.js";
 import { isRecord, requireData } from "../internal/response.js";
+import { readUtmTags } from "../internal/utm.js";
 import type {
   Cart,
   CheckoutAttribution,
@@ -110,7 +111,10 @@ function toEmbeddedCheckoutRequest(
     return_url: options.returnUrl,
   };
   const attribution = options.attribution ?? defaultAttribution();
-  const hasAttribution = attribution.source_url || (attribution.meta && (attribution.meta.fbc || attribution.meta.fbp));
+  const hasAttribution =
+    attribution.source_url ||
+    (attribution.utm && Object.keys(attribution.utm).length > 0) ||
+    (attribution.meta && (attribution.meta.fbc || attribution.meta.fbp));
   if (hasAttribution) {
     body.attribution = attribution;
   }
@@ -126,8 +130,10 @@ function defaultAttribution(): CheckoutAttribution {
   const fbc = readCookie("_fbc");
   const fbp = readCookie("_fbp");
   const sourceUrl = typeof window === "undefined" ? undefined : window.location.href;
+  const utm = readUtmTags();
   return {
     ...(sourceUrl && { source_url: sourceUrl }),
+    ...(utm && { utm }),
     ...((fbc || fbp) && { meta: { ...(fbc && { fbc }), ...(fbp && { fbp }) } }),
   };
 }
