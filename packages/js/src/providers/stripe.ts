@@ -147,7 +147,7 @@ export async function mountEmbeddedCheckout(
   container: HTMLElement,
   options: MountEmbeddedCheckoutOptions = {},
 ): Promise<EmbeddedCheckoutMount> {
-  if (action.type !== "mount_embedded_checkout") {
+  if (action.type !== "stripe_checkout_embedded") {
     throw new TypeError("unsupported payment client action");
   }
 

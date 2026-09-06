@@ -208,7 +208,7 @@ fn parse_payment_client_action(value: Value) -> Result<Option<PaymentClientActio
     let Some(kind) = object.get("type").and_then(Value::as_str) else {
         return Err(corrupt_checkout_state());
     };
-    if kind != "mount_embedded_checkout" {
+    if kind != "stripe_checkout_embedded" {
         return Err(corrupt_checkout_state());
     }
     let Some(public_key) = object.get("public_key").and_then(Value::as_str) else {
@@ -221,7 +221,7 @@ fn parse_payment_client_action(value: Value) -> Result<Option<PaymentClientActio
         return Err(corrupt_checkout_state());
     }
     Ok(Some(PaymentClientAction {
-        kind: "mount_embedded_checkout",
+        kind: "stripe_checkout_embedded",
         public_key: SecretString::from(public_key.to_owned()),
         client_token: SecretString::from(client_token.to_owned()),
     }))

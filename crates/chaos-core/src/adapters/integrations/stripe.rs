@@ -414,7 +414,7 @@ impl PaymentProvider for StripeGateway {
         Ok(PaymentCommandResult {
             provider_object_id: object.id,
             client_action: Some(PaymentClientAction {
-                kind: "mount_embedded_checkout",
+                kind: "stripe_checkout_embedded",
                 public_key: credentials.publishable_key,
                 client_token: SecretString::from(client_secret),
             }),

@@ -407,7 +407,7 @@ test("payments create an embedded Checkout session with SDK-owned request detail
             order_number: "W-20260830-00000001",
             event_id: "W-20260830-00000001",
             client_action: {
-              type: "mount_embedded_checkout",
+              type: "stripe_checkout_embedded",
               public_key: "pk_test_stripe",
               client_token: "cs_test_secret",
             },
@@ -437,7 +437,7 @@ test("payments create an embedded Checkout session with SDK-owned request detail
     return_url: "https://shop.example.com/checkout/success",
   });
   assert.deepEqual(session.data.client_action, {
-    type: "mount_embedded_checkout",
+    type: "stripe_checkout_embedded",
     public_key: "pk_test_stripe",
     client_token: "cs_test_secret",
   });
@@ -468,7 +468,7 @@ test("checkout attaches explicit attribution and excludes it from the idempotenc
             order_number: "W-20260830-00000001",
             event_id: "W-20260830-00000001",
             client_action: {
-              type: "mount_embedded_checkout",
+              type: "stripe_checkout_embedded",
               public_key: "pk_test_stripe",
               client_token: "cs_test_secret",
             },
@@ -530,7 +530,7 @@ test("checkout defaults source_url to the current page in a browser", async () =
               order_number: "W-20260830-00000001",
               event_id: "W-20260830-00000001",
               client_action: {
-                type: "mount_embedded_checkout",
+                type: "stripe_checkout_embedded",
                 public_key: "pk_test_stripe",
                 client_token: "cs_test_secret",
               },
@@ -588,7 +588,7 @@ test("checkout captures utm_* tags from the current page URL", async () => {
               order_number: "W-20260830-00000001",
               event_id: "W-20260830-00000001",
               client_action: {
-                type: "mount_embedded_checkout",
+                type: "stripe_checkout_embedded",
                 public_key: "pk_test_stripe",
                 client_token: "cs_test_secret",
               },
@@ -755,7 +755,7 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
             order_number: "W-20260830-00000001",
             event_id: "W-20260830-00000001",
             client_action: {
-              type: "mount_embedded_checkout",
+              type: "stripe_checkout_embedded",
               public_key: "pk_test_stripe",
               client_token: "cs_test_secret",
             },
@@ -857,7 +857,7 @@ test("payments create an embedded Checkout session with no attribution outside a
             order_number: "W-20260830-00000001",
             event_id: "W-20260830-00000001",
             client_action: {
-              type: "mount_embedded_checkout",
+              type: "stripe_checkout_embedded",
               public_key: "pk_test_stripe",
               client_token: "cs_test_secret",
             },
@@ -922,7 +922,7 @@ test("checkout idempotency follows the cart snapshot instead of the cart id", as
           order_number: "W-20260830-55555555",
           event_id: "W-20260830-55555555",
           client_action: {
-            type: "mount_embedded_checkout",
+            type: "stripe_checkout_embedded",
             public_key: "pk_test_stripe",
             client_token: "cs_test_secret",
           },

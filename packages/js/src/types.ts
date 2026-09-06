@@ -276,7 +276,7 @@ export interface PaymentClientAction {
    * client_token is an Embedded Checkout Session client secret. Pass it to
    * Stripe's EmbeddedCheckoutProvider.
    */
-  type: "mount_embedded_checkout";
+  type: "stripe_checkout_embedded";
   public_key: string;
   client_token: string;
 }

@@ -97,7 +97,7 @@ function isEmbeddedCheckoutSession(
   return (
     isNonEmptyString(value.order_number) &&
     isNonEmptyString(value.event_id) &&
-    value.client_action.type === "mount_embedded_checkout" &&
+    value.client_action.type === "stripe_checkout_embedded" &&
     isNonEmptyString(value.client_action.public_key) &&
     isNonEmptyString(value.client_action.client_token)
   );

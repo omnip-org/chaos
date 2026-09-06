@@ -366,7 +366,7 @@ test("attributes server checkout creation to the source Cart", () => {
       order_number: "W-20260830-7K4M9Q2D",
       event_id: "W-20260830-7K4M9Q2D",
       client_action: {
-        type: "mount_embedded_checkout",
+        type: "stripe_checkout_embedded",
         public_key: "pk_test_stripe",
         client_token: "cs_test_secret",
       },
