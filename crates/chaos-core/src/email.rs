@@ -553,11 +553,9 @@ impl EmailWorkers {
         match payload.get("event_name").and_then(serde_json::Value::as_str) {
             Some("purchase") => self.send_order_confirmation(payload).await,
             other => {
-                // TODO(notification-email): render and send the refund
-                // (order.payment.partially_refunded / order.payment.refunded)
-                // and fulfillment (order.fulfillment.shipped /
-                // order.fulfillment.delivered) notices. `notification_email_queue`
-                // is bound to those routing keys in
+                // TODO(notification-email): render and send the fulfillment
+                // notices (order.fulfillment.shipped / order.fulfillment.delivered).
+                // `notification_email_queue` is bound to those routing keys in
                 // migrations/0004_integration.sql, but no templates exist yet,
                 // so the events are acknowledged and dropped here.
                 tracing::info!(

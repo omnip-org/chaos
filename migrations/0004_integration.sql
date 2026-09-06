@@ -9,8 +9,6 @@ SELECT pgmq.bind_topic('product.updated',                  'search_index_queue')
 SELECT pgmq.bind_topic('order.payment.initiated',          'analytics_capi_queue');
 SELECT pgmq.bind_topic('order.payment.completed',          'analytics_capi_queue');
 SELECT pgmq.bind_topic('order.payment.completed',          'notification_email_queue');
-SELECT pgmq.bind_topic('order.payment.partially_refunded', 'notification_email_queue');
-SELECT pgmq.bind_topic('order.payment.refunded',           'notification_email_queue');
 SELECT pgmq.bind_topic('order.fulfillment.shipped',        'notification_email_queue');
 SELECT pgmq.bind_topic('order.fulfillment.delivered',      'notification_email_queue');
 SELECT pgmq.bind_topic('provider.webhook.received',        'provider_webhooks_queue');
