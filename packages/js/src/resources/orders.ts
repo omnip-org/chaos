@@ -10,7 +10,7 @@ export class OrdersResource {
   constructor(private readonly client: ChaosStorefrontClient) {}
 
   lookupOrder(params: OrderLookupParams): Promise<DataEnvelope<OrderLookup>> {
-    return this.client.request("/orders/lookup", {
+    return this.client.request("/orders/details", {
       method: "POST",
       body: { order_number: params.orderNumber, email: params.email },
     });

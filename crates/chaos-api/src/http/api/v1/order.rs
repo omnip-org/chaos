@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::http::{ApiDateTime, ApiError, ApiJson, ApiResponse, ApiState, PublishableChannel};
 
 pub(crate) fn routes() -> Router<ApiState> {
-    Router::new().route("/orders/lookup", post(lookup_order))
+    Router::new().route("/orders/details", post(lookup_order))
 }
 
 #[derive(Deserialize)]

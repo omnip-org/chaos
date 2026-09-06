@@ -442,7 +442,7 @@ mod tests {
                 shipping_amount_minor: 99,
                 total_amount_minor: 1349,
                 currency: "USD",
-                lookup_url: "https://shop.example/orders/lookup?order_number=W-1&email=a&b",
+                lookup_url: "https://shop.example/orders/details?order_number=W-1&email=a&b",
                 brand: &EmailBrandConfiguration {
                     brand_name: "A <Store>".into(),
                     logo_url: Some("https://cdn.example/logo?a=1&b=2".into()),
@@ -489,7 +489,7 @@ mod tests {
         assert!(
             rendered
                 .html
-                .contains("https://shop.example/orders/lookup?order_number=W-1&amp;email=a&amp;b")
+                .contains("https://shop.example/orders/details?order_number=W-1&amp;email=a&amp;b")
         );
         assert!(!rendered.html.contains("T-shirt <classic>"));
     }

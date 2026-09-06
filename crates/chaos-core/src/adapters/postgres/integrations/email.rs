@@ -765,7 +765,7 @@ fn order_lookup_url(
         .map_err(|error| invalid_email_url(error.to_string()))?;
     let mut lookup_url = Url::parse(origin.as_str())
         .map_err(|error| invalid_email_url(error.to_string()))?
-        .join("orders/lookup")
+        .join("orders/details")
         .map_err(|error| invalid_email_url(error.to_string()))?;
     lookup_url
         .query_pairs_mut()
@@ -808,11 +808,11 @@ mod tests {
 
         assert_eq!(
             first.as_str(),
-            "https://first.example.test/orders/lookup?order_number=W-20260820-7K4M9Q2D&email=buyer%40example.test"
+            "https://first.example.test/orders/details?order_number=W-20260820-7K4M9Q2D&email=buyer%40example.test"
         );
         assert_eq!(
             second.as_str(),
-            "https://second.example.test/orders/lookup?order_number=W-20260820-7K4M9Q2D&email=a%2Bb%40example.test"
+            "https://second.example.test/orders/details?order_number=W-20260820-7K4M9Q2D&email=a%2Bb%40example.test"
         );
     }
 
