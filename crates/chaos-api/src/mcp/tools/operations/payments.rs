@@ -77,6 +77,7 @@ impl ChaosMcp {
                 store_id,
                 order_id,
                 amount_minor: params.amount_minor,
+                now: self.state.clock.now(),
             })
             .await
         {

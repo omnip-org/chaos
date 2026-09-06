@@ -20,7 +20,7 @@ use crate::mcp::{
 };
 
 #[derive(Deserialize, JsonSchema)]
-pub struct ListShippingProviderAccountsParams {
+pub struct ListFulfillmentProviderAccountsParams {
     /// The Store UUID whose shipping accounts should be listed.
     pub store_id: String,
 }
@@ -33,7 +33,7 @@ pub struct CreateFulfillmentParams {
     pub order_id: String,
     /// The shipping provider account's UUID. Use list_shipping_provider_accounts \
     /// to find the Store's "manual" account.
-    pub shipping_provider_account_id: String,
+    pub provider_account_id: String,
     /// Optional carrier tracking number.
     #[serde(default)]
     pub tracking_number: Option<String>,
@@ -79,7 +79,7 @@ impl ChaosMcp {
     async fn list_shipping_provider_accounts(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<ListShippingProviderAccountsParams>,
+        Parameters(params): Parameters<ListFulfillmentProviderAccountsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.mcp_oauth,
@@ -142,13 +142,11 @@ impl ChaosMcp {
             Ok(id) => OrderId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let shipping_provider_account_id = match parse_uuid_field(
-            &params.shipping_provider_account_id,
-            "shipping_provider_account_id",
-        ) {
-            Ok(id) => chaos_domain::fulfillment::ShippingProviderAccountId::from_uuid(id),
-            Err(result) => return Ok(result),
-        };
+        let provider_account_id =
+            match parse_uuid_field(&params.provider_account_id, "provider_account_id") {
+                Ok(id) => chaos_domain::fulfillment::FulfillmentProviderAccountId::from_uuid(id),
+                Err(result) => return Ok(result),
+            };
         match self
             .state
             .fulfillment_management
@@ -156,7 +154,7 @@ impl ChaosMcp {
                 actor,
                 store_id,
                 order_id,
-                shipping_provider_account_id,
+                provider_account_id,
                 tracking_number: params.tracking_number,
                 tracking_url: params.tracking_url,
             })
@@ -309,7 +307,7 @@ fn fulfillment_summary(detail: chaos_core::contracts::FulfillmentDetail) -> serd
     json!({
         "id": detail.id.as_uuid(),
         "order_id": detail.order_id.as_uuid(),
-        "shipping_provider_account_id": detail.shipping_provider_account_id.as_uuid(),
+        "provider_account_id": detail.provider_account_id.as_uuid(),
         "provider_reference_id": detail.provider_reference_id,
         "status": detail.status.as_str(),
         "tracking_number": detail.tracking_number,

@@ -176,7 +176,7 @@ enrichment for ad platforms, never a condition of a successful purchase.
 
 ### Guest order lookup
 
-Confirmation emails link to the Sales Channel storefront's `/orders/lookup`
+Confirmation emails link to the Sales Channel storefront's `/orders/details`
 page with the order number and contact email pre-filled as query parameters.
 The page submits both and the API returns the restricted order view when
 they match:
@@ -187,7 +187,7 @@ const order = await chaos.orders.lookupOrder({
   orderNumber: params.get("order_number") ?? "",
   email: params.get("email") ?? "",
 });
-console.log(order.data.order_number, order.data.shipping_status);
+console.log(order.data.order_number, order.data.fulfillment_status);
 chaos.orders.recordConfirmedPurchase(order.data);
 ```
 

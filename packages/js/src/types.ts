@@ -124,6 +124,7 @@ export interface Meta {
 }
 
 export interface ShopperSession {
+  shopper_id: UUID;
   shopper_token: string;
 }
 
@@ -199,7 +200,7 @@ export interface OrderLookup {
   status: "pending" | "confirmed" | "cancelled";
   payment_status:
     "pending" | "paid" | "failed" | "expired" | "partially_refunded" | "refunded";
-  shipping_status:
+  fulfillment_status:
     "pending" | "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
   shipping_locality?: string;
   shipping_country_code?: string;
@@ -229,10 +230,22 @@ export interface EmbeddedCheckoutOptions {
 }
 
 /** Namespaced by ad platform so a future platform is an additive field;
- * `source_url` isn't platform-specific, so it sits alongside `meta`. */
+ * `source_url` and `utm` aren't platform-specific, so they sit alongside
+ * `meta`. */
 export interface CheckoutAttribution {
   source_url?: string;
+  utm?: CheckoutUtm;
   meta?: { fbc?: string; fbp?: string };
+}
+
+/** Standard `utm_*` campaign tags, minus the redundant `utm_` prefix since
+ * they are already namespaced under `utm`. */
+export interface CheckoutUtm {
+  source?: string;
+  medium?: string;
+  campaign?: string;
+  term?: string;
+  content?: string;
 }
 
 export interface EmbeddedCheckoutSession {

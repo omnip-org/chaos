@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    fulfillment::{FulfillmentId, ShippingProviderAccountId},
+    fulfillment::{FulfillmentId, FulfillmentProviderAccountId},
     sales::OrderId,
     store::{StoreId, StoreRole},
 };
@@ -10,14 +10,14 @@ use time::OffsetDateTime;
 use crate::{
     ApplicationError,
     adapters::postgres::PostgresFulfillmentRepository,
-    contracts::{AdminActor, FulfillmentDetail, ShippingProviderAccountDetail},
+    contracts::{AdminActor, FulfillmentDetail, FulfillmentProviderAccountDetail},
 };
 
 pub struct CreateFulfillmentInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
     pub order_id: OrderId,
-    pub shipping_provider_account_id: ShippingProviderAccountId,
+    pub provider_account_id: FulfillmentProviderAccountId,
     pub tracking_number: Option<String>,
     pub tracking_url: Option<String>,
 }
@@ -58,7 +58,7 @@ impl FulfillmentManagement {
         &self,
         actor: AdminActor,
         store_id: StoreId,
-    ) -> Result<Vec<ShippingProviderAccountDetail>, ApplicationError> {
+    ) -> Result<Vec<FulfillmentProviderAccountDetail>, ApplicationError> {
         self.repository
             .list_shipping_provider_accounts(actor, store_id)
             .await
@@ -74,7 +74,7 @@ impl FulfillmentManagement {
                 input.actor,
                 input.store_id,
                 input.order_id,
-                input.shipping_provider_account_id,
+                input.provider_account_id,
                 input.tracking_number,
                 input.tracking_url,
             )

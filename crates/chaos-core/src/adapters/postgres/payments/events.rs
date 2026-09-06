@@ -326,9 +326,9 @@ async fn apply_payment_event(
                 country_code: shipping_country_code.as_deref(),
             },
         );
-        publish_commerce_event(
+        publish_topic_event(
             transaction,
-            "payment.completed",
+            "order.payment.completed",
             payment_event_payload(
                 store_id.as_uuid(),
                 order_id.as_uuid(),

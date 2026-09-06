@@ -27,7 +27,13 @@ pub struct VerifiedWebhookEvent {
 
 #[async_trait]
 pub trait WebhookInbox: Send + Sync {
-    async fn record(&self, event: VerifiedWebhookEvent) -> Result<(), ApplicationError>;
+    /// Appends the verified event to `integration.provider_webhooks` and,
+    /// in the same transaction, publishes `provider.webhook.received` onto
+    /// `provider_webhooks_queue` for the drain worker to apply. Returns `true`
+    /// when the row was newly written, `false` when
+    /// `(provider_account_id, provider_event_id)` was already audited (a
+    /// provider retry) and no new job was enqueued.
+    async fn record(&self, event: &VerifiedWebhookEvent) -> Result<bool, ApplicationError>;
 }
 
 #[async_trait]
@@ -48,6 +54,11 @@ pub struct TopicEventJob {
     pub msg_id: i64,
     pub payload: Value,
     pub attempts: u32,
+    /// The routing key that delivered this message, read back from the PGMQ
+    /// message header. Empty only for a message enqueued outside
+    /// `integration.publish_topic_event`. A consumer on a fan-in queue
+    /// dispatches on this rather than a field it hopes the producer set.
+    pub routing_key: String,
 }
 
 #[async_trait]

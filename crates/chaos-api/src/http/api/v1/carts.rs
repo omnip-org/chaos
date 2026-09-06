@@ -1,3 +1,5 @@
+//! Cart lifecycle and embedded checkout endpoints.
+
 use axum::{
     Router,
     extract::State,
@@ -12,7 +14,7 @@ use chaos_core::{
     payments::CreateEmbeddedCheckoutInput,
     sales::{
         CheckoutAttributionInput, CreateCartInput, CreateStripeCheckoutInput, RemoveCartLineInput,
-        SetCartLineInput,
+        SetCartLineInput, UtmTags,
     },
 };
 use chaos_domain::{catalog::ProductVariantId, integration::PaymentProvider, sales::CartId};
@@ -27,53 +29,13 @@ use crate::http::{
 #[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
-        .route("/carts", post(create_cart))
-        .route("/carts/{cart_id}", get(get_cart))
-        .route("/carts/{cart_id}/lines/{product_variant_id}", put(set_cart_line).delete(remove_cart_line))
-        .route("/carts/{cart_id}/checkout", post(create_embedded_checkout))
+        .route("/carts", post(create_cart::handler))
+        .route("/carts/{cart_id}", get(get_cart::handler))
+        .route("/carts/{cart_id}/lines/{product_variant_id}", put(set_cart_line::handler).delete(remove_cart_line::handler))
+        .route("/carts/{cart_id}/checkout", post(create_embedded_checkout::handler))
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CreateCartBody {}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct SetCartLineBody {
-    quantity: u32,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CreateEmbeddedCheckoutBody {
-    return_url: String,
-    payment_provider: String,
-    /// Ad-platform attribution the browser read off its own cookies, keyed
-    /// by platform. Optional and best-effort: dropped rather than rejected
-    /// if malformed, since it must never block checkout.
-    #[serde(default)]
-    attribution: Option<CheckoutAttributionBody>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CheckoutAttributionBody {
-    /// The checkout page's own URL — not platform-specific, so it sits
-    /// alongside `meta` rather than inside it.
-    #[serde(default)]
-    source_url: Option<String>,
-    #[serde(default)]
-    meta: Option<MetaAttributionBody>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct MetaAttributionBody {
-    #[serde(default)]
-    fbc: Option<String>,
-    #[serde(default)]
-    fbp: Option<String>,
-}
+// ===== shared wire types & mappers =====
 
 #[derive(Deserialize)]
 struct CartPath {
@@ -84,6 +46,18 @@ struct CartPath {
 struct CartLinePath {
     cart_id: Uuid,
     product_variant_id: Uuid,
+}
+
+#[derive(Serialize)]
+struct CartData {
+    id: Uuid,
+    currency: String,
+    status: &'static str,
+    version: u64,
+    lines: Vec<CartLineData>,
+    subtotal_amount_minor: i64,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 #[derive(Serialize)]
@@ -115,145 +89,6 @@ struct CartMediaData {
     alt_text: String,
     position: u16,
     url: String,
-}
-
-#[derive(Serialize)]
-struct CartData {
-    id: Uuid,
-    currency: String,
-    status: &'static str,
-    version: u64,
-    lines: Vec<CartLineData>,
-    subtotal_amount_minor: i64,
-    created_at: ApiDateTime,
-    updated_at: ApiDateTime,
-}
-
-#[derive(Serialize)]
-struct EmbeddedCheckoutData {
-    order_number: String,
-    client_action: PaymentClientActionData,
-    /// Shared with the browser Pixel's own InitiateCheckout call so Meta can
-    /// deduplicate it against the server-side CAPI copy Chaos already sent.
-    event_id: Uuid,
-}
-
-#[derive(Serialize)]
-struct PaymentClientActionData {
-    r#type: &'static str,
-    public_key: String,
-    client_token: String,
-}
-
-async fn create_cart(
-    State(state): State<ApiState>,
-    ShopperContext(actor): ShopperContext,
-    ApiJson(CreateCartBody {}): ApiJson<CreateCartBody>,
-) -> Result<ApiResponse<CartData>, ApiError> {
-    let cart = state
-        .storefront_sales
-        .create_cart(CreateCartInput { actor })
-        .await?;
-    Ok(ApiResponse::created(cart_data(cart)?))
-}
-
-async fn get_cart(
-    State(state): State<ApiState>,
-    ShopperContext(actor): ShopperContext,
-    ApiPath(path): ApiPath<CartPath>,
-) -> Result<ApiResponse<CartData>, ApiError> {
-    let cart = state
-        .storefront_sales
-        .get_cart(&actor, CartId::from_uuid(path.cart_id))
-        .await?;
-    Ok(ApiResponse::ok(cart_data(cart)?))
-}
-
-async fn set_cart_line(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    ShopperContext(actor): ShopperContext,
-    ApiPath(path): ApiPath<CartLinePath>,
-    ApiJson(body): ApiJson<SetCartLineBody>,
-) -> Result<ApiResponse<CartData>, ApiError> {
-    let expected_version = expected_cart_version(&headers)?;
-    let cart = state
-        .storefront_sales
-        .set_cart_line(SetCartLineInput {
-            actor,
-            cart_id: CartId::from_uuid(path.cart_id),
-            product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
-            quantity: body.quantity,
-            expected_version,
-        })
-        .await?;
-    Ok(ApiResponse::ok(cart_data(cart)?))
-}
-
-async fn remove_cart_line(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    ShopperContext(actor): ShopperContext,
-    ApiPath(path): ApiPath<CartLinePath>,
-) -> Result<ApiResponse<CartData>, ApiError> {
-    let expected_version = expected_cart_version(&headers)?;
-    let cart = state
-        .storefront_sales
-        .remove_cart_line(RemoveCartLineInput {
-            actor,
-            cart_id: CartId::from_uuid(path.cart_id),
-            product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
-            expected_version,
-        })
-        .await?;
-    Ok(ApiResponse::ok(cart_data(cart)?))
-}
-
-async fn create_embedded_checkout(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    ShopperContext(actor): ShopperContext,
-    ApiPath(path): ApiPath<CartPath>,
-    ApiJson(body): ApiJson<CreateEmbeddedCheckoutBody>,
-) -> Result<ApiResponse<EmbeddedCheckoutData>, ApiError> {
-    validate_return_url(&body.return_url)?;
-    let payment_provider = PaymentProvider::parse(&body.payment_provider).ok_or_else(|| {
-        invalid_value(
-            "payment_provider",
-            "must be a supported payment provider such as stripe",
-        )
-    })?;
-    let idempotency_key = headers
-        .get("idempotency-key")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| Uuid::parse_str(value).ok())
-        .filter(|value| !value.is_nil())
-        .ok_or_else(|| invalid_value("Idempotency-Key", "must be a valid UUID"))?;
-    let draft = state
-        .storefront_sales
-        .create_stripe_checkout(CreateStripeCheckoutInput {
-            actor: actor.clone(),
-            cart_id: CartId::from_uuid(path.cart_id),
-            return_url: body.return_url.clone(),
-            payment_provider,
-            now: state.clock.now(),
-            idempotency_key,
-            attribution: checkout_attribution_input(&body, &headers),
-        })
-        .await?;
-    let checkout = state
-        .payment_service
-        .create_embedded_checkout(CreateEmbeddedCheckoutInput {
-            actor,
-            order_id: draft.order_id,
-            return_url: body.return_url,
-            now: state.clock.now(),
-        })
-        .await?;
-    Ok(ApiResponse::created(embedded_checkout_data(
-        checkout,
-        draft.event_id,
-    )))
 }
 
 fn cart_data(cart: CartDetail) -> Result<CartData, ApplicationError> {
@@ -313,45 +148,8 @@ fn cart_media_data(media: StorefrontMediaAsset) -> CartMediaData {
     }
 }
 
-fn embedded_checkout_data(
-    checkout: chaos_core::payments::EmbeddedCheckoutResult,
-    event_id: Uuid,
-) -> EmbeddedCheckoutData {
-    EmbeddedCheckoutData {
-        order_number: checkout.order_number,
-        client_action: client_action_data(checkout.client_action),
-        event_id,
-    }
-}
-
-fn validate_return_url(value: &str) -> Result<(), ApiError> {
-    let url = url::Url::parse(value)
-        .map_err(|_| invalid_value("return_url", "must be an absolute URL"))?;
-    let secure = url.scheme() == "https";
-    let loopback = url.scheme() == "http"
-        && url.host_str().is_some_and(|host| {
-            host == "localhost"
-                || host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        });
-    if !secure && !loopback {
-        return Err(invalid_value(
-            "return_url",
-            "must use https, except for an http loopback URL in local development",
-        ));
-    }
-    Ok(())
-}
-
-fn client_action_data(value: PaymentClientAction) -> PaymentClientActionData {
-    PaymentClientActionData {
-        r#type: value.kind,
-        public_key: value.public_key.expose_secret().to_owned(),
-        client_token: value.client_token.expose_secret().to_owned(),
-    }
-}
-
+/// The `If-Match` header carries the Cart version the client last saw, so a
+/// concurrent edit is rejected instead of silently lost.
 fn expected_cart_version(headers: &HeaderMap) -> Result<u64, ApiError> {
     let value = headers
         .get("if-match")
@@ -363,91 +161,293 @@ fn expected_cart_version(headers: &HeaderMap) -> Result<u64, ApiError> {
     Ok(value)
 }
 
-/// `client_ip_address`/`client_user_agent` come from this request itself
-/// (`X-Real-IP` is set by `deploy/nginx` from the real client address, behind
-/// Cloudflare's realip module), never from the request body — the browser
-/// has no trustworthy way to report either.
-fn checkout_attribution_input(
-    body: &CreateEmbeddedCheckoutBody,
-    headers: &HeaderMap,
-) -> Option<CheckoutAttributionInput> {
-    let client_ip_address = headers
-        .get("x-real-ip")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    let client_user_agent = headers
-        .get(axum::http::header::USER_AGENT)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    let meta = body
-        .attribution
-        .as_ref()
-        .and_then(|value| value.meta.as_ref());
-    Some(CheckoutAttributionInput {
-        meta_fbc: meta.and_then(|meta| meta.fbc.clone()),
-        meta_fbp: meta.and_then(|meta| meta.fbp.clone()),
-        client_ip_address,
-        client_user_agent,
-        source_url: body
-            .attribution
-            .as_ref()
-            .and_then(|value| value.source_url.clone()),
-    })
+// ===== POST /carts =====
+
+mod create_cart {
+    use super::*;
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct CreateCartBody {}
+
+    pub(super) async fn handler(
+        State(state): State<ApiState>,
+        ShopperContext(actor): ShopperContext,
+        ApiJson(CreateCartBody {}): ApiJson<CreateCartBody>,
+    ) -> Result<ApiResponse<CartData>, ApiError> {
+        let cart = state
+            .storefront_sales
+            .create_cart(CreateCartInput { actor })
+            .await?;
+        Ok(ApiResponse::created(cart_data(cart)?))
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use chaos_core::{contracts::PaymentClientAction, payments::EmbeddedCheckoutResult};
-    use secrecy::SecretString;
-    use serde_json::json;
+// ===== GET /carts/{cart_id} =====
 
-    use super::{client_action_data, embedded_checkout_data, validate_return_url};
+mod get_cart {
+    use super::*;
 
-    #[test]
-    fn embedded_checkout_requires_a_secure_or_loopback_return_url() {
-        assert!(validate_return_url("https://shop.example.com/checkout/success").is_ok());
-        assert!(validate_return_url("http://127.0.0.1:4321/checkout/success").is_ok());
-        assert!(validate_return_url("http://shop.example.com/checkout/success").is_err());
+    pub(super) async fn handler(
+        State(state): State<ApiState>,
+        ShopperContext(actor): ShopperContext,
+        ApiPath(path): ApiPath<CartPath>,
+    ) -> Result<ApiResponse<CartData>, ApiError> {
+        let cart = state
+            .storefront_sales
+            .get_cart(&actor, CartId::from_uuid(path.cart_id))
+            .await?;
+        Ok(ApiResponse::ok(cart_data(cart)?))
+    }
+}
+
+// ===== PUT /carts/{cart_id}/lines/{product_variant_id} =====
+
+mod set_cart_line {
+    use super::*;
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct SetCartLineBody {
+        quantity: u32,
     }
 
-    #[test]
-    fn embedded_checkout_client_action_has_no_connect_account_reference() {
-        let action = client_action_data(PaymentClientAction {
-            kind: "mount_embedded_checkout",
-            public_key: SecretString::from("pk_test_stripe"),
-            client_token: SecretString::from("cs_test_secret"),
-        });
-
-        assert_eq!(
-            serde_json::to_value(action).unwrap(),
-            json!({
-                "type": "mount_embedded_checkout",
-                "public_key": "pk_test_stripe",
-                "client_token": "cs_test_secret",
+    pub(super) async fn handler(
+        State(state): State<ApiState>,
+        headers: HeaderMap,
+        ShopperContext(actor): ShopperContext,
+        ApiPath(path): ApiPath<CartLinePath>,
+        ApiJson(body): ApiJson<SetCartLineBody>,
+    ) -> Result<ApiResponse<CartData>, ApiError> {
+        let expected_version = expected_cart_version(&headers)?;
+        let cart = state
+            .storefront_sales
+            .set_cart_line(SetCartLineInput {
+                actor,
+                cart_id: CartId::from_uuid(path.cart_id),
+                product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
+                quantity: body.quantity,
+                expected_version,
             })
-        );
+            .await?;
+        Ok(ApiResponse::ok(cart_data(cart)?))
+    }
+}
+
+// ===== DELETE /carts/{cart_id}/lines/{product_variant_id} =====
+
+mod remove_cart_line {
+    use super::*;
+
+    pub(super) async fn handler(
+        State(state): State<ApiState>,
+        headers: HeaderMap,
+        ShopperContext(actor): ShopperContext,
+        ApiPath(path): ApiPath<CartLinePath>,
+    ) -> Result<ApiResponse<CartData>, ApiError> {
+        let expected_version = expected_cart_version(&headers)?;
+        let cart = state
+            .storefront_sales
+            .remove_cart_line(RemoveCartLineInput {
+                actor,
+                cart_id: CartId::from_uuid(path.cart_id),
+                product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
+                expected_version,
+            })
+            .await?;
+        Ok(ApiResponse::ok(cart_data(cart)?))
+    }
+}
+
+// ===== POST /carts/{cart_id}/checkout =====
+
+mod create_embedded_checkout {
+    use super::*;
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct CreateEmbeddedCheckoutBody {
+        return_url: String,
+        payment_provider: String,
+        #[serde(default)]
+        attribution: Option<CheckoutAttributionBody>,
     }
 
-    #[test]
-    fn embedded_checkout_response_exposes_order_number_and_event_id_only() {
-        let event_id = uuid::Uuid::now_v7();
-        let response = embedded_checkout_data(
-            EmbeddedCheckoutResult {
-                order_number: "W-20260830-7K4M9Q2D".into(),
-                source_cart_id: chaos_domain::sales::CartId::from_uuid(uuid::Uuid::now_v7()),
-                client_action: PaymentClientAction {
-                    kind: "mount_embedded_checkout",
-                    public_key: SecretString::from("pk_test_stripe"),
-                    client_token: SecretString::from("cs_test_secret"),
-                },
-            },
-            event_id,
-        );
-        let value = serde_json::to_value(response).unwrap();
+    /// Ad-platform attribution the browser read off its own cookies/URL at
+    /// checkout time. `source_url` and `utm` are not platform-specific, so
+    /// they sit alongside the per-platform `meta` namespace.
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct CheckoutAttributionBody {
+        #[serde(default)]
+        source_url: Option<String>,
+        #[serde(default)]
+        utm: Option<UtmAttributionBody>,
+        #[serde(default)]
+        meta: Option<MetaAttributionBody>,
+    }
 
-        assert_eq!(value["order_number"], "W-20260830-7K4M9Q2D");
-        assert_eq!(value["event_id"], event_id.to_string());
-        assert!(value.get("order_id").is_none());
-        assert!(value.get("source_cart_id").is_none());
+    /// Standard `utm_*` campaign tags, minus the redundant `utm_` prefix
+    /// since they are already namespaced under `utm`.
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct UtmAttributionBody {
+        #[serde(default)]
+        source: Option<String>,
+        #[serde(default)]
+        medium: Option<String>,
+        #[serde(default)]
+        campaign: Option<String>,
+        #[serde(default)]
+        term: Option<String>,
+        #[serde(default)]
+        content: Option<String>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct MetaAttributionBody {
+        #[serde(default)]
+        fbc: Option<String>,
+        #[serde(default)]
+        fbp: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    pub(super) struct EmbeddedCheckoutData {
+        order_number: String,
+        client_action: PaymentClientActionData,
+        /// Shared with the browser Pixel's own InitiateCheckout call so Meta
+        /// can deduplicate it against the server-side CAPI copy Chaos already
+        /// sent.
+        event_id: Uuid,
+    }
+
+    #[derive(Serialize)]
+    pub(super) struct PaymentClientActionData {
+        r#type: &'static str,
+        public_key: String,
+        client_token: String,
+    }
+
+    pub(super) async fn handler(
+        State(state): State<ApiState>,
+        headers: HeaderMap,
+        ShopperContext(actor): ShopperContext,
+        ApiPath(path): ApiPath<CartPath>,
+        ApiJson(body): ApiJson<CreateEmbeddedCheckoutBody>,
+    ) -> Result<ApiResponse<EmbeddedCheckoutData>, ApiError> {
+        validate_return_url(&body.return_url)?;
+        let payment_provider = PaymentProvider::parse(&body.payment_provider).ok_or_else(|| {
+            invalid_value(
+                "payment_provider",
+                "must be a supported payment provider such as stripe",
+            )
+        })?;
+        let idempotency_key = headers
+            .get("idempotency-key")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .filter(|value| !value.is_nil())
+            .ok_or_else(|| invalid_value("Idempotency-Key", "must be a valid UUID"))?;
+        let draft = state
+            .storefront_sales
+            .create_stripe_checkout(CreateStripeCheckoutInput {
+                actor: actor.clone(),
+                cart_id: CartId::from_uuid(path.cart_id),
+                return_url: body.return_url.clone(),
+                payment_provider,
+                now: state.clock.now(),
+                idempotency_key,
+                attribution: checkout_attribution_input(&body, &headers),
+            })
+            .await?;
+        let checkout = state
+            .payment_service
+            .create_embedded_checkout(CreateEmbeddedCheckoutInput {
+                actor,
+                order_id: draft.order_id,
+                return_url: body.return_url,
+                now: state.clock.now(),
+            })
+            .await?;
+        Ok(ApiResponse::created(embedded_checkout_data(
+            checkout,
+            draft.event_id,
+        )))
+    }
+
+    fn embedded_checkout_data(
+        checkout: chaos_core::payments::EmbeddedCheckoutResult,
+        event_id: Uuid,
+    ) -> EmbeddedCheckoutData {
+        EmbeddedCheckoutData {
+            order_number: checkout.order_number,
+            client_action: client_action_data(checkout.client_action),
+            event_id,
+        }
+    }
+
+    fn client_action_data(value: PaymentClientAction) -> PaymentClientActionData {
+        PaymentClientActionData {
+            r#type: value.kind,
+            public_key: value.public_key.expose_secret().to_owned(),
+            client_token: value.client_token.expose_secret().to_owned(),
+        }
+    }
+
+    fn validate_return_url(value: &str) -> Result<(), ApiError> {
+        let url = url::Url::parse(value)
+            .map_err(|_| invalid_value("return_url", "must be an absolute URL"))?;
+        let secure = url.scheme() == "https";
+        let loopback = url.scheme() == "http"
+            && url.host_str().is_some_and(|host| {
+                host == "localhost"
+                    || host
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+            });
+        if !secure && !loopback {
+            return Err(invalid_value(
+                "return_url",
+                "must use https, except for an http loopback URL in local development",
+            ));
+        }
+        Ok(())
+    }
+
+    /// `client_ip_address`/`client_user_agent` come from this request itself
+    /// (`X-Real-IP` is set by `deploy/nginx` from the real client address,
+    /// behind Cloudflare's realip module), never from the request body — the
+    /// browser has no trustworthy way to report either.
+    fn checkout_attribution_input(
+        body: &CreateEmbeddedCheckoutBody,
+        headers: &HeaderMap,
+    ) -> Option<CheckoutAttributionInput> {
+        let client_ip_address = headers
+            .get("x-real-ip")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let client_user_agent = headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let attribution = body.attribution.as_ref();
+        let meta = attribution.and_then(|value| value.meta.as_ref());
+        let utm = attribution.and_then(|value| value.utm.as_ref());
+        Some(CheckoutAttributionInput {
+            meta_fbc: meta.and_then(|meta| meta.fbc.clone()),
+            meta_fbp: meta.and_then(|meta| meta.fbp.clone()),
+            client_ip_address,
+            client_user_agent,
+            source_url: attribution.and_then(|value| value.source_url.clone()),
+            utm: UtmTags {
+                source: utm.and_then(|utm| utm.source.clone()),
+                medium: utm.and_then(|utm| utm.medium.clone()),
+                campaign: utm.and_then(|utm| utm.campaign.clone()),
+                term: utm.and_then(|utm| utm.term.clone()),
+                content: utm.and_then(|utm| utm.content.clone()),
+            },
+        })
     }
 }

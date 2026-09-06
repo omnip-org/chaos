@@ -27,13 +27,18 @@ async fn reserve_inventory_for_cart(
 }
 
 impl PostgresStorefrontSalesRepository {
-    pub(crate) async fn create_shopper(&self, actor: &MachineActor) -> Result<ShopperId, ApplicationError> {
+    pub(crate) async fn create_shopper(
+        &self,
+        actor: &MachineActor,
+        meta: Option<Value>,
+    ) -> Result<ShopperId, ApplicationError> {
         require_channel(actor)?;
         let shopper_id = ShopperId::new();
         let mut transaction = self.begin(actor).await?;
-        sqlx::query("INSERT INTO commerce.shoppers (id, store_id) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO commerce.shoppers (id, store_id, meta) VALUES ($1, $2, $3)")
             .bind(shopper_id.as_uuid())
             .bind(actor.store_id.as_uuid())
+            .bind(meta)
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -311,7 +316,6 @@ impl PostgresStorefrontSalesRepository {
         let subtotal = cart.total()?.amount_minor();
         let request_fingerprint = checkout_request_fingerprint(actor, &request);
 
-        let order_number = generate_order_number(request.now)?;
         let payment_provider_account_id: Uuid = sqlx::query_scalar(
             "SELECT id FROM integration.provider_accounts \
              WHERE store_id = $1 \
@@ -347,32 +351,54 @@ impl PostgresStorefrontSalesRepository {
             return Err(cart_not_active());
         }
         reserve_inventory_for_cart(&mut transaction, actor, &cart).await?;
-        sqlx::query(
-            "INSERT INTO commerce.orders \
-             (id, store_id, order_number, channel_id, cart_id, shopper_id, idempotency_key, \
-              price_list_id, currency, payment_provider_account_id, contact_email, \
-             checkout_request_fingerprint, \
-             subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
-             shipping_amount_minor, total_amount_minor, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,0,0,0,$14,$14)",
-        )
-        .bind(requested_order_id.as_uuid())
-        .bind(actor.store_id.as_uuid())
-        .bind(order_number.as_str())
-        .bind(channel_id.as_uuid())
-        .bind(cart_id.as_uuid())
-        .bind(shopper.shopper_id.as_uuid())
-        .bind(request.idempotency_key)
-        .bind(header.1)
-        .bind(currency.as_str())
-        .bind(payment_provider_account_id)
-        .bind(None::<&str>)
-        .bind(request_fingerprint.as_slice())
-        .bind(subtotal)
-        .bind(request.now)
-        .execute(&mut *transaction)
-        .await
-        .map_err(checkout_insert_error)?;
+        // `order_number` is 8 random Crockford chars (~2^40). `ON CONFLICT
+        // DO NOTHING` on the per-store number leaves rows_affected at 0 on the
+        // near-impossible collision without aborting the checkout transaction,
+        // so we regenerate and retry a handful of times. Any other unique
+        // conflict (idempotency key, one order per cart) still raises.
+        let mut order_number = generate_order_number();
+        let mut attempt = 0;
+        let order_created = loop {
+            let inserted = sqlx::query(
+                "INSERT INTO commerce.orders \
+                 (id, store_id, order_number, channel_id, cart_id, shopper_id, idempotency_key, \
+                  price_list_id, currency, payment_provider_account_id, contact_email, \
+                 checkout_request_fingerprint, \
+                 subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
+                 shipping_amount_minor, total_amount_minor, created_at, updated_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,0,0,0,$14,$14) \
+                 ON CONFLICT ON CONSTRAINT orders_store_id_order_number_key DO NOTHING",
+            )
+            .bind(requested_order_id.as_uuid())
+            .bind(actor.store_id.as_uuid())
+            .bind(order_number.as_str())
+            .bind(channel_id.as_uuid())
+            .bind(cart_id.as_uuid())
+            .bind(shopper.shopper_id.as_uuid())
+            .bind(request.idempotency_key)
+            .bind(header.1)
+            .bind(currency.as_str())
+            .bind(payment_provider_account_id)
+            .bind(None::<&str>)
+            .bind(request_fingerprint.as_slice())
+            .bind(subtotal)
+            .bind(request.now)
+            .execute(&mut *transaction)
+            .await
+            .map_err(checkout_insert_error)?
+            .rows_affected();
+            if inserted == 1 {
+                break true;
+            }
+            attempt += 1;
+            if attempt >= 5 {
+                break false;
+            }
+            order_number = generate_order_number();
+        };
+        if !order_created {
+            return Err(order_number_unavailable());
+        }
         let order_id = requested_order_id;
         insert_order_lines(&mut transaction, actor, order_id, &cart, request.now).await?;
 
@@ -404,9 +430,9 @@ impl PostgresStorefrontSalesRepository {
         if let Some(attribution) = &request.attribution {
             splice_attribution(&mut initiate_checkout_properties, attribution);
         }
-        publish_commerce_event(
+        publish_topic_event(
             &mut transaction,
-            "payment.initiated",
+            "order.payment.initiated",
             payment_event_payload(
                 actor.store_id.as_uuid(),
                 order_id.as_uuid(),

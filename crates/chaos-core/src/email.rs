@@ -78,18 +78,20 @@ impl EmailWebhooks {
                 request.received_at,
             )
             .await?;
-        self.inbox
-            .record(VerifiedWebhookEvent {
-                provider_account_id: request.provider_account_id,
-                capability: "email".into(),
-                provider: request.provider.into(),
-                provider_event_id: event.provider_event_id,
-                provider_event_type: event.provider_event_type,
-                normalized_event_type: event.normalized_event_type,
-                payload: event.payload,
-                verified_at: event.received_at,
-            })
-            .await
+        let envelope = VerifiedWebhookEvent {
+            provider_account_id: request.provider_account_id,
+            capability: "email".into(),
+            provider: request.provider.into(),
+            provider_event_id: event.provider_event_id,
+            provider_event_type: event.provider_event_type,
+            normalized_event_type: event.normalized_event_type,
+            payload: event.payload,
+            verified_at: event.received_at,
+        };
+        // Email provider webhooks carry no side effect to apply today — the
+        // audit row is the whole record, recognized event or not.
+        self.inbox.record(&envelope).await?;
+        Ok(())
     }
 }
 
@@ -501,8 +503,9 @@ fn validation(field: &'static str, reason: &'static str) -> ApplicationError {
     }
 }
 
-/// Email is an integration consumer, not an Order state machine. It consumes
-/// `payment.completed` (`notification_email_queue`, see
+/// Email is an integration consumer, not an Order state machine. It drains
+/// `notification_email_queue` (bound to `order.payment.completed` and the
+/// refund / fulfillment notification keys — see
 /// `migrations/0004_integration.sql`) and owns provider retries through
 /// PGMQ's own message lifecycle.
 pub struct EmailWorkers {
@@ -512,7 +515,6 @@ pub struct EmailWorkers {
 }
 
 const NOTIFICATION_EMAIL_QUEUE: &str = "notification_email_queue";
-const EMAIL_WEBHOOKS_QUEUE: &str = "email_webhooks_queue";
 
 impl EmailWorkers {
     pub fn new(
@@ -537,7 +539,7 @@ impl EmailWorkers {
             .await?;
         for job in &jobs {
             let result = self
-                .execute(&job.payload)
+                .execute(&job.routing_key, &job.payload)
                 .await
                 .map_err(|error| error.to_string());
             self.queue
@@ -547,39 +549,32 @@ impl EmailWorkers {
         Ok(jobs.len())
     }
 
-    pub async fn run_webhook_batch(&self, limit: u16) -> Result<usize, ApplicationError> {
-        let jobs = self.queue.claim_topic(EMAIL_WEBHOOKS_QUEUE, limit).await?;
-        for job in &jobs {
-            // There is nothing to actively do with a verified email
-            // provider webhook today — no delivery ledger to update. An
-            // event this version doesn't recognize is logged and dropped,
-            // not retried: retrying wouldn't teach Chaos to understand it.
-            if job
-                .payload
-                .get("normalized_event_type")
-                .and_then(serde_json::Value::as_str)
-                .is_none()
-            {
-                let provider = job
-                    .payload
-                    .get("provider")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("email provider");
-                let provider_event_type = job
-                    .payload
-                    .get("provider_event_type")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("unknown");
-                tracing::info!(provider, provider_event_type, "unsupported email webhook");
+    async fn execute(
+        &self,
+        routing_key: &str,
+        payload: &serde_json::Value,
+    ) -> Result<(), ApplicationError> {
+        match routing_key {
+            "order.payment.completed" => self.send_order_confirmation(payload).await,
+            other => {
+                // TODO(notification-email): render and send the fulfillment
+                // notices (order.fulfillment.shipped / order.fulfillment.delivered).
+                // `notification_email_queue` is bound to those routing keys in
+                // migrations/0004_integration.sql, but no templates exist yet,
+                // so the events are acknowledged and dropped here.
+                tracing::info!(
+                    routing_key = other,
+                    "notification email for this routing key is not implemented yet"
+                );
+                Ok(())
             }
-            self.queue
-                .finish_topic(EMAIL_WEBHOOKS_QUEUE, job.msg_id, job.attempts, Ok(()))
-                .await?;
         }
-        Ok(jobs.len())
     }
 
-    async fn execute(&self, payload: &serde_json::Value) -> Result<(), ApplicationError> {
+    async fn send_order_confirmation(
+        &self,
+        payload: &serde_json::Value,
+    ) -> Result<(), ApplicationError> {
         let store_id = topic_uuid(payload, "store_id")?;
         let order_id = topic_uuid(payload, "order_id")?;
         let Some((provider, reference, message)) = self

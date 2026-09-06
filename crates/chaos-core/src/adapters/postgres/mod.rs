@@ -23,7 +23,7 @@ pub use fulfillment::PostgresFulfillmentRepository;
 pub(crate) use integrations::{EmailBrandWrite, EmailProviderAccountWrite};
 pub use integrations::{
     PostgresEmailRepository, PostgresIntegrationAccountRepository, PostgresIntegrationQueue,
-    PostgresIntegrationWebhookRepository, PostgresShippingRepository,
+    PostgresIntegrationWebhookRepository, PostgresProviderWebhookAudit, ProviderWebhookAuditRow,
 };
 pub use inventory::PostgresInventoryRepository;
 pub use maintenance::PostgresMaintenance;

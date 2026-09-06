@@ -41,7 +41,7 @@ pub struct ListOrdersParams {
     /// Filter by order status.
     #[serde(default)]
     pub status: Option<OrderStatusParam>,
-    /// Exact customer-facing Order number, for example W-20260820-7K4M9Q2D.
+    /// Exact customer-facing Order number, for example W-7K4M9Q2D.
     #[serde(default)]
     pub order_number: Option<String>,
 }
@@ -258,7 +258,7 @@ fn order_list_item(detail: OrderDetail) -> serde_json::Value {
         "shopper_id": detail.shopper_id.as_uuid(),
         "status": detail.status.as_str(),
         "payment_status": detail.payment_status.as_str(),
-        "shipping_status": detail.shipping_status.as_str(),
+        "fulfillment_status": detail.fulfillment_status.as_str(),
         "currency": detail.currency.as_str(),
         "total_amount_minor": detail.total_amount_minor,
         "amounts_finalized_at": detail.amounts_finalized_at.map(format_time),
@@ -279,7 +279,7 @@ fn order_detail(detail: OrderDetail) -> serde_json::Value {
         currency,
         status,
         payment_status,
-        shipping_status,
+        fulfillment_status,
         payment_provider,
         payment_provider_reference_id,
         identity,
@@ -305,7 +305,7 @@ fn order_detail(detail: OrderDetail) -> serde_json::Value {
         "price_list_id": price_list_id.as_uuid(),
         "status": status.as_str(),
         "payment_status": payment_status.as_str(),
-        "shipping_status": shipping_status.as_str(),
+        "fulfillment_status": fulfillment_status.as_str(),
         "payment_provider": payment_provider.map(|value| value.as_str()),
         "payment_provider_reference_id": payment_provider_reference_id,
         "contact": order_contact_data(identity.contact()),
@@ -349,7 +349,7 @@ fn order_detail(detail: OrderDetail) -> serde_json::Value {
         })).collect::<Vec<_>>(),
         "fulfillments": fulfillments.into_iter().map(|fulfillment| json!({
             "id": fulfillment.id.as_uuid(),
-            "shipping_provider_account_id": fulfillment.shipping_provider_account_id.as_uuid(),
+            "provider_account_id": fulfillment.provider_account_id.as_uuid(),
             "shipping_provider": fulfillment.shipping_provider.as_str(),
             "provider_reference_id": fulfillment.provider_reference_id,
             "status": fulfillment.status.as_str(),
@@ -448,13 +448,13 @@ mod tests {
         (
             OrderDetail {
                 id: order_id,
-                order_number: OrderNumber::parse("W-20260820-7K4M9Q2D").unwrap(),
+                order_number: OrderNumber::parse("W-7K4M9Q2D").unwrap(),
                 shopper_id,
                 price_list_id,
                 currency: CurrencyCode::USD,
                 status: OrderStatus::Pending,
                 payment_status: OrderPaymentStatus::Pending,
-                shipping_status: FulfillmentStatus::Pending,
+                fulfillment_status: FulfillmentStatus::Pending,
                 payment_provider: None,
                 payment_provider_reference_id: None,
                 identity: OrderIdentity::new(

@@ -1,35 +1,17 @@
 CREATE SCHEMA integration;
 
--- Topic-routed queues (pgmq.bind_topic/pgmq.send_topic, native since pgmq
--- v1.11.0): each consumer below is fully isolated on its own queue, fed by
--- one publish_commerce_event call fanning a routing key out to every bound
--- queue atomically. There is no delivery-row table backing any of this —
--- PGMQ's own message lifecycle (visibility timeout retry, archive() on
--- exhausted retries, see finish_topic_event below) is the only durability
--- relied on; a failure is logged by the consuming worker, not persisted.
 SELECT pgmq.create('search_index_queue');
 SELECT pgmq.create('analytics_capi_queue');
 SELECT pgmq.create('notification_email_queue');
-SELECT pgmq.create('payment_commands_queue');
-SELECT pgmq.create('shipping_commands_queue');
-SELECT pgmq.create('payment_webhooks_queue');
-SELECT pgmq.create('email_webhooks_queue');
+SELECT pgmq.create('provider_webhooks_queue');
 
-SELECT pgmq.bind_topic('product.updated',   'search_index_queue');
-SELECT pgmq.bind_topic('payment.initiated', 'analytics_capi_queue');
-SELECT pgmq.bind_topic('payment.completed', 'analytics_capi_queue');
-SELECT pgmq.bind_topic('payment.completed', 'notification_email_queue');
--- A manual admin order confirmation (PostgresOrderManagementRepository::
--- transition_order) has no captured payment or analytics event behind it,
--- so it only ever notifies email, never CAPI.
-SELECT pgmq.bind_topic('order.confirmed',   'notification_email_queue');
-SELECT pgmq.bind_topic('refund.create_requested', 'payment_commands_queue');
-SELECT pgmq.bind_topic('fulfillment.shipped',     'shipping_commands_queue');
--- Verified provider webhooks route by capability, one queue per consumer —
--- shipping has no webhook consumer today (manual shipping only), so there
--- is no third binding here.
-SELECT pgmq.bind_topic('webhook.payment', 'payment_webhooks_queue');
-SELECT pgmq.bind_topic('webhook.email',   'email_webhooks_queue');
+SELECT pgmq.bind_topic('product.updated',             'search_index_queue');
+SELECT pgmq.bind_topic('order.payment.initiated',     'analytics_capi_queue');
+SELECT pgmq.bind_topic('order.payment.completed',     'analytics_capi_queue');
+SELECT pgmq.bind_topic('order.payment.completed',     'notification_email_queue');
+SELECT pgmq.bind_topic('order.fulfillment.shipped',   'notification_email_queue');
+SELECT pgmq.bind_topic('order.fulfillment.delivered', 'notification_email_queue');
+SELECT pgmq.bind_topic('provider.webhook.received',   'provider_webhooks_queue');
 
 CREATE TYPE integration.provider_capability AS ENUM ('email', 'payment', 'shipping', 'analytics');
 
@@ -58,7 +40,29 @@ CREATE TABLE integration.provider_accounts (
     CONSTRAINT provider_accounts_configuration_size_check          CHECK (pg_column_size(configuration) <= 32768)
 );
 
+CREATE TABLE integration.provider_webhooks (
+    id                     UUID                            NOT NULL PRIMARY KEY,
+    store_id               UUID                            NOT NULL,
+    provider_account_id    UUID                            NOT NULL,
+    capability             integration.provider_capability NOT NULL,
+    provider               TEXT                            NOT NULL,
+    provider_event_id      TEXT                            NOT NULL,
+    provider_event_type    TEXT                            NOT NULL,
+    normalized_event_type  TEXT,
+    payload                JSONB                           NOT NULL,
+    received_at            TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processed_at           TIMESTAMPTZ,
+
+    CONSTRAINT provider_webhooks_dedup_key              UNIQUE (provider_account_id, provider_event_id),
+    CONSTRAINT provider_webhooks_account_fkey           FOREIGN KEY (store_id, provider_account_id) REFERENCES integration.provider_accounts (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT provider_webhooks_provider_format_check  CHECK (provider ~ '^[a-z][a-z0-9_]*$'),
+    CONSTRAINT provider_webhooks_payload_object_check   CHECK (jsonb_typeof(payload) = 'object'),
+    CONSTRAINT provider_webhooks_payload_size_check     CHECK (pg_column_size(payload) <= 524288)
+);
+
 CREATE INDEX provider_accounts_store_capability_created_idx ON integration.provider_accounts (store_id, capability, created_at DESC, id DESC);
+CREATE INDEX provider_webhooks_store_received_idx ON integration.provider_webhooks (store_id, received_at DESC, id DESC);
+CREATE INDEX provider_webhooks_unprocessed_idx ON integration.provider_webhooks (received_at) WHERE processed_at IS NULL;
 
 CREATE FUNCTION integration.prevent_provider_account_identity_change ()
 RETURNS TRIGGER
@@ -83,11 +87,7 @@ CREATE TRIGGER provider_accounts_identity_immutable
     ON integration.provider_accounts
     FOR EACH ROW EXECUTE FUNCTION integration.prevent_provider_account_identity_change();
 
--- One narrow entry point into the pgmq schema for producers: every business
--- transaction that needs to notify a consumer calls this from inside its own
--- transaction, so a rolled-back transaction never delivers a message a
--- consumer would act on.
-CREATE FUNCTION integration.publish_commerce_event (
+CREATE FUNCTION integration.publish_topic_event (
     routing_key TEXT,
     payload     JSONB
 )
@@ -96,26 +96,31 @@ LANGUAGE SQL
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    SELECT pgmq.send_topic(routing_key, payload);
+    SELECT pgmq.send_topic(
+        routing_key,
+        payload,
+        jsonb_build_object('routing_key', routing_key),
+        0
+    );
 $$;
 
--- One generic claim/finish pair, parametrized by queue name, reused by
--- every topic-routed consumer in this schema.
 CREATE FUNCTION integration.claim_topic_queue (
     requested_queue_name TEXT,
     batch_size            INTEGER
 )
 RETURNS TABLE (
-    msg_id    BIGINT,
-    payload   JSONB,
-    attempts  INTEGER
+    msg_id       BIGINT,
+    payload      JSONB,
+    attempts     INTEGER,
+    routing_key  TEXT
 )
 LANGUAGE SQL
 VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    SELECT queued.msg_id, queued.message, queued.read_ct
+    SELECT queued.msg_id, queued.message, queued.read_ct,
+           COALESCE(queued.headers ->> 'routing_key', '')
     FROM pgmq.read(
         requested_queue_name,
         120,
@@ -206,14 +211,20 @@ CREATE POLICY store_isolation ON integration.provider_accounts
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-REVOKE ALL ON FUNCTION integration.publish_commerce_event (TEXT, JSONB) FROM PUBLIC;
+ALTER TABLE integration.provider_webhooks ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY store_isolation ON integration.provider_webhooks
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
+REVOKE ALL ON FUNCTION integration.publish_topic_event (TEXT, JSONB) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_topic_queue (TEXT, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.finish_topic_event (TEXT, BIGINT, INTEGER, BOOLEAN, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.resolve_provider_account (integration.provider_capability, TEXT, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.resolve_webhook_secret_reference (integration.provider_capability, TEXT, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.prevent_provider_account_identity_change () FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION integration.publish_commerce_event (TEXT, JSONB) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION integration.publish_topic_event (TEXT, JSONB) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_topic_queue (TEXT, INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.finish_topic_event (TEXT, BIGINT, INTEGER, BOOLEAN, INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.resolve_provider_account (integration.provider_capability, TEXT, UUID) TO chaos_runtime;
@@ -226,16 +237,11 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA integration GRANT USAGE, SELECT ON SEQUENCES 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 
 REVOKE UPDATE ON integration.provider_accounts FROM chaos_runtime;
-GRANT UPDATE (
-    display_name,
-    credential_secret_reference,
-    webhook_secret_reference,
-    configuration,
-    enabled,
-    updated_at
-)
-    ON integration.provider_accounts TO chaos_runtime;
+GRANT UPDATE (display_name, credential_secret_reference, webhook_secret_reference, configuration, enabled, updated_at) ON integration.provider_accounts TO chaos_runtime;
 REVOKE DELETE, TRUNCATE ON integration.provider_accounts FROM chaos_runtime;
+
+REVOKE UPDATE, DELETE, TRUNCATE ON integration.provider_webhooks FROM chaos_runtime;
+GRANT UPDATE (processed_at) ON integration.provider_webhooks TO chaos_runtime;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA integration GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
 

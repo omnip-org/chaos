@@ -40,16 +40,16 @@ async fn context(
     .map_err(db)
 }
 
-/// Publish a topic-routed commerce event (`integration.publish_commerce_event`)
+/// Publish a topic-routed commerce event (`integration.publish_topic_event`)
 /// in the same transaction that produced it, so a rolled-back transaction
 /// never delivers a message a consumer would act on. See
 /// `migrations/0004_integration.sql` for the queue bindings this reaches.
-pub(crate) async fn publish_commerce_event(
+pub(crate) async fn publish_topic_event(
     tx: &mut Transaction<'_, Postgres>,
     routing_key: &str,
     payload: Value,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("SELECT integration.publish_commerce_event($1, $2)")
+    sqlx::query("SELECT integration.publish_topic_event($1, $2)")
         .bind(routing_key)
         .bind(payload)
         .execute(&mut **tx)
@@ -58,8 +58,8 @@ pub(crate) async fn publish_commerce_event(
     Ok(())
 }
 
-/// Shared payload shape for `payment.initiated`/`payment.completed`: enough
-/// for the notification-email consumer (`order_id`) and the CAPI consumer
+/// Shared payload shape for `order.payment.initiated`/`order.payment.completed`:
+/// enough for the notification-email consumer (`order_id`) and the CAPI consumer
 /// (`event_name`/`occurred_at`/`shopper_id`/`properties` — everything
 /// `AnalyticsDeliveryCommand` needs to build a Meta CAPI event; `event_id`
 /// is always `order_id` in this codebase, so the CAPI consumer derives it
@@ -100,6 +100,11 @@ pub(crate) fn splice_attribution(properties: &mut Value, attribution: &Value) {
     };
     if let Some(source_url) = attribution.get("source_url") {
         meta.insert("source_url".into(), source_url.clone());
+    }
+    if let Some(utm) = attribution.get("utm").and_then(Value::as_object) {
+        for (key, value) in utm {
+            meta.insert(key.clone(), value.clone());
+        }
     }
     if let Some(platform_meta) = attribution.get("meta").and_then(Value::as_object) {
         for (key, value) in platform_meta {
@@ -409,5 +414,18 @@ mod tests {
         );
         assert_eq!(properties["_meta"]["fbc"], "fb.1.123.click");
         assert_eq!(properties["_meta"]["fbp"], "fb.1.123.browser");
+    }
+
+    #[test]
+    fn splices_cart_attribution_utm_tags_into_meta() {
+        let mut properties = json!({"order_id": "o-1"});
+        let attribution = json!({
+            "utm": {"utm_source": "newsletter", "utm_medium": "email"}
+        });
+
+        splice_attribution(&mut properties, &attribution);
+
+        assert_eq!(properties["_meta"]["utm_source"], "newsletter");
+        assert_eq!(properties["_meta"]["utm_medium"], "email");
     }
 }

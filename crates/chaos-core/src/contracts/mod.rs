@@ -15,7 +15,6 @@ mod provider_secret;
 mod publishable_key;
 mod review;
 mod sales;
-mod shipping;
 mod store;
 mod store_administration;
 mod storefront_catalog;
@@ -42,7 +41,7 @@ pub use email::{
     EmailMessage, EmailOrderLineItem, EmailProvider, EmailProviderAccountDetail,
     EmailProviderAccountPage, EmailWebhookVerifier, VerifiedEmailWebhook,
 };
-pub use fulfillment::{FulfillmentDetail, ShippingProviderAccountDetail};
+pub use fulfillment::{FulfillmentDetail, FulfillmentProviderAccountDetail};
 pub use identity::{
     ExternalIdentityVerifier, IdentityAuthentication, IdentityRepository, VerifiedExternalIdentity,
 };
@@ -68,7 +67,6 @@ pub use sales::{
     CartDetail, CartLineItem, CheckoutDraft, OrderDetail, OrderFulfillmentItem, OrderLineItem,
     OrderListFilter, OrderPage, OrderPaymentAttemptItem, OrderRefundItem,
 };
-pub use shipping::{ShippingCommand, ShippingOperation, ShippingProvider, ShippingResult};
 pub use store::{
     StoreListItem, StoreMembershipItem, StoreMembershipRepository, StoreReadRepository,
 };

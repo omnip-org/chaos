@@ -33,8 +33,6 @@ CREATE TABLE identity.credentials (
     CONSTRAINT credentials_email_length_check        CHECK (length(trim(email::text)) BETWEEN 3 AND 320)
 );
 
-CREATE INDEX credentials_user_id_idx ON identity.credentials (user_id, provider);
-
 CREATE TABLE identity.oauth_clients (
     client_id                       TEXT                  NOT NULL,
     client_name                     TEXT                  NOT NULL,
@@ -144,6 +142,7 @@ CREATE TABLE identity.oauth_refresh_tokens (
     CONSTRAINT oauth_refresh_tokens_replaced_digest_length_check  CHECK (replaced_by_digest IS NULL OR octet_length(replaced_by_digest) = 32)
 );
 
+CREATE INDEX credentials_user_id_idx ON identity.credentials (user_id, provider);
 CREATE INDEX oauth_authorization_requests_expiry_idx ON identity.oauth_authorization_requests (expires_at, created_at, id);
 CREATE INDEX oauth_authorization_requests_used_cleanup_idx ON identity.oauth_authorization_requests (used_at, created_at, id) WHERE used_at IS NOT NULL;
 CREATE INDEX oauth_authorization_requests_client_idx ON identity.oauth_authorization_requests (client_id, id);

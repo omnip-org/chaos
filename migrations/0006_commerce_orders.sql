@@ -1,7 +1,7 @@
 CREATE TYPE commerce.cart_status AS ENUM ('active', 'locked', 'completed', 'abandoned');
 CREATE TYPE commerce.order_status AS ENUM ('pending', 'confirmed', 'cancelled');
 CREATE TYPE commerce.order_payment_status AS ENUM ('pending', 'paid', 'failed', 'expired', 'partially_refunded', 'refunded');
-CREATE TYPE commerce.order_shipping_status AS ENUM ('pending', 'awaiting_pickup', 'shipped', 'delivered', 'cancelled');
+CREATE TYPE commerce.order_fulfillment_status AS ENUM ('pending', 'awaiting_pickup', 'shipped', 'delivered', 'cancelled');
 CREATE TYPE commerce.order_refund_status AS ENUM ('pending', 'succeeded', 'failed');
 
 CREATE TABLE commerce.carts (
@@ -34,9 +34,6 @@ CREATE TABLE commerce.carts (
             AND pg_column_size(payment_client_action) <= 8192
         )
     ),
-    -- Ad-platform attribution captured at checkout creation, namespaced by
-    -- platform (e.g. "meta") so a future platform is an additive JSON key,
-    -- not a schema change: {"source_url": ..., "meta": {"fbc": ..., "fbp": ...}}.
     CONSTRAINT carts_attribution_check            CHECK (
         attribution IS NULL
         OR (jsonb_typeof(attribution) = 'object' AND pg_column_size(attribution) <= 4096)
@@ -73,7 +70,7 @@ CREATE TABLE commerce.orders (
     payment_provider_account_id     UUID                            NOT NULL,
     payment_provider_reference_id   TEXT,
     payment_failure_code            TEXT,
-    shipping_status                 commerce.order_shipping_status  NOT NULL DEFAULT 'pending',
+    fulfillment_status              commerce.order_fulfillment_status  NOT NULL DEFAULT 'pending',
     refunded_amount_minor           BIGINT                          NOT NULL DEFAULT 0,
     subtotal_amount_minor           BIGINT                          NOT NULL,
     discount_amount_minor           BIGINT                          NOT NULL,
@@ -110,7 +107,7 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_currency_format_check                   CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT orders_idempotency_key_not_nil_check           CHECK (idempotency_key <> '00000000-0000-0000-0000-000000000000'::uuid),
     CONSTRAINT orders_checkout_request_fingerprint_check      CHECK (checkout_request_fingerprint IS NULL OR octet_length(checkout_request_fingerprint) = 32),
-    CONSTRAINT orders_order_number_check                      CHECK (order_number ~ '^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$'),
+    CONSTRAINT orders_order_number_check                      CHECK (order_number ~ '^W-[0-9A-HJKMNP-TV-Z]{8}$'),
     CONSTRAINT orders_amounts_check                           CHECK (
         subtotal_amount_minor >= 0
         AND discount_amount_minor >= 0
@@ -288,28 +285,28 @@ CREATE TABLE commerce.order_refunds (
     CONSTRAINT refunds_failure_code_shape_check                CHECK (status = 'failed' OR failure_code IS NULL)
 );
 
-CREATE TABLE commerce.order_shippings (
-    id                           UUID                               NOT NULL PRIMARY KEY,
-    store_id                     UUID                               NOT NULL,
-    order_id                     UUID                               NOT NULL,
-    shipping_provider_account_id UUID                               NOT NULL,
-    shipping_provider_reference_id TEXT,
-    status                       commerce.order_shipping_status     NOT NULL DEFAULT 'awaiting_pickup',
-    tracking_number              TEXT,
-    tracking_url                 TEXT,
-    shipped_at                   TIMESTAMPTZ,
-    delivered_at                 TIMESTAMPTZ,
-    cancelled_at                 TIMESTAMPTZ,
-    created_at                   TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                   TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+CREATE TABLE commerce.order_fulfillments (
+    id                     UUID                               NOT NULL PRIMARY KEY,
+    store_id               UUID                               NOT NULL,
+    order_id               UUID                               NOT NULL,
+    status                 commerce.order_fulfillment_status  NOT NULL DEFAULT 'pending',
+    provider_account_id    UUID                               NOT NULL,
+    provider_reference_id  TEXT,
+    tracking_number        TEXT,
+    tracking_url           TEXT,
+    shipped_at             TIMESTAMPTZ,
+    delivered_at           TIMESTAMPTZ,
+    cancelled_at           TIMESTAMPTZ,
+    created_at             TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at             TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT fulfillments_store_id_id_key                         UNIQUE (store_id, id),
-    CONSTRAINT fulfillments_store_id_order_fkey                     FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders (store_id, id),
-    CONSTRAINT fulfillments_store_id_shipping_provider_account_fkey FOREIGN KEY (store_id, shipping_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
-    CONSTRAINT fulfillments_shipping_provider_reference_check       CHECK (shipping_provider_reference_id IS NULL OR length(trim(shipping_provider_reference_id)) BETWEEN 1 AND 255),
-    CONSTRAINT fulfillments_tracking_number_check                   CHECK (tracking_number IS NULL OR length(trim(tracking_number)) BETWEEN 1 AND 255),
-    CONSTRAINT fulfillments_tracking_url_check                      CHECK (tracking_url IS NULL OR (length(tracking_url) BETWEEN 9 AND 2048 AND tracking_url ~ '^https://')),
-    CONSTRAINT fulfillments_shape_check                             CHECK (
+    CONSTRAINT fulfillments_store_id_id_key                            UNIQUE (store_id, id),
+    CONSTRAINT fulfillments_store_id_order_fkey                        FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders (store_id, id),
+    CONSTRAINT fulfillments_store_id_provider_account_fkey             FOREIGN KEY (store_id, provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
+    CONSTRAINT fulfillments_provider_reference_check                   CHECK (provider_reference_id IS NULL OR length(trim(provider_reference_id)) BETWEEN 1 AND 255),
+    CONSTRAINT fulfillments_tracking_number_check                      CHECK (tracking_number IS NULL OR length(trim(tracking_number)) BETWEEN 1 AND 255),
+    CONSTRAINT fulfillments_tracking_url_check                         CHECK (tracking_url IS NULL OR (length(tracking_url) BETWEEN 9 AND 2048 AND tracking_url ~ '^https://')),
+    CONSTRAINT fulfillments_shape_check                                CHECK (
         (status = 'awaiting_pickup' AND shipped_at IS NULL AND delivered_at IS NULL AND cancelled_at IS NULL) OR
         (status = 'shipped' AND shipped_at IS NOT NULL AND delivered_at IS NULL AND cancelled_at IS NULL) OR
         (status = 'delivered' AND shipped_at IS NOT NULL AND delivered_at IS NOT NULL AND cancelled_at IS NULL) OR
@@ -329,12 +326,12 @@ CREATE UNIQUE INDEX orders_one_order_per_cart_key ON commerce.orders (store_id, 
 CREATE INDEX orders_store_shopper_idx ON commerce.orders (store_id, shopper_id);
 CREATE INDEX orders_store_price_list_currency_idx ON commerce.orders (store_id, price_list_id, currency);
 CREATE UNIQUE INDEX orders_payment_provider_reference_key ON commerce.orders (store_id, payment_provider_account_id, payment_provider_reference_id) WHERE payment_provider_reference_id IS NOT NULL;
-CREATE UNIQUE INDEX fulfillments_shipping_provider_reference_key ON commerce.order_shippings (store_id, shipping_provider_account_id, shipping_provider_reference_id) WHERE shipping_provider_reference_id IS NOT NULL;
+CREATE UNIQUE INDEX fulfillments_provider_reference_key ON commerce.order_fulfillments (store_id, provider_account_id, provider_reference_id) WHERE provider_reference_id IS NOT NULL;
 CREATE INDEX refunds_order_created_idx ON commerce.order_refunds (store_id, order_id, created_at DESC);
 CREATE INDEX refunds_payment_provider_account_idx ON commerce.order_refunds (store_id, payment_provider_account_id, order_id);
 CREATE UNIQUE INDEX refunds_payment_provider_reference_key ON commerce.order_refunds (store_id, payment_provider_account_id, payment_provider_reference_id) WHERE payment_provider_reference_id IS NOT NULL;
-CREATE INDEX fulfillments_order_created_idx ON commerce.order_shippings (store_id, order_id, created_at DESC);
-CREATE INDEX fulfillments_shipping_provider_account_idx ON commerce.order_shippings (store_id, shipping_provider_account_id, order_id);
+CREATE INDEX fulfillments_order_created_idx ON commerce.order_fulfillments (store_id, order_id, created_at DESC);
+CREATE INDEX fulfillments_provider_account_idx ON commerce.order_fulfillments (store_id, provider_account_id, order_id);
 CREATE INDEX orders_payment_provider_account_idx ON commerce.orders (store_id, payment_provider_account_id);
 
 CREATE FUNCTION commerce.validate_payment_provider_account()
@@ -373,10 +370,10 @@ BEGIN
       INTO account_capability
       FROM integration.provider_accounts AS account
      WHERE account.store_id = NEW.store_id
-       AND account.id = NEW.shipping_provider_account_id;
+       AND account.id = NEW.provider_account_id;
 
     IF account_capability IS DISTINCT FROM 'shipping' THEN
-        RAISE EXCEPTION 'shipping_provider_account_id must reference a shipping account'
+        RAISE EXCEPTION 'provider_account_id must reference a shipping account'
             USING ERRCODE = '23503';
     END IF;
     RETURN NEW;
@@ -426,8 +423,8 @@ CREATE TRIGGER refunds_payment_provider_capability_check
     FOR EACH ROW EXECUTE FUNCTION commerce.validate_payment_provider_account();
 
 CREATE TRIGGER fulfillments_shipping_provider_capability_check
-    BEFORE INSERT OR UPDATE OF store_id, shipping_provider_account_id
-    ON commerce.order_shippings
+    BEFORE INSERT OR UPDATE OF store_id, provider_account_id
+    ON commerce.order_fulfillments
     FOR EACH ROW EXECUTE FUNCTION commerce.validate_shipping_provider_account();
 
 ALTER TABLE commerce.carts ENABLE ROW LEVEL SECURITY;
@@ -435,7 +432,7 @@ ALTER TABLE commerce.cart_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.order_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.order_refunds ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.order_shippings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.order_fulfillments ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.carts
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
@@ -457,7 +454,7 @@ CREATE POLICY store_isolation ON commerce.order_refunds
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-CREATE POLICY store_isolation ON commerce.order_shippings
+CREATE POLICY store_isolation ON commerce.order_fulfillments
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
@@ -467,20 +464,20 @@ GRANT SELECT, INSERT, UPDATE, DELETE
        commerce.orders,
        commerce.order_lines,
        commerce.order_refunds,
-       commerce.order_shippings
+       commerce.order_fulfillments
     TO chaos_runtime;
 
 REVOKE DELETE, TRUNCATE ON commerce.carts,
     commerce.orders,
     commerce.order_refunds,
-    commerce.order_shippings
+    commerce.order_fulfillments
     FROM chaos_runtime;
 REVOKE UPDATE ON commerce.orders FROM chaos_runtime;
 GRANT UPDATE (
     payment_status,
     payment_provider_reference_id,
     payment_failure_code,
-    shipping_status,
+    fulfillment_status,
     refunded_amount_minor,
     subtotal_amount_minor,
     discount_amount_minor,

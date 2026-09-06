@@ -1,8 +1,8 @@
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductVariantId},
-    fulfillment::{FulfillmentId, FulfillmentStatus, ShippingProviderAccountId},
-    integration::{PaymentProvider, ShippingProvider},
+    fulfillment::{FulfillmentId, FulfillmentProviderAccountId, FulfillmentStatus},
+    integration::{FulfillmentProvider, PaymentProvider},
     payments::{PaymentAttemptStatus, RefundId, RefundStatus},
     pricing::PriceListId,
     sales::{
@@ -89,11 +89,11 @@ pub struct OrderRefundItem {
 
 /// One shipment against an Order. Kept as its own row (rather than flat
 /// columns on `orders`) so the shipping history is a real timeline — see
-/// `commerce.order_shippings`.
+/// `commerce.order_fulfillments`.
 pub struct OrderFulfillmentItem {
     pub id: FulfillmentId,
-    pub shipping_provider_account_id: ShippingProviderAccountId,
-    pub shipping_provider: ShippingProvider,
+    pub provider_account_id: FulfillmentProviderAccountId,
+    pub shipping_provider: FulfillmentProvider,
     pub provider_reference_id: Option<String>,
     pub status: FulfillmentStatus,
     pub tracking_number: Option<String>,
@@ -114,7 +114,7 @@ pub struct OrderDetail {
     pub status: OrderStatus,
     pub payment_status: OrderPaymentStatus,
     /// Aggregate projection of the Order's active Fulfillments.
-    pub shipping_status: FulfillmentStatus,
+    pub fulfillment_status: FulfillmentStatus,
     pub payment_provider: Option<PaymentProvider>,
     pub payment_provider_reference_id: Option<String>,
     pub identity: OrderIdentity,

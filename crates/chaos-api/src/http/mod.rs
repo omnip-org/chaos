@@ -505,7 +505,7 @@ mod tests {
             (Method::GET, "/api/v1/products"),
             (Method::GET, "/api/v1/collections"),
             (Method::POST, "/api/v1/carts"),
-            (Method::POST, "/api/v1/orders/lookup"),
+            (Method::POST, "/api/v1/orders/details"),
             (
                 Method::POST,
                 "/webhooks/v1/payment/stripe/00000000-0000-0000-0000-000000000000",

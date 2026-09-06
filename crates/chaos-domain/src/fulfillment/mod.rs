@@ -30,7 +30,7 @@ macro_rules! fulfillment_id {
 }
 
 fulfillment_id!(FulfillmentId);
-fulfillment_id!(ShippingProviderAccountId);
+fulfillment_id!(FulfillmentProviderAccountId);
 
 /// Shared shipping vocabulary for Fulfillment rows and the Order's shipping
 /// projection. `Pending` is used only when an Order has no active shipment;
@@ -71,7 +71,7 @@ impl FulfillmentStatus {
 pub struct Fulfillment {
     id: FulfillmentId,
     order_id: OrderId,
-    shipping_provider_account_id: ShippingProviderAccountId,
+    provider_account_id: FulfillmentProviderAccountId,
     status: FulfillmentStatus,
     tracking_number: Option<String>,
     tracking_url: Option<String>,
@@ -80,7 +80,7 @@ pub struct Fulfillment {
 impl Fulfillment {
     pub fn create(
         order_id: OrderId,
-        shipping_provider_account_id: ShippingProviderAccountId,
+        provider_account_id: FulfillmentProviderAccountId,
         tracking_number: Option<String>,
         tracking_url: Option<String>,
     ) -> Result<Self, DomainError> {
@@ -88,7 +88,7 @@ impl Fulfillment {
         Ok(Self {
             id: FulfillmentId::new(),
             order_id,
-            shipping_provider_account_id,
+            provider_account_id,
             status: FulfillmentStatus::AwaitingPickup,
             tracking_number,
             tracking_url,
@@ -98,7 +98,7 @@ impl Fulfillment {
     pub fn rehydrate(
         id: FulfillmentId,
         order_id: OrderId,
-        shipping_provider_account_id: ShippingProviderAccountId,
+        provider_account_id: FulfillmentProviderAccountId,
         status: FulfillmentStatus,
         tracking_number: Option<String>,
         tracking_url: Option<String>,
@@ -106,7 +106,7 @@ impl Fulfillment {
         Self {
             id,
             order_id,
-            shipping_provider_account_id,
+            provider_account_id,
             status,
             tracking_number,
             tracking_url,
@@ -121,8 +121,8 @@ impl Fulfillment {
         self.order_id
     }
 
-    pub const fn shipping_provider_account_id(&self) -> ShippingProviderAccountId {
-        self.shipping_provider_account_id
+    pub const fn provider_account_id(&self) -> FulfillmentProviderAccountId {
+        self.provider_account_id
     }
 
     pub const fn status(&self) -> FulfillmentStatus {
@@ -224,9 +224,13 @@ mod tests {
 
     #[test]
     fn fulfillment_progresses_awaiting_pickup_to_shipped_to_delivered() {
-        let mut fulfillment =
-            Fulfillment::create(OrderId::new(), ShippingProviderAccountId::new(), None, None)
-                .unwrap();
+        let mut fulfillment = Fulfillment::create(
+            OrderId::new(),
+            FulfillmentProviderAccountId::new(),
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(fulfillment.status(), FulfillmentStatus::AwaitingPickup);
         assert!(fulfillment.mark_delivered().is_err());
         assert!(
@@ -245,9 +249,13 @@ mod tests {
 
     #[test]
     fn fulfillment_can_be_cancelled_before_delivery_but_not_after() {
-        let mut fulfillment =
-            Fulfillment::create(OrderId::new(), ShippingProviderAccountId::new(), None, None)
-                .unwrap();
+        let mut fulfillment = Fulfillment::create(
+            OrderId::new(),
+            FulfillmentProviderAccountId::new(),
+            None,
+            None,
+        )
+        .unwrap();
         assert!(fulfillment.cancel().unwrap());
         assert!(fulfillment.mark_shipped(None, None).is_err());
     }
@@ -256,7 +264,7 @@ mod tests {
     fn fulfillment_rejects_a_non_https_tracking_url() {
         let result = Fulfillment::create(
             OrderId::new(),
-            ShippingProviderAccountId::new(),
+            FulfillmentProviderAccountId::new(),
             None,
             Some("http://track.example/1Z999".into()),
         );
