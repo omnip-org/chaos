@@ -237,15 +237,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA integration GRANT USAGE, SELECT ON SEQUENCES 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 
 REVOKE UPDATE ON integration.provider_accounts FROM chaos_runtime;
-GRANT UPDATE (
-    display_name,
-    credential_secret_reference,
-    webhook_secret_reference,
-    configuration,
-    enabled,
-    updated_at
-)
-    ON integration.provider_accounts TO chaos_runtime;
+GRANT UPDATE (display_name, credential_secret_reference, webhook_secret_reference, configuration, enabled, updated_at) ON integration.provider_accounts TO chaos_runtime;
 REVOKE DELETE, TRUNCATE ON integration.provider_accounts FROM chaos_runtime;
 
 REVOKE UPDATE, DELETE, TRUNCATE ON integration.provider_webhooks FROM chaos_runtime;
