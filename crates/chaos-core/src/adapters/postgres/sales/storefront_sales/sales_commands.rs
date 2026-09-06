@@ -406,7 +406,7 @@ impl PostgresStorefrontSalesRepository {
         }
         publish_commerce_event(
             &mut transaction,
-            "payment.initiated",
+            "order.payment.initiated",
             payment_event_payload(
                 actor.store_id.as_uuid(),
                 order_id.as_uuid(),

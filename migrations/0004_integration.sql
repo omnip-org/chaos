@@ -1,35 +1,17 @@
 CREATE SCHEMA integration;
 
--- Topic-routed queues (pgmq.bind_topic/pgmq.send_topic, native since pgmq
--- v1.11.0): each consumer below is fully isolated on its own queue, fed by
--- one publish_commerce_event call fanning a routing key out to every bound
--- queue atomically. There is no delivery-row table backing any of this —
--- PGMQ's own message lifecycle (visibility timeout retry, archive() on
--- exhausted retries, see finish_topic_event below) is the only durability
--- relied on; a failure is logged by the consuming worker, not persisted.
 SELECT pgmq.create('search_index_queue');
 SELECT pgmq.create('analytics_capi_queue');
 SELECT pgmq.create('notification_email_queue');
-SELECT pgmq.create('payment_commands_queue');
-SELECT pgmq.create('shipping_commands_queue');
-SELECT pgmq.create('payment_webhooks_queue');
-SELECT pgmq.create('email_webhooks_queue');
 
-SELECT pgmq.bind_topic('product.updated',   'search_index_queue');
-SELECT pgmq.bind_topic('payment.initiated', 'analytics_capi_queue');
-SELECT pgmq.bind_topic('payment.completed', 'analytics_capi_queue');
-SELECT pgmq.bind_topic('payment.completed', 'notification_email_queue');
--- A manual admin order confirmation (PostgresOrderManagementRepository::
--- transition_order) has no captured payment or analytics event behind it,
--- so it only ever notifies email, never CAPI.
-SELECT pgmq.bind_topic('order.confirmed',   'notification_email_queue');
-SELECT pgmq.bind_topic('refund.create_requested', 'payment_commands_queue');
-SELECT pgmq.bind_topic('fulfillment.shipped',     'shipping_commands_queue');
--- Verified provider webhooks route by capability, one queue per consumer —
--- shipping has no webhook consumer today (manual shipping only), so there
--- is no third binding here.
-SELECT pgmq.bind_topic('webhook.payment', 'payment_webhooks_queue');
-SELECT pgmq.bind_topic('webhook.email',   'email_webhooks_queue');
+SELECT pgmq.bind_topic('product.updated',                  'search_index_queue');
+SELECT pgmq.bind_topic('order.payment.initiated',          'analytics_capi_queue');
+SELECT pgmq.bind_topic('order.payment.completed',          'analytics_capi_queue');
+SELECT pgmq.bind_topic('order.payment.completed',          'notification_email_queue');
+SELECT pgmq.bind_topic('order.payment.partially_refunded', 'notification_email_queue');
+SELECT pgmq.bind_topic('order.payment.refunded',           'notification_email_queue');
+SELECT pgmq.bind_topic('order.fulfillment.shipped',        'notification_email_queue');
+SELECT pgmq.bind_topic('order.fulfillment.delivered',      'notification_email_queue');
 
 CREATE TYPE integration.provider_capability AS ENUM ('email', 'payment', 'shipping', 'analytics');
 
@@ -59,6 +41,32 @@ CREATE TABLE integration.provider_accounts (
 );
 
 CREATE INDEX provider_accounts_store_capability_created_idx ON integration.provider_accounts (store_id, capability, created_at DESC, id DESC);
+
+-- Every verified provider webhook lands here first: one append-only row per
+-- (provider account, provider event id). The insert is the dedup — a provider
+-- retry hits the unique constraint and the caller skips reprocessing. Payload
+-- interpretation stays in the capability service, which runs synchronously in
+-- the same request right after this row commits.
+CREATE TABLE integration.provider_webhook_audit (
+    id                     UUID                            NOT NULL PRIMARY KEY,
+    store_id               UUID                            NOT NULL,
+    provider_account_id    UUID                            NOT NULL,
+    capability             integration.provider_capability NOT NULL,
+    provider               TEXT                            NOT NULL,
+    provider_event_id      TEXT                            NOT NULL,
+    provider_event_type    TEXT                            NOT NULL,
+    normalized_event_type  TEXT,
+    payload                JSONB                           NOT NULL,
+    received_at            TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT provider_webhook_audit_dedup_key              UNIQUE (provider_account_id, provider_event_id),
+    CONSTRAINT provider_webhook_audit_account_fkey           FOREIGN KEY (store_id, provider_account_id) REFERENCES integration.provider_accounts (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT provider_webhook_audit_provider_format_check  CHECK (provider ~ '^[a-z][a-z0-9_]*$'),
+    CONSTRAINT provider_webhook_audit_payload_object_check   CHECK (jsonb_typeof(payload) = 'object'),
+    CONSTRAINT provider_webhook_audit_payload_size_check     CHECK (pg_column_size(payload) <= 524288)
+);
+
+CREATE INDEX provider_webhook_audit_store_received_idx ON integration.provider_webhook_audit (store_id, received_at DESC, id DESC);
 
 CREATE FUNCTION integration.prevent_provider_account_identity_change ()
 RETURNS TRIGGER
@@ -206,6 +214,12 @@ CREATE POLICY store_isolation ON integration.provider_accounts
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
+ALTER TABLE integration.provider_webhook_audit ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY store_isolation ON integration.provider_webhook_audit
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
 REVOKE ALL ON FUNCTION integration.publish_commerce_event (TEXT, JSONB) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_topic_queue (TEXT, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.finish_topic_event (TEXT, BIGINT, INTEGER, BOOLEAN, INTEGER) FROM PUBLIC;
@@ -236,6 +250,8 @@ GRANT UPDATE (
 )
     ON integration.provider_accounts TO chaos_runtime;
 REVOKE DELETE, TRUNCATE ON integration.provider_accounts FROM chaos_runtime;
+
+REVOKE UPDATE, DELETE, TRUNCATE ON integration.provider_webhook_audit FROM chaos_runtime;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA integration GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
 

@@ -27,7 +27,11 @@ pub struct VerifiedWebhookEvent {
 
 #[async_trait]
 pub trait WebhookInbox: Send + Sync {
-    async fn record(&self, event: VerifiedWebhookEvent) -> Result<(), ApplicationError>;
+    /// Appends the verified event to `integration.provider_webhook_audit`.
+    /// Returns the resolved store id when the row was newly written, or
+    /// `None` when `(provider_account_id, provider_event_id)` was already
+    /// audited (a provider retry) and the caller must not reprocess it.
+    async fn record(&self, event: &VerifiedWebhookEvent) -> Result<Option<Uuid>, ApplicationError>;
 }
 
 #[async_trait]

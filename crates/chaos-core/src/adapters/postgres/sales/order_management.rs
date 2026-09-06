@@ -1,9 +1,6 @@
 use crate::{
     ApplicationError,
-    adapters::postgres::{
-        analytics::publish_commerce_event,
-        sales::{consume_order_inventory, release_order_inventory},
-    },
+    adapters::postgres::sales::{consume_order_inventory, release_order_inventory},
     contracts::{AdminActor, OrderDetail, OrderListFilter, OrderPage},
     error::database_error,
 };
@@ -166,17 +163,6 @@ impl PostgresOrderManagementRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
-        if target_status == OrderStatus::Confirmed {
-            publish_commerce_event(
-                &mut transaction,
-                "order.confirmed",
-                serde_json::json!({
-                    "store_id": store_id.as_uuid(),
-                    "order_id": order_id.as_uuid(),
-                }),
-            )
-            .await?;
-        }
         let detail = super::order_detail::load(&mut transaction, store_id, None, order_id)
             .await?
             .ok_or_else(|| order_not_found(order_id))?;

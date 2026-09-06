@@ -239,19 +239,6 @@ impl PostgresStripeRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
-        publish_commerce_event(
-            &mut transaction,
-            "refund.create_requested",
-            json!({
-                "store_id": store_id.as_uuid(),
-                "aggregate_id": id.as_uuid(),
-                "amount_minor": amount_minor,
-                "currency": currency.as_str(),
-                "return_url": None::<&str>,
-                "provider": "stripe",
-            }),
-        )
-        .await?;
         let detail = RefundDetail {
             id,
             order_id,
@@ -552,9 +539,9 @@ impl PostgresStripeRepository {
             refund_id: row.9,
             amount_minor: command_amount,
             currency: CurrencyCode::parse(&row.1)?,
-            // Both callers (prepare_checkout_command, the async refund
-            // consumer in payments/mod.rs) overwrite this with their own
-            // stable identifier immediately after this call returns.
+            // Both callers (prepare_checkout_command, create_refund in
+            // payments/mod.rs) overwrite this with their own stable
+            // identifier immediately after this call returns.
             idempotency_key: aggregate_id.to_string(),
             credential_secret_reference: row.3,
             provider_payment_reference: row.4,
@@ -569,10 +556,10 @@ impl PostgresStripeRepository {
         })
     }
 
-    /// Only ever called for a refund command claimed off
-    /// `payment_commands_queue` — Checkout Session creation is synchronous
-    /// (`prepare_checkout_command`/`record_checkout_result`) and never
-    /// reaches here.
+    /// Only ever called for a refund command, issued synchronously from
+    /// `create_refund` in payments/mod.rs. Checkout Session creation has its
+    /// own pair (`prepare_checkout_command`/`record_checkout_result`) and
+    /// never reaches here.
     pub(crate) async fn record_payment_result(
         &self,
         store_id: Uuid,

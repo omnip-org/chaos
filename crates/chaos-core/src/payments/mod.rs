@@ -5,7 +5,7 @@ use chaos_domain::{
     store::{StoreId, StoreRole},
     stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
 };
-use serde_json::Value;
+use serde_json::json;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -13,7 +13,7 @@ use crate::{
     ApplicationError,
     adapters::postgres::PostgresStripeRepository,
     contracts::{
-        AdminActor, IntegrationQueue, MachineActor, PaymentClientAction, PaymentProviderRegistry,
+        AdminActor, MachineActor, PaymentClientAction, PaymentProviderRegistry,
         PaymentWebhookVerifierRegistry, RefundDetail, ShopperActor, StripeAccountConfiguration,
         StripeAccountDetail, StripeAccountPage, VerifiedWebhookEvent, WebhookInbox,
     },
@@ -38,6 +38,7 @@ pub struct CreateRefundInput {
     pub store_id: StoreId,
     pub order_id: OrderId,
     pub amount_minor: i64,
+    pub now: OffsetDateTime,
 }
 
 pub struct ReconcileRefundsInput {
@@ -254,14 +255,39 @@ impl PaymentService {
         input: CreateRefundInput,
     ) -> Result<RefundDetail, ApplicationError> {
         require_payment_operator(&input.actor)?;
+        let store_id = input.store_id.as_uuid();
+        let detail = self
+            .repository
+            .create_refund(input.actor, input.store_id, input.order_id, input.amount_minor)
+            .await?;
+        // The refund now exists as a pending row; issue it at the provider in
+        // the same request. On provider failure the row stays pending and the
+        // error surfaces to the caller — `reconcile_refunds` is the recovery
+        // path.
+        // ponytail: sync provider call, no retry — add a retry queue only if
+        // provider flakiness actually bites.
+        let command_payload = json!({
+            "store_id": store_id,
+            "aggregate_id": detail.id.as_uuid(),
+            "amount_minor": detail.amount_minor,
+            "currency": detail.currency.as_str(),
+            "return_url": None::<&str>,
+            "provider": "stripe",
+        });
+        let mut command = self
+            .repository
+            .prepare_payment_command(store_id, true, Some("stripe"), &command_payload)
+            .await?;
+        command.idempotency_key = detail.id.as_uuid().to_string();
+        let gateway = self
+            .payment_providers
+            .get("stripe")
+            .ok_or_else(payment_provider_not_supported)?;
+        let result = gateway.execute(command).await?;
         self.repository
-            .create_refund(
-                input.actor,
-                input.store_id,
-                input.order_id,
-                input.amount_minor,
-            )
-            .await
+            .record_payment_result(store_id, &command_payload, &result, input.now)
+            .await?;
+        Ok(detail)
     }
 
     pub async fn reconcile_refunds(
@@ -294,6 +320,11 @@ impl PaymentService {
         })
     }
 
+    /// Verifies the wire payload, appends it to the provider webhook audit,
+    /// then processes it synchronously in the same request. A processing
+    /// error propagates out as a non-2xx response, which the provider
+    /// retries; the audit row's uniqueness makes that retry a no-op for the
+    /// side effects that already committed.
     pub async fn receive_provider_webhook(
         &self,
         provider: &str,
@@ -312,191 +343,58 @@ impl PaymentService {
         let event = verifier
             .verify(provider_account_id, signature, payload, received_at)
             .await?;
-        self.webhook_inbox
-            .record(VerifiedWebhookEvent {
-                provider_account_id: event.provider_account_id,
-                capability: "payment".into(),
-                provider: provider.to_owned(),
-                provider_event_id: event.provider_event_id,
-                provider_event_type: event.provider_event_type,
-                normalized_event_type: event.normalized_event_type,
-                payload: event.payload,
-                verified_at: event.verified_at,
-            })
-            .await
-    }
-}
-
-pub struct PaymentWorkers {
-    queue: Arc<dyn IntegrationQueue>,
-    repository: Arc<PostgresStripeRepository>,
-    payment_providers: Arc<PaymentProviderRegistry>,
-}
-
-const PAYMENT_COMMANDS_QUEUE: &str = "payment_commands_queue";
-const PAYMENT_WEBHOOKS_QUEUE: &str = "payment_webhooks_queue";
-
-impl PaymentWorkers {
-    pub fn new(
-        queue: Arc<dyn IntegrationQueue>,
-        repository: Arc<PostgresStripeRepository>,
-        payment_providers: Arc<PaymentProviderRegistry>,
-    ) -> Self {
-        Self {
-            queue,
-            repository,
-            payment_providers,
-        }
-    }
-
-    pub async fn run_outbox_batch(
-        &self,
-        now: OffsetDateTime,
-        limit: u16,
-    ) -> Result<usize, ApplicationError> {
-        let jobs = self
-            .queue
-            .claim_topic(PAYMENT_COMMANDS_QUEUE, limit)
-            .await?;
-        for job in &jobs {
-            let result = self
-                .execute_payment_job(&job.payload, job.msg_id, now)
-                .await
-                .map_err(|error| error.to_string());
-            self.queue
-                .finish_topic(PAYMENT_COMMANDS_QUEUE, job.msg_id, job.attempts, result)
-                .await?;
-        }
-        Ok(jobs.len())
-    }
-
-    pub async fn run_webhook_batch(
-        &self,
-        now: OffsetDateTime,
-        limit: u16,
-    ) -> Result<usize, ApplicationError> {
-        let jobs = self
-            .queue
-            .claim_topic(PAYMENT_WEBHOOKS_QUEUE, limit)
-            .await?;
-        for job in &jobs {
-            let result = self.execute_webhook_job(&job.payload, now).await;
-            if let Err(error) = &result {
-                tracing::warn!(error = %error, "payment webhook processing failed");
-            }
-            self.queue
-                .finish_topic(
-                    PAYMENT_WEBHOOKS_QUEUE,
-                    job.msg_id,
-                    job.attempts,
-                    result.map_err(|error| error.to_string()),
-                )
-                .await?;
-        }
-        Ok(jobs.len())
-    }
-
-    async fn execute_webhook_job(
-        &self,
-        payload: &Value,
-        now: OffsetDateTime,
-    ) -> Result<(), ApplicationError> {
-        let Some(normalized_event_type) =
-            payload.get("normalized_event_type").and_then(Value::as_str)
-        else {
-            // An event the provider sent legitimately but this version of
-            // Chaos does not understand. Logged, not retried: retrying
-            // wouldn't teach Chaos to understand it.
-            let provider = payload
-                .get("provider")
-                .and_then(Value::as_str)
-                .unwrap_or("payment provider");
-            let provider_event_type = payload
-                .get("provider_event_type")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            tracing::info!(provider, provider_event_type, "unsupported payment webhook");
+        let envelope = VerifiedWebhookEvent {
+            provider_account_id: event.provider_account_id,
+            capability: "payment".into(),
+            provider: provider.to_owned(),
+            provider_event_id: event.provider_event_id,
+            provider_event_type: event.provider_event_type,
+            normalized_event_type: event.normalized_event_type,
+            payload: event.payload,
+            verified_at: event.verified_at,
+        };
+        let Some(store_id) = self.webhook_inbox.record(&envelope).await? else {
+            // Already audited under this (provider account, event id) — a
+            // provider retry. The first delivery already did the work.
             return Ok(());
         };
-        let store_id = topic_uuid(payload, "store_id")?;
-        let provider_account_id = topic_uuid(payload, "provider_account_id")?;
-        let event_payload = payload
-            .get("payload")
-            .ok_or_else(|| topic_field_error("payload"))?;
-        let Some(context) = self
+        let Some(normalized_event_type) = envelope.normalized_event_type.as_deref() else {
+            // Verified but not a shape this version understands. Recorded for
+            // the audit trail; nothing to act on.
+            tracing::info!(
+                provider,
+                provider_event_type = %envelope.provider_event_type,
+                "unsupported payment webhook"
+            );
+            return Ok(());
+        };
+        let reconciliation = self
             .repository
             .process_webhook_job(
                 store_id,
                 normalized_event_type,
-                provider_account_id,
-                event_payload,
-                now,
-            )
-            .await?
-        else {
-            return Ok(());
-        };
-        let provider_name = payload
-            .get("provider")
-            .and_then(Value::as_str)
-            .unwrap_or("stripe");
-        let provider = self
-            .payment_providers
-            .get(provider_name)
-            .ok_or_else(payment_provider_not_supported)?;
-        let observations = provider
-            .list_refunds(
-                &context.credential_secret_reference,
-                &context.payment_provider_reference,
+                envelope.provider_account_id,
+                &envelope.payload,
+                received_at,
             )
             .await?;
-        self.repository
-            .apply_refund_reconciliation(&context, &observations, now)
-            .await?;
+        if let Some(context) = reconciliation {
+            let gateway = self
+                .payment_providers
+                .get(provider)
+                .ok_or_else(payment_provider_not_supported)?;
+            let observations = gateway
+                .list_refunds(
+                    &context.credential_secret_reference,
+                    &context.payment_provider_reference,
+                )
+                .await?;
+            self.repository
+                .apply_refund_reconciliation(&context, &observations, received_at)
+                .await?;
+        }
         Ok(())
     }
-
-    async fn execute_payment_job(
-        &self,
-        payload: &Value,
-        msg_id: i64,
-        now: OffsetDateTime,
-    ) -> Result<(), ApplicationError> {
-        let store_id = topic_uuid(payload, "store_id")?;
-        let provider = payload.get("provider").and_then(Value::as_str);
-        let mut command = self
-            .repository
-            .prepare_payment_command(store_id, true, provider, payload)
-            .await?;
-        // Stable across a PGMQ retry of this same message (msg_id doesn't
-        // change across set_vt-based redelivery), so a repeated Stripe call
-        // for the same refund reuses the same idempotency key.
-        command.idempotency_key = msg_id.to_string();
-        let provider_name = provider.unwrap_or("stripe");
-        let provider = self
-            .payment_providers
-            .get(provider_name)
-            .ok_or_else(payment_provider_not_supported)?;
-        let result = provider.execute(command).await?;
-        self.repository
-            .record_payment_result(store_id, payload, &result, now)
-            .await?;
-        Ok(())
-    }
-}
-
-fn topic_uuid(payload: &Value, field: &'static str) -> Result<Uuid, ApplicationError> {
-    payload
-        .get(field)
-        .and_then(Value::as_str)
-        .and_then(|value| Uuid::parse_str(value).ok())
-        .ok_or_else(|| topic_field_error(field))
-}
-
-fn topic_field_error(field: &'static str) -> ApplicationError {
-    ApplicationError::Unexpected(anyhow::anyhow!(
-        "commerce event message missing or invalid field {field}"
-    ))
 }
 
 fn require_checkout_key(actor: &MachineActor) -> Result<(), ApplicationError> {

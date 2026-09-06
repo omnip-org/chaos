@@ -9,12 +9,10 @@ use sqlx::PgPool;
 
 mod accounts;
 mod email;
-mod shipping;
 mod webhooks;
 pub use accounts::PostgresIntegrationAccountRepository;
 pub use email::PostgresEmailRepository;
 pub(crate) use email::{EmailBrandWrite, EmailProviderAccountWrite};
-pub use shipping::PostgresShippingRepository;
 pub use webhooks::PostgresIntegrationWebhookRepository;
 
 /// PostgreSQL-backed leasing for every topic-routed queue. Provider-specific

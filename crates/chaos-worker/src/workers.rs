@@ -8,18 +8,8 @@ pub async fn run(
     lifecycle: Lifecycle,
     worker_shutdown_timeout: std::time::Duration,
 ) {
-    let payment_worker = tokio::spawn(payment_worker_loop(
-        runtime.payment_workers.clone(),
-        runtime.clock.clone(),
-        lifecycle.clone(),
-    ));
     let email_worker = tokio::spawn(email_worker_loop(
         runtime.email_workers.clone(),
-        lifecycle.clone(),
-    ));
-    let shipping_worker = tokio::spawn(shipping_worker_loop(
-        runtime.shipping_workers.clone(),
-        runtime.clock.clone(),
         lifecycle.clone(),
     ));
     let capi_worker = tokio::spawn(capi_worker_loop(
@@ -38,9 +28,7 @@ pub async fn run(
     tracing::info!("background worker started");
     shutdown_signal(lifecycle).await;
     tokio::join!(
-        drain_worker("payment", payment_worker, worker_shutdown_timeout),
         drain_worker("email", email_worker, worker_shutdown_timeout),
-        drain_worker("shipping", shipping_worker, worker_shutdown_timeout),
         drain_worker("capi", capi_worker, worker_shutdown_timeout),
         drain_worker("search", search_worker, worker_shutdown_timeout),
         drain_worker("maintenance", maintenance_worker, worker_shutdown_timeout),
@@ -54,31 +42,10 @@ async fn email_worker_loop(
     let worker_id = Uuid::now_v7();
     let mut backoff = PollBackoff::new();
     while lifecycle.is_accepting_traffic() {
-        let mut processed = 0;
-        match workers.run_outbox_batch(10).await {
-            Ok(count) => processed += count,
-            Err(error) => tracing::warn!(%worker_id, %error, "email outbox batch failed"),
-        }
-        match workers.run_webhook_batch(10).await {
-            Ok(count) => processed += count,
-            Err(error) => tracing::warn!(%worker_id, %error, "email webhook batch failed"),
-        }
-        tokio::time::sleep(backoff.observe(processed)).await;
-    }
-}
-
-async fn shipping_worker_loop(
-    workers: std::sync::Arc<chaos_core::shipping::ShippingWorkers>,
-    clock: std::sync::Arc<dyn chaos_core::contracts::Clock>,
-    lifecycle: Lifecycle,
-) {
-    let worker_id = Uuid::now_v7();
-    let mut backoff = PollBackoff::new();
-    while lifecycle.is_accepting_traffic() {
-        let processed = match workers.run_outbox_batch(clock.now(), 10).await {
+        let processed = match workers.run_outbox_batch(10).await {
             Ok(count) => count,
             Err(error) => {
-                tracing::warn!(%worker_id, %error, "shipping outbox batch failed");
+                tracing::warn!(%worker_id, %error, "email outbox batch failed");
                 0
             }
         };
@@ -194,32 +161,6 @@ async fn maintenance_worker_loop(
             next_cleanup = tokio::time::Instant::now() + CLEANUP_INTERVAL;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
-    }
-}
-
-async fn payment_worker_loop(
-    workers: std::sync::Arc<chaos_core::payments::PaymentWorkers>,
-    clock: std::sync::Arc<dyn chaos_core::contracts::Clock>,
-    lifecycle: Lifecycle,
-) {
-    let worker_id = Uuid::now_v7();
-    let mut backoff = PollBackoff::new();
-    while lifecycle.is_accepting_traffic() {
-        let now = clock.now();
-        let mut processed = 0usize;
-        match workers.run_outbox_batch(now, 10).await {
-            Ok(count) => processed += count,
-            Err(error) => {
-                tracing::warn!(%worker_id, %error, "payment outbox batch failed");
-            }
-        }
-        match workers.run_webhook_batch(now, 10).await {
-            Ok(count) => processed += count,
-            Err(error) => {
-                tracing::warn!(%worker_id, %error, "payment webhook batch failed");
-            }
-        }
-        tokio::time::sleep(backoff.observe(processed)).await;
     }
 }
 

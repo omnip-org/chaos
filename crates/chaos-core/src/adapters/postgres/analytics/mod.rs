@@ -58,8 +58,8 @@ pub(crate) async fn publish_commerce_event(
     Ok(())
 }
 
-/// Shared payload shape for `payment.initiated`/`payment.completed`: enough
-/// for the notification-email consumer (`order_id`) and the CAPI consumer
+/// Shared payload shape for `order.payment.initiated`/`order.payment.completed`:
+/// enough for the notification-email consumer (`order_id`) and the CAPI consumer
 /// (`event_name`/`occurred_at`/`shopper_id`/`properties` — everything
 /// `AnalyticsDeliveryCommand` needs to build a Meta CAPI event; `event_id`
 /// is always `order_id` in this codebase, so the CAPI consumer derives it

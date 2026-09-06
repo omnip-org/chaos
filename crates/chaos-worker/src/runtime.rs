@@ -4,34 +4,25 @@ use std::sync::Arc;
 
 use chaos_core::{
     adapters::integrations::{
-        analytics::meta::MetaConversionsDestination, manual_shipping::ManualShippingProvider,
-        resend::ResendEmailProvider, stripe::StripeGateway,
+        analytics::meta::MetaConversionsDestination, resend::ResendEmailProvider,
     },
     adapters::postgres::{
         PostgresCapiEventStore, PostgresEmailRepository, PostgresIntegrationQueue,
-        PostgresMaintenance, PostgresSearchIndexer, PostgresShippingRepository,
-        PostgresStripeRepository,
+        PostgresMaintenance, PostgresSearchIndexer,
     },
     adapters::security::provider_secrets::DynamicSecretResolver,
     runtime::{clock::SystemClock, config::Settings, state::AppState},
 };
 use chaos_core::{
     analytics::MetaCapiWorker,
-    contracts::{
-        AnalyticsEventDestination, Clock, EmailProvider, IntegrationQueue, PaymentProvider,
-        PaymentProviderRegistry,
-    },
+    contracts::{AnalyticsEventDestination, Clock, EmailProvider, IntegrationQueue},
     email::EmailWorkers,
-    payments::PaymentWorkers,
-    shipping::ShippingWorkers,
 };
 
 /// Dependencies used by durable polling loops, without HTTP or MCP state.
 #[derive(Clone)]
 pub struct WorkerRuntime {
-    pub payment_workers: Arc<PaymentWorkers>,
     pub email_workers: Arc<EmailWorkers>,
-    pub shipping_workers: Arc<ShippingWorkers>,
     pub capi_worker: Arc<MetaCapiWorker>,
     pub search_indexer: Arc<PostgresSearchIndexer>,
     pub maintenance: Arc<PostgresMaintenance>,
@@ -57,45 +48,19 @@ impl WorkerRuntime {
             meta_destination as Arc<dyn AnalyticsEventDestination>,
         ));
 
-        let payment_repository =
-            Arc::new(PostgresStripeRepository::new(infrastructure.runtime_pool()));
-        let stripe_gateway = Arc::new(StripeGateway::new(
-            settings.stripe_api_base_url.clone(),
-            settings.dependency_timeout,
-            dynamic_secrets.clone(),
-        )?);
-        let payment_providers = Arc::new(PaymentProviderRegistry::new([
-            stripe_gateway as Arc<dyn PaymentProvider>
-        ]));
-        let payment_workers = PaymentWorkers::new(
-            integration_queue.clone(),
-            payment_repository,
-            payment_providers,
-        );
         let email_provider = Arc::new(ResendEmailProvider::new(
             settings.resend_api_base_url.clone(),
             dynamic_secrets.clone(),
             settings.dependency_timeout,
         )?) as Arc<dyn EmailProvider>;
-        let shipping_queue = integration_queue.clone();
         let email_workers = EmailWorkers::new(
             integration_queue,
             Arc::new(PostgresEmailRepository::new(infrastructure.runtime_pool())),
             [email_provider],
         );
-        let shipping_workers = ShippingWorkers::new(
-            shipping_queue,
-            Arc::new(PostgresShippingRepository::new(
-                infrastructure.runtime_pool(),
-            )),
-            [Arc::new(ManualShippingProvider)
-                as Arc<dyn chaos_core::contracts::ShippingProvider>],
-        );
 
         Ok(Self {
-            payment_workers: Arc::new(payment_workers),
             email_workers: Arc::new(email_workers),
-            shipping_workers: Arc::new(shipping_workers),
             capi_worker,
             search_indexer: Arc::new(PostgresSearchIndexer::new(infrastructure.runtime_pool())),
             maintenance: Arc::new(PostgresMaintenance::new(

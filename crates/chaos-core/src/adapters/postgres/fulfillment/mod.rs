@@ -199,15 +199,15 @@ impl PostgresFulfillmentRepository {
         if transitioned {
             crate::adapters::postgres::analytics::publish_commerce_event(
                 &mut transaction,
-                "fulfillment.shipped",
+                "order.fulfillment.shipped",
                 serde_json::json!({
                     "store_id": store_id.as_uuid(),
-                    "fulfillment_id": id.as_uuid(),
                     "order_id": order_id.as_uuid(),
+                    "fulfillment_id": id.as_uuid(),
+                    "event_name": "order.fulfillment.shipped",
                     "shipping_provider_account_id": fulfillment.shipping_provider_account_id().as_uuid(),
                     "tracking_number": fulfillment.tracking_number(),
                     "tracking_url": fulfillment.tracking_url(),
-                    "operation": "shipped",
                 }),
             )
             .await?;
@@ -229,7 +229,7 @@ impl PostgresFulfillmentRepository {
     ) -> Result<FulfillmentDetail, ApplicationError> {
         let mut transaction = self.begin_admin(&actor).await?;
         let mut fulfillment = load_domain_fulfillment(&mut transaction, store_id, id).await?;
-        fulfillment.mark_delivered()?;
+        let transitioned = fulfillment.mark_delivered()?;
         sqlx::query(
             "UPDATE commerce.order_shippings \
                 SET status = 'delivered', delivered_at = $3, updated_at = $3 \
@@ -242,6 +242,19 @@ impl PostgresFulfillmentRepository {
         .await
         .map_err(database_error)?;
         let order_id = fulfillment.order_id();
+        if transitioned {
+            crate::adapters::postgres::analytics::publish_commerce_event(
+                &mut transaction,
+                "order.fulfillment.delivered",
+                serde_json::json!({
+                    "store_id": store_id.as_uuid(),
+                    "order_id": order_id.as_uuid(),
+                    "fulfillment_id": id.as_uuid(),
+                    "event_name": "order.fulfillment.delivered",
+                }),
+            )
+            .await?;
+        }
         recompute_order_shipping_projection(&mut transaction, store_id, order_id).await?;
         let detail = load_fulfillment(&mut transaction, store_id, id)
             .await?

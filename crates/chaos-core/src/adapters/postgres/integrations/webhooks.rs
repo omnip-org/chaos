@@ -1,21 +1,19 @@
 use async_trait::async_trait;
-use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
     ApplicationError,
-    adapters::postgres::analytics::publish_commerce_event,
     contracts::{VerifiedWebhookEvent, WebhookInbox},
     error::database_error,
 };
 
-/// Verifies and normalizes wire payloads only; it does not own dedup or
-/// queue delivery. A verified webhook publishes directly to
-/// `webhook.<capability>` (topic-routed, one queue per consumer — see
-/// `migrations/0004_integration.sql`) in the same transaction that
-/// validates the provider account, so a rolled-back transaction never
-/// delivers a message a consumer would act on.
+/// Verifies and normalizes wire payloads only; it does not interpret them. A
+/// verified webhook is appended to `integration.provider_webhook_audit`
+/// (one row per `(provider_account_id, provider_event_id)` — the unique
+/// constraint is the dedup) inside its own transaction. The capability
+/// service then processes the event synchronously in the same request; see
+/// `migrations/0004_integration.sql`.
 #[derive(Clone)]
 pub struct PostgresIntegrationWebhookRepository {
     pool: PgPool,
@@ -29,7 +27,7 @@ impl PostgresIntegrationWebhookRepository {
 
 #[async_trait]
 impl WebhookInbox for PostgresIntegrationWebhookRepository {
-    async fn record(&self, event: VerifiedWebhookEvent) -> Result<(), ApplicationError> {
+    async fn record(&self, event: &VerifiedWebhookEvent) -> Result<Option<Uuid>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         let account = sqlx::query_as::<_, (Uuid, Uuid)>(
             "SELECT provider_account_id, store_id \
@@ -50,25 +48,29 @@ impl WebhookInbox for PostgresIntegrationWebhookRepository {
             .await
             .map_err(database_error)?;
 
-        let routing_key = format!("webhook.{}", event.capability);
-        publish_commerce_event(
-            &mut transaction,
-            &routing_key,
-            json!({
-                "store_id": account.1,
-                "provider_account_id": account.0,
-                "provider": event.provider,
-                "provider_event_id": event.provider_event_id,
-                "provider_event_type": event.provider_event_type,
-                "normalized_event_type": event.normalized_event_type,
-                "payload": event.payload,
-                "verified_at": event.verified_at.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
-            }),
+        let inserted = sqlx::query(
+            "INSERT INTO integration.provider_webhook_audit \
+                 (id, store_id, provider_account_id, capability, provider, provider_event_id, \
+                  provider_event_type, normalized_event_type, payload) \
+             VALUES ($1, $2, $3, $4::integration.provider_capability, $5, $6, $7, $8, $9) \
+             ON CONFLICT (provider_account_id, provider_event_id) DO NOTHING",
         )
-        .await?;
+        .bind(Uuid::now_v7())
+        .bind(account.1)
+        .bind(account.0)
+        .bind(&event.capability)
+        .bind(&event.provider)
+        .bind(&event.provider_event_id)
+        .bind(&event.provider_event_type)
+        .bind(event.normalized_event_type.as_deref())
+        .bind(&event.payload)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .rows_affected();
 
         transaction.commit().await.map_err(database_error)?;
-        Ok(())
+        Ok((inserted == 1).then_some(account.1))
     }
 }
 

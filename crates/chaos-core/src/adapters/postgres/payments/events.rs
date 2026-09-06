@@ -86,20 +86,44 @@ async fn recompute_order_refund_summary(
     } else {
         "paid"
     };
-    sqlx::query(
-        "UPDATE commerce.orders SET refunded_amount_minor = $3, \
+    let previous_status: Option<String> = sqlx::query_scalar(
+        "UPDATE commerce.orders AS sales_order SET refunded_amount_minor = $3, \
                 payment_status = $4::commerce.order_payment_status, updated_at = $5 \
-         WHERE store_id = $1 AND id = $2 \
-           AND payment_status IN ('paid', 'partially_refunded', 'refunded')",
+         FROM (SELECT payment_status::text AS previous FROM commerce.orders \
+               WHERE store_id = $1 AND id = $2) AS snapshot \
+         WHERE sales_order.store_id = $1 AND sales_order.id = $2 \
+           AND sales_order.payment_status IN ('paid', 'partially_refunded', 'refunded') \
+         RETURNING snapshot.previous",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .bind(refunded)
     .bind(payment_status)
     .bind(now)
-    .execute(&mut **transaction)
+    .fetch_optional(&mut **transaction)
     .await
     .map_err(database_error)?;
+    // Notify only on a real transition into a refunded state — the row was
+    // actually updated (`previous_status` is `Some`), the status changed, and
+    // the new one is a refunded state. A second partial refund that leaves the
+    // status unchanged raises nothing.
+    if let Some(previous) = previous_status.as_deref()
+        && previous != payment_status
+        && matches!(payment_status, "partially_refunded" | "refunded")
+    {
+        publish_commerce_event(
+            transaction,
+            &format!("order.payment.{payment_status}"),
+            json!({
+                "store_id": store_id.as_uuid(),
+                "order_id": order_id.as_uuid(),
+                "event_name": format!("order.payment.{payment_status}"),
+                "refunded_amount_minor": refunded,
+                "total_amount_minor": total,
+            }),
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -328,7 +352,7 @@ async fn apply_payment_event(
         );
         publish_commerce_event(
             transaction,
-            "payment.completed",
+            "order.payment.completed",
             payment_event_payload(
                 store_id.as_uuid(),
                 order_id.as_uuid(),
