@@ -33,7 +33,7 @@ pub struct CreateFulfillmentParams {
     pub order_id: String,
     /// The shipping provider account's UUID. Use list_shipping_provider_accounts \
     /// to find the Store's "manual" account.
-    pub shipping_provider_account_id: String,
+    pub fulfillment_provider_account_id: String,
     /// Optional carrier tracking number.
     #[serde(default)]
     pub tracking_number: Option<String>,
@@ -142,9 +142,9 @@ impl ChaosMcp {
             Ok(id) => OrderId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let shipping_provider_account_id = match parse_uuid_field(
-            &params.shipping_provider_account_id,
-            "shipping_provider_account_id",
+        let fulfillment_provider_account_id = match parse_uuid_field(
+            &params.fulfillment_provider_account_id,
+            "fulfillment_provider_account_id",
         ) {
             Ok(id) => chaos_domain::fulfillment::ShippingProviderAccountId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -156,7 +156,7 @@ impl ChaosMcp {
                 actor,
                 store_id,
                 order_id,
-                shipping_provider_account_id,
+                fulfillment_provider_account_id,
                 tracking_number: params.tracking_number,
                 tracking_url: params.tracking_url,
             })
@@ -309,7 +309,7 @@ fn fulfillment_summary(detail: chaos_core::contracts::FulfillmentDetail) -> serd
     json!({
         "id": detail.id.as_uuid(),
         "order_id": detail.order_id.as_uuid(),
-        "shipping_provider_account_id": detail.shipping_provider_account_id.as_uuid(),
+        "fulfillment_provider_account_id": detail.fulfillment_provider_account_id.as_uuid(),
         "provider_reference_id": detail.provider_reference_id,
         "status": detail.status.as_str(),
         "tracking_number": detail.tracking_number,

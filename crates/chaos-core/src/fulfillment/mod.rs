@@ -17,7 +17,7 @@ pub struct CreateFulfillmentInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
     pub order_id: OrderId,
-    pub shipping_provider_account_id: ShippingProviderAccountId,
+    pub fulfillment_provider_account_id: ShippingProviderAccountId,
     pub tracking_number: Option<String>,
     pub tracking_url: Option<String>,
 }
@@ -74,7 +74,7 @@ impl FulfillmentManagement {
                 input.actor,
                 input.store_id,
                 input.order_id,
-                input.shipping_provider_account_id,
+                input.fulfillment_provider_account_id,
                 input.tracking_number,
                 input.tracking_url,
             )

@@ -33,7 +33,7 @@ struct OrderHeaderRow {
     currency: String,
     status: String,
     payment_status: String,
-    shipping_status: String,
+    fulfillment_status: String,
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
     tax_amount_minor: i64,
@@ -78,7 +78,7 @@ struct RefundRow {
 #[derive(sqlx::FromRow)]
 struct FulfillmentRow {
     id: Uuid,
-    shipping_provider_account_id: Uuid,
+    fulfillment_provider_account_id: Uuid,
     shipping_provider: String,
     provider_reference_id: Option<String>,
     status: String,
@@ -132,7 +132,7 @@ struct BatchRefundRow {
 struct BatchFulfillmentRow {
     order_id: Uuid,
     id: Uuid,
-    shipping_provider_account_id: Uuid,
+    fulfillment_provider_account_id: Uuid,
     shipping_provider: String,
     provider_reference_id: Option<String>,
     status: String,
@@ -154,7 +154,7 @@ pub(crate) async fn load(
     let row = sqlx::query_as::<_, OrderHeaderRow>(
         "SELECT order_row.id, order_row.order_number, order_row.shopper_id, order_row.price_list_id, order_row.currency::text AS currency, \
                 order_row.status::text AS status, order_row.payment_status::text AS payment_status, \
-                order_row.shipping_status::text AS shipping_status, order_row.subtotal_amount_minor, \
+                order_row.fulfillment_status::text AS fulfillment_status, order_row.subtotal_amount_minor, \
                 order_row.discount_amount_minor, order_row.tax_amount_minor, \
                 order_row.shipping_amount_minor, order_row.total_amount_minor, order_row.amounts_finalized_at, \
                 order_row.refunded_amount_minor, \
@@ -212,14 +212,14 @@ pub(crate) async fn load(
     .await
     .map_err(database_error)?;
     let fulfillments = sqlx::query_as::<_, FulfillmentRow>(
-        "SELECT fulfillment.id, fulfillment.shipping_provider_account_id, \
+        "SELECT fulfillment.id, fulfillment.fulfillment_provider_account_id, \
                 shipping_account.provider::text AS shipping_provider, \
-                shipping_provider_reference_id AS provider_reference_id, status::text, tracking_number, \
+                fulfillment_provider_reference_id AS provider_reference_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, fulfillment.created_at, fulfillment.updated_at \
-         FROM commerce.order_shippings AS fulfillment \
+         FROM commerce.order_fulfillments AS fulfillment \
          INNER JOIN integration.provider_accounts AS shipping_account \
            ON shipping_account.store_id = fulfillment.store_id \
-          AND shipping_account.id = fulfillment.shipping_provider_account_id \
+          AND shipping_account.id = fulfillment.fulfillment_provider_account_id \
           AND shipping_account.capability = 'shipping' \
          WHERE fulfillment.store_id = $1 AND fulfillment.order_id = $2 \
          ORDER BY fulfillment.created_at, fulfillment.id",
@@ -239,7 +239,7 @@ pub(crate) async fn load(
         currency: CurrencyCode::parse(&row.currency)?,
         status: OrderStatus::parse(&row.status).ok_or_else(corrupt_state)?,
         payment_status: OrderPaymentStatus::parse(&row.payment_status).ok_or_else(corrupt_state)?,
-        shipping_status: FulfillmentStatus::parse(&row.shipping_status)
+        fulfillment_status: FulfillmentStatus::parse(&row.fulfillment_status)
             .ok_or_else(corrupt_state)?,
         payment_provider: row
             .payment_provider
@@ -286,7 +286,7 @@ pub(crate) async fn load_many(
     let rows = sqlx::query_as::<_, OrderHeaderRow>(
         "SELECT order_row.id, order_row.order_number, order_row.shopper_id, order_row.price_list_id, order_row.currency::text AS currency, \
                 order_row.status::text AS status, order_row.payment_status::text AS payment_status, \
-                order_row.shipping_status::text AS shipping_status, order_row.subtotal_amount_minor, \
+                order_row.fulfillment_status::text AS fulfillment_status, order_row.subtotal_amount_minor, \
                 order_row.discount_amount_minor, order_row.tax_amount_minor, \
                 order_row.shipping_amount_minor, order_row.total_amount_minor, order_row.amounts_finalized_at, \
                 order_row.refunded_amount_minor, \
@@ -344,14 +344,14 @@ pub(crate) async fn load_many(
     .await
     .map_err(database_error)?;
     let fulfillments = sqlx::query_as::<_, BatchFulfillmentRow>(
-        "SELECT fulfillment.order_id, fulfillment.id, fulfillment.shipping_provider_account_id, \
+        "SELECT fulfillment.order_id, fulfillment.id, fulfillment.fulfillment_provider_account_id, \
                 shipping_account.provider::text AS shipping_provider, \
-                shipping_provider_reference_id AS provider_reference_id, status::text, tracking_number, \
+                fulfillment_provider_reference_id AS provider_reference_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, fulfillment.created_at, fulfillment.updated_at \
-         FROM commerce.order_shippings AS fulfillment \
+         FROM commerce.order_fulfillments AS fulfillment \
          INNER JOIN integration.provider_accounts AS shipping_account \
            ON shipping_account.store_id = fulfillment.store_id \
-          AND shipping_account.id = fulfillment.shipping_provider_account_id \
+          AND shipping_account.id = fulfillment.fulfillment_provider_account_id \
           AND shipping_account.capability = 'shipping' \
          WHERE fulfillment.store_id = $1 AND fulfillment.order_id = ANY($2::uuid[]) \
          ORDER BY fulfillment.order_id, fulfillment.created_at, fulfillment.id",
@@ -390,7 +390,7 @@ pub(crate) async fn load_many(
                 status: OrderStatus::parse(&row.status).ok_or_else(corrupt_state)?,
                 payment_status: OrderPaymentStatus::parse(&row.payment_status)
                     .ok_or_else(corrupt_state)?,
-                shipping_status: FulfillmentStatus::parse(&row.shipping_status)
+                fulfillment_status: FulfillmentStatus::parse(&row.fulfillment_status)
                     .ok_or_else(corrupt_state)?,
                 payment_provider: row
                     .payment_provider
@@ -440,7 +440,7 @@ pub(crate) async fn load_many(
                     .map(|fulfillment| {
                         fulfillment_item(FulfillmentRow {
                             id: fulfillment.id,
-                            shipping_provider_account_id: fulfillment.shipping_provider_account_id,
+                            fulfillment_provider_account_id: fulfillment.fulfillment_provider_account_id,
                             shipping_provider: fulfillment.shipping_provider,
                             provider_reference_id: fulfillment.provider_reference_id,
                             status: fulfillment.status,
@@ -592,8 +592,8 @@ fn refund_item(row: RefundRow) -> Result<OrderRefundItem, ApplicationError> {
 fn fulfillment_item(row: FulfillmentRow) -> Result<OrderFulfillmentItem, ApplicationError> {
     Ok(OrderFulfillmentItem {
         id: FulfillmentId::from_uuid(row.id),
-        shipping_provider_account_id: ShippingProviderAccountId::from_uuid(
-            row.shipping_provider_account_id,
+        fulfillment_provider_account_id: ShippingProviderAccountId::from_uuid(
+            row.fulfillment_provider_account_id,
         ),
         shipping_provider: ShippingProvider::parse(&row.shipping_provider)
             .ok_or_else(corrupt_state)?,

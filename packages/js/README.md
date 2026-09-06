@@ -187,7 +187,7 @@ const order = await chaos.orders.lookupOrder({
   orderNumber: params.get("order_number") ?? "",
   email: params.get("email") ?? "",
 });
-console.log(order.data.order_number, order.data.shipping_status);
+console.log(order.data.order_number, order.data.fulfillment_status);
 chaos.orders.recordConfirmedPurchase(order.data);
 ```
 

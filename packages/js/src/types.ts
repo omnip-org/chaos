@@ -199,7 +199,7 @@ export interface OrderLookup {
   status: "pending" | "confirmed" | "cancelled";
   payment_status:
     "pending" | "paid" | "failed" | "expired" | "partially_refunded" | "refunded";
-  shipping_status:
+  fulfillment_status:
     "pending" | "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
   shipping_locality?: string;
   shipping_country_code?: string;

@@ -71,7 +71,7 @@ impl FulfillmentStatus {
 pub struct Fulfillment {
     id: FulfillmentId,
     order_id: OrderId,
-    shipping_provider_account_id: ShippingProviderAccountId,
+    fulfillment_provider_account_id: ShippingProviderAccountId,
     status: FulfillmentStatus,
     tracking_number: Option<String>,
     tracking_url: Option<String>,
@@ -80,7 +80,7 @@ pub struct Fulfillment {
 impl Fulfillment {
     pub fn create(
         order_id: OrderId,
-        shipping_provider_account_id: ShippingProviderAccountId,
+        fulfillment_provider_account_id: ShippingProviderAccountId,
         tracking_number: Option<String>,
         tracking_url: Option<String>,
     ) -> Result<Self, DomainError> {
@@ -88,7 +88,7 @@ impl Fulfillment {
         Ok(Self {
             id: FulfillmentId::new(),
             order_id,
-            shipping_provider_account_id,
+            fulfillment_provider_account_id,
             status: FulfillmentStatus::AwaitingPickup,
             tracking_number,
             tracking_url,
@@ -98,7 +98,7 @@ impl Fulfillment {
     pub fn rehydrate(
         id: FulfillmentId,
         order_id: OrderId,
-        shipping_provider_account_id: ShippingProviderAccountId,
+        fulfillment_provider_account_id: ShippingProviderAccountId,
         status: FulfillmentStatus,
         tracking_number: Option<String>,
         tracking_url: Option<String>,
@@ -106,7 +106,7 @@ impl Fulfillment {
         Self {
             id,
             order_id,
-            shipping_provider_account_id,
+            fulfillment_provider_account_id,
             status,
             tracking_number,
             tracking_url,
@@ -121,8 +121,8 @@ impl Fulfillment {
         self.order_id
     }
 
-    pub const fn shipping_provider_account_id(&self) -> ShippingProviderAccountId {
-        self.shipping_provider_account_id
+    pub const fn fulfillment_provider_account_id(&self) -> ShippingProviderAccountId {
+        self.fulfillment_provider_account_id
     }
 
     pub const fn status(&self) -> FulfillmentStatus {

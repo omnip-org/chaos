@@ -57,7 +57,7 @@ struct OrderLookupData {
     currency: String,
     status: &'static str,
     payment_status: &'static str,
-    shipping_status: &'static str,
+    fulfillment_status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     shipping_locality: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -94,7 +94,7 @@ fn order_lookup_data(order: OrderDetail) -> OrderLookupData {
         currency: order.currency.as_str().to_owned(),
         status: order.status.as_str(),
         payment_status: order.payment_status.as_str(),
-        shipping_status: order.shipping_status.as_str(),
+        fulfillment_status: order.fulfillment_status.as_str(),
         shipping_locality: shipping_address.map(|address| address.locality().to_owned()),
         shipping_country_code: shipping_address.map(|address| address.country_code().to_owned()),
         subtotal_amount_minor: order.subtotal_amount_minor,
@@ -173,7 +173,7 @@ mod tests {
             currency: CurrencyCode::parse("USD").expect("currency"),
             status: OrderStatus::parse("confirmed").expect("status"),
             payment_status: OrderPaymentStatus::parse("paid").expect("payment status"),
-            shipping_status: FulfillmentStatus::parse("awaiting_pickup").expect("shipping status"),
+            fulfillment_status: FulfillmentStatus::parse("awaiting_pickup").expect("shipping status"),
             payment_provider: None,
             payment_provider_reference_id: None,
             identity: OrderIdentity::new(contact, Some(address.clone()), Some(address)),
