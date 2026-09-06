@@ -57,6 +57,11 @@ struct CartData {
     subtotal_amount_minor: i64,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
+    /// Server-minted Meta CAPI `AddToCart` event id, present only on the
+    /// response to a line mutation that raised the quantity. The browser
+    /// SDK reuses it for the Pixel's own AddToCart so Meta deduplicates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -90,7 +95,7 @@ struct CartMediaData {
     url: String,
 }
 
-fn cart_data(cart: CartDetail) -> Result<CartData, ApplicationError> {
+fn cart_data(cart: CartDetail, event_id: Option<Uuid>) -> Result<CartData, ApplicationError> {
     Ok(CartData {
         id: cart.id.as_uuid(),
         currency: cart.currency.as_str().to_owned(),
@@ -99,6 +104,7 @@ fn cart_data(cart: CartDetail) -> Result<CartData, ApplicationError> {
         subtotal_amount_minor: cart.subtotal_amount_minor,
         created_at: cart.created_at.into(),
         updated_at: cart.updated_at.into(),
+        event_id,
     })
 }
 
@@ -146,6 +152,81 @@ fn cart_media_data(media: StorefrontMediaAsset) -> CartMediaData {
     }
 }
 
+/// Ad-platform attribution the browser read off its own cookies/URL, shared
+/// by the checkout handler (InitiateCheckout) and the line-mutation handler
+/// (AddToCart). `source_url` and `utm` are not platform-specific, so they
+/// sit alongside the per-platform `meta` namespace.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AttributionBody {
+    #[serde(default)]
+    source_url: Option<String>,
+    #[serde(default)]
+    utm: Option<UtmAttributionBody>,
+    #[serde(default)]
+    meta: Option<MetaAttributionBody>,
+}
+
+/// Standard `utm_*` campaign tags, minus the redundant `utm_` prefix since
+/// they are already namespaced under `utm`.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct UtmAttributionBody {
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    medium: Option<String>,
+    #[serde(default)]
+    campaign: Option<String>,
+    #[serde(default)]
+    term: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MetaAttributionBody {
+    #[serde(default)]
+    fbc: Option<String>,
+    #[serde(default)]
+    fbp: Option<String>,
+}
+
+/// `client_ip_address`/`client_user_agent` come from this request itself
+/// (`X-Real-IP` is set by `deploy/nginx` from the real client address,
+/// behind Cloudflare's realip module), never from the request body — the
+/// browser has no trustworthy way to report either.
+fn attribution_input(
+    attribution: Option<&AttributionBody>,
+    headers: &HeaderMap,
+) -> Option<CheckoutAttributionInput> {
+    let client_ip_address = headers
+        .get("x-real-ip")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let client_user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let meta = attribution.and_then(|value| value.meta.as_ref());
+    let utm = attribution.and_then(|value| value.utm.as_ref());
+    Some(CheckoutAttributionInput {
+        meta_fbc: meta.and_then(|meta| meta.fbc.clone()),
+        meta_fbp: meta.and_then(|meta| meta.fbp.clone()),
+        client_ip_address,
+        client_user_agent,
+        source_url: attribution.and_then(|value| value.source_url.clone()),
+        utm: UtmTags {
+            source: utm.and_then(|utm| utm.source.clone()),
+            medium: utm.and_then(|utm| utm.medium.clone()),
+            campaign: utm.and_then(|utm| utm.campaign.clone()),
+            term: utm.and_then(|utm| utm.term.clone()),
+            content: utm.and_then(|utm| utm.content.clone()),
+        },
+    })
+}
+
 // ===== POST /carts =====
 
 mod create_cart {
@@ -164,7 +245,7 @@ mod create_cart {
             .storefront_sales
             .create_cart(CreateCartInput { actor })
             .await?;
-        Ok(ApiResponse::created(cart_data(cart)?))
+        Ok(ApiResponse::created(cart_data(cart, None)?))
     }
 }
 
@@ -182,7 +263,7 @@ mod get_cart {
             .storefront_sales
             .get_cart(&actor, CartId::from_uuid(path.cart_id))
             .await?;
-        Ok(ApiResponse::ok(cart_data(cart)?))
+        Ok(ApiResponse::ok(cart_data(cart, None)?))
     }
 }
 
@@ -195,24 +276,32 @@ mod set_cart_line {
     #[serde(deny_unknown_fields)]
     pub(super) struct SetCartLineBody {
         quantity: u32,
+        /// Ad-platform attribution the browser read off its own cookies/URL,
+        /// forwarded to the server-side Meta CAPI `AddToCart` event when this
+        /// call raises the line quantity. Same shape as the checkout handler's.
+        #[serde(default)]
+        attribution: Option<AttributionBody>,
     }
 
     pub(super) async fn handler(
         State(state): State<ApiState>,
+        headers: HeaderMap,
         ShopperContext(actor): ShopperContext,
         ApiPath(path): ApiPath<CartLinePath>,
         ApiJson(body): ApiJson<SetCartLineBody>,
     ) -> Result<ApiResponse<CartData>, ApiError> {
-        let cart = state
+        let (cart, event_id) = state
             .storefront_sales
             .set_cart_line(SetCartLineInput {
                 actor,
                 cart_id: CartId::from_uuid(path.cart_id),
                 product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
                 quantity: body.quantity,
+                now: state.clock.now(),
+                attribution: attribution_input(body.attribution.as_ref(), &headers),
             })
             .await?;
-        Ok(ApiResponse::ok(cart_data(cart)?))
+        Ok(ApiResponse::ok(cart_data(cart, event_id)?))
     }
 }
 
@@ -234,7 +323,7 @@ mod remove_cart_line {
                 product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
             })
             .await?;
-        Ok(ApiResponse::ok(cart_data(cart)?))
+        Ok(ApiResponse::ok(cart_data(cart, None)?))
     }
 }
 
@@ -249,47 +338,7 @@ mod create_embedded_checkout {
         return_url: String,
         payment_provider: String,
         #[serde(default)]
-        attribution: Option<CheckoutAttributionBody>,
-    }
-
-    /// Ad-platform attribution the browser read off its own cookies/URL at
-    /// checkout time. `source_url` and `utm` are not platform-specific, so
-    /// they sit alongside the per-platform `meta` namespace.
-    #[derive(Deserialize, Serialize)]
-    #[serde(deny_unknown_fields)]
-    pub(super) struct CheckoutAttributionBody {
-        #[serde(default)]
-        source_url: Option<String>,
-        #[serde(default)]
-        utm: Option<UtmAttributionBody>,
-        #[serde(default)]
-        meta: Option<MetaAttributionBody>,
-    }
-
-    /// Standard `utm_*` campaign tags, minus the redundant `utm_` prefix
-    /// since they are already namespaced under `utm`.
-    #[derive(Deserialize, Serialize)]
-    #[serde(deny_unknown_fields)]
-    pub(super) struct UtmAttributionBody {
-        #[serde(default)]
-        source: Option<String>,
-        #[serde(default)]
-        medium: Option<String>,
-        #[serde(default)]
-        campaign: Option<String>,
-        #[serde(default)]
-        term: Option<String>,
-        #[serde(default)]
-        content: Option<String>,
-    }
-
-    #[derive(Deserialize, Serialize)]
-    #[serde(deny_unknown_fields)]
-    pub(super) struct MetaAttributionBody {
-        #[serde(default)]
-        fbc: Option<String>,
-        #[serde(default)]
-        fbp: Option<String>,
+        attribution: Option<AttributionBody>,
     }
 
     #[derive(Serialize)]
@@ -338,7 +387,7 @@ mod create_embedded_checkout {
                 payment_provider,
                 now: state.clock.now(),
                 idempotency_key,
-                attribution: checkout_attribution_input(&body, &headers),
+                attribution: attribution_input(body.attribution.as_ref(), &headers),
             })
             .await?;
         let checkout = state
@@ -393,40 +442,5 @@ mod create_embedded_checkout {
             ));
         }
         Ok(())
-    }
-
-    /// `client_ip_address`/`client_user_agent` come from this request itself
-    /// (`X-Real-IP` is set by `deploy/nginx` from the real client address,
-    /// behind Cloudflare's realip module), never from the request body — the
-    /// browser has no trustworthy way to report either.
-    fn checkout_attribution_input(
-        body: &CreateEmbeddedCheckoutBody,
-        headers: &HeaderMap,
-    ) -> Option<CheckoutAttributionInput> {
-        let client_ip_address = headers
-            .get("x-real-ip")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let client_user_agent = headers
-            .get(axum::http::header::USER_AGENT)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let attribution = body.attribution.as_ref();
-        let meta = attribution.and_then(|value| value.meta.as_ref());
-        let utm = attribution.and_then(|value| value.utm.as_ref());
-        Some(CheckoutAttributionInput {
-            meta_fbc: meta.and_then(|meta| meta.fbc.clone()),
-            meta_fbp: meta.and_then(|meta| meta.fbp.clone()),
-            client_ip_address,
-            client_user_agent,
-            source_url: attribution.and_then(|value| value.source_url.clone()),
-            utm: UtmTags {
-                source: utm.and_then(|utm| utm.source.clone()),
-                medium: utm.and_then(|utm| utm.medium.clone()),
-                campaign: utm.and_then(|utm| utm.campaign.clone()),
-                term: utm.and_then(|utm| utm.term.clone()),
-                content: utm.and_then(|utm| utm.content.clone()),
-            },
-        })
     }
 }

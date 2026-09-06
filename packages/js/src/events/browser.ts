@@ -148,10 +148,11 @@ export class ChaosStorefrontAnalytics {
   }
 
   /**
-   * Records a successful cart addition. `eventId` is a caller-supplied dedup
-   * id for Meta's Pixel+CAPI deduplication; chaos-js itself never sends
-   * AddToCart through CAPI (only `purchase` goes through chaos-rust's
-   * server-side CAPI call), so this is unset by every SDK code path today.
+   * Records a successful cart addition. `eventId` is the dedup id for Meta's
+   * Pixel+CAPI deduplication: `CartResource` passes the server-minted id it
+   * gets back from a quantity-raising line mutation (chaos-rust sends the
+   * matching `AddToCart` to Meta's Conversions API), and a fresh id is
+   * minted here when a caller records AddToCart on its own.
    */
   recordAddToCart(input: AddToCartAnalyticsInput, eventId?: string): string | null {
     validateMoney(input.valueMinor, input.currency);

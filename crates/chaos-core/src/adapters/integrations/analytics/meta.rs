@@ -183,16 +183,18 @@ struct MetaResponse {
     fbtrace_id: Option<String>,
 }
 
-/// `purchase` and `initiate_checkout` are the only events Chaos sends
-/// through Meta CAPI: they're the only ones with a server-confirmed source
-/// (a locked Cart handed off to Stripe, and a paid Order). Every other Meta
-/// event (ViewContent, AddToCart, Search) is fired client-side only, straight
-/// from the storefront's Pixel install — Chaos never sees it.
+/// The server-confirmed events Chaos sends through Meta CAPI: `purchase` and
+/// `initiate_checkout` (a paid Order and a locked Cart handed off to Stripe),
+/// plus `add_to_cart` (a net cart-quantity increase, minted server-side in
+/// the cart transaction). chaos-js also projects all three client-side from
+/// its Pixel install using the same event id, so Meta deduplicates each
+/// pair. Every other Meta event (ViewContent, Search) is Pixel-only — Chaos
+/// never sees it.
 fn is_meta_event(command: &AnalyticsDeliveryCommand) -> bool {
     command.event_source == "server"
         && matches!(
             command.event_name.as_str(),
-            "purchase" | "initiate_checkout"
+            "purchase" | "initiate_checkout" | "add_to_cart"
         )
 }
 
@@ -200,6 +202,7 @@ fn meta_event_name(name: &str) -> &str {
     match name {
         "purchase" => "Purchase",
         "initiate_checkout" => "InitiateCheckout",
+        "add_to_cart" => "AddToCart",
         _ => name,
     }
 }
@@ -597,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn only_server_confirmed_purchase_and_initiate_checkout_are_sent_to_meta() {
+    fn only_server_confirmed_commerce_events_are_sent_to_meta() {
         let mut browser = command(1_299, "USD");
         browser.event_source = "browser".into();
         for event_name in [
@@ -614,14 +617,76 @@ mod tests {
 
         let mut server = browser;
         server.event_source = "server".into();
-        for event_name in ["purchase", "initiate_checkout"] {
+        for event_name in ["purchase", "initiate_checkout", "add_to_cart"] {
             server.event_name = event_name.into();
             assert!(is_meta_event(&server), "server {event_name}");
         }
-        for event_name in ["page_view", "view_content", "search", "add_to_cart"] {
+        for event_name in ["page_view", "view_content", "search"] {
             server.event_name = event_name.into();
             assert!(!is_meta_event(&server), "server {event_name}");
         }
+    }
+
+    #[test]
+    fn serializes_the_server_add_to_cart_payload_contract() {
+        let mut input = command(500, "USD");
+        input.event_name = "add_to_cart".into();
+        input.properties = json!({
+            "_source": "server",
+            "_meta": {
+                "source_url": "https://shop.example/product/running-shoes",
+                "client_ip_address": "203.0.113.10",
+                "client_user_agent": "test-agent",
+                "fbp": "fb.1.1234567890123.browser"
+            },
+            "value_minor": 1_000,
+            "currency": "USD",
+            "items": [{"product_id": "product-1", "product_variant_id": "variant-1", "quantity": 2, "price_minor": 500}]
+        });
+        let payload = serde_json::to_value(MetaRequest {
+            data: [MetaEvent {
+                event_name: meta_event_name(&input.event_name),
+                event_time: input.occurred_at.unix_timestamp(),
+                event_id: input.event_id.to_string(),
+                action_source: "website",
+                event_source_url: source_url(&input.properties),
+                user_data: meta_user_data(&input),
+                custom_data: custom_data(&input),
+            }],
+            test_event_code: None,
+        })
+        .expect("Meta payload should serialize");
+
+        assert_eq!(payload["data"][0]["event_name"], json!("AddToCart"));
+        assert_eq!(
+            payload["data"][0]["event_source_url"],
+            json!("https://shop.example/product/running-shoes")
+        );
+        assert_eq!(
+            payload["data"][0]["user_data"]["client_ip_address"],
+            json!("203.0.113.10")
+        );
+        assert_eq!(
+            payload["data"][0]["user_data"]["fbp"],
+            json!("fb.1.1234567890123.browser")
+        );
+        assert_eq!(payload["data"][0]["custom_data"]["value"], json!(10.0));
+        assert_eq!(payload["data"][0]["custom_data"]["currency"], json!("USD"));
+        assert_eq!(
+            payload["data"][0]["custom_data"]["contents"],
+            json!([{"id": "variant-1", "quantity": 2, "item_price": 5.0}])
+        );
+        assert_eq!(
+            payload["data"][0]["custom_data"]["content_ids"],
+            json!(["variant-1"])
+        );
+        assert_eq!(
+            payload["data"][0]["custom_data"]["content_type"],
+            json!("product")
+        );
+        // num_items is InitiateCheckout-specific; AddToCart carries per-line
+        // quantity in `contents` instead.
+        assert!(payload["data"][0]["custom_data"].get("num_items").is_none());
     }
 
     #[test]
