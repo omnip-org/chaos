@@ -38,10 +38,6 @@ CREATE TABLE commerce.carts (
         attribution IS NULL
         OR (jsonb_typeof(attribution) = 'object' AND pg_column_size(attribution) <= 4096)
     ),
-    -- Checkout-request idempotency lives on the Cart, not the Order: it is
-    -- keyed by the checkout attempt (which targets a Cart) and there is
-    -- exactly one Order per Cart. Stamped when the Cart leaves 'active' and
-    -- never cleared or re-activated, so it is set iff a checkout has started.
     CONSTRAINT carts_checkout_idempotency_key_check     CHECK (
         checkout_idempotency_key IS NULL
         OR (status <> 'active'
