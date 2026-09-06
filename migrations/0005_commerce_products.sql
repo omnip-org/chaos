@@ -473,7 +473,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
 BEGIN
-    PERFORM integration.publish_commerce_event(
+    PERFORM integration.publish_topic_event(
         'product.updated',
         jsonb_build_object('store_id', NEW.store_id, 'product_id', NEW.id)
     );
@@ -500,7 +500,7 @@ BEGIN
     END IF;
 
     IF EXISTS (SELECT 1 FROM commerce.stores WHERE id = owning_store_id) THEN
-        PERFORM integration.publish_commerce_event(
+        PERFORM integration.publish_topic_event(
             'product.updated',
             jsonb_build_object('store_id', owning_store_id, 'product_id', changed_product_id)
         );

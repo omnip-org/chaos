@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::{
     ApplicationError,
     error::database_error,
-    adapters::postgres::analytics::{payment_event_payload, publish_commerce_event, splice_attribution},
+    adapters::postgres::analytics::{payment_event_payload, publish_topic_event, splice_attribution},
     contracts::{
         CartDetail, CartLineItem, MachineActor, OrderDetail, ShopperActor,
         StorefrontMediaAsset, StorefrontMediaScope, StorefrontSelectedOption,

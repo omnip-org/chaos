@@ -44,13 +44,6 @@ CREATE TABLE integration.provider_accounts (
 
 CREATE INDEX provider_accounts_store_capability_created_idx ON integration.provider_accounts (store_id, capability, created_at DESC, id DESC);
 
--- Every verified provider webhook lands here first: one append-only row per
--- (provider account, provider event id). The insert is the dedup — a provider
--- retry hits the unique constraint and no second job is enqueued. The same
--- transaction publishes `provider.webhook.received` onto
--- `provider_webhooks_queue`; a worker drains that queue, applies the event
--- through the owning capability, and stamps `processed_at`. `processed_at IS
--- NULL` past a grace period is the "stuck webhook" signal.
 CREATE TABLE integration.provider_webhooks (
     id                     UUID                            NOT NULL PRIMARY KEY,
     store_id               UUID                            NOT NULL,
@@ -97,11 +90,7 @@ CREATE TRIGGER provider_accounts_identity_immutable
     ON integration.provider_accounts
     FOR EACH ROW EXECUTE FUNCTION integration.prevent_provider_account_identity_change();
 
--- One narrow entry point into the pgmq schema for producers: every business
--- transaction that needs to notify a consumer calls this from inside its own
--- transaction, so a rolled-back transaction never delivers a message a
--- consumer would act on.
-CREATE FUNCTION integration.publish_commerce_event (
+CREATE FUNCTION integration.publish_topic_event (
     routing_key TEXT,
     payload     JSONB
 )
@@ -113,8 +102,6 @@ AS $$
     SELECT pgmq.send_topic(routing_key, payload);
 $$;
 
--- One generic claim/finish pair, parametrized by queue name, reused by
--- every topic-routed consumer in this schema.
 CREATE FUNCTION integration.claim_topic_queue (
     requested_queue_name TEXT,
     batch_size            INTEGER
@@ -226,14 +213,14 @@ CREATE POLICY store_isolation ON integration.provider_webhooks
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-REVOKE ALL ON FUNCTION integration.publish_commerce_event (TEXT, JSONB) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.publish_topic_event (TEXT, JSONB) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_topic_queue (TEXT, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.finish_topic_event (TEXT, BIGINT, INTEGER, BOOLEAN, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.resolve_provider_account (integration.provider_capability, TEXT, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.resolve_webhook_secret_reference (integration.provider_capability, TEXT, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.prevent_provider_account_identity_change () FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION integration.publish_commerce_event (TEXT, JSONB) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION integration.publish_topic_event (TEXT, JSONB) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_topic_queue (TEXT, INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.finish_topic_event (TEXT, BIGINT, INTEGER, BOOLEAN, INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.resolve_provider_account (integration.provider_capability, TEXT, UUID) TO chaos_runtime;

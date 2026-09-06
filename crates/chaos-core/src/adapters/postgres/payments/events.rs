@@ -111,7 +111,7 @@ async fn recompute_order_refund_summary(
         && previous != payment_status
         && matches!(payment_status, "partially_refunded" | "refunded")
     {
-        publish_commerce_event(
+        publish_topic_event(
             transaction,
             &format!("order.payment.{payment_status}"),
             json!({
@@ -350,7 +350,7 @@ async fn apply_payment_event(
                 country_code: shipping_country_code.as_deref(),
             },
         );
-        publish_commerce_event(
+        publish_topic_event(
             transaction,
             "order.payment.completed",
             payment_event_payload(

@@ -404,7 +404,7 @@ impl PostgresStorefrontSalesRepository {
         if let Some(attribution) = &request.attribution {
             splice_attribution(&mut initiate_checkout_properties, attribution);
         }
-        publish_commerce_event(
+        publish_topic_event(
             &mut transaction,
             "order.payment.initiated",
             payment_event_payload(

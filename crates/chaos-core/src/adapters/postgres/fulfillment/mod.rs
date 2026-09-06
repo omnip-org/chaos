@@ -197,7 +197,7 @@ impl PostgresFulfillmentRepository {
         }
         let order_id = fulfillment.order_id();
         if transitioned {
-            crate::adapters::postgres::analytics::publish_commerce_event(
+            crate::adapters::postgres::analytics::publish_topic_event(
                 &mut transaction,
                 "order.fulfillment.shipped",
                 serde_json::json!({
@@ -243,7 +243,7 @@ impl PostgresFulfillmentRepository {
         .map_err(database_error)?;
         let order_id = fulfillment.order_id();
         if transitioned {
-            crate::adapters::postgres::analytics::publish_commerce_event(
+            crate::adapters::postgres::analytics::publish_topic_event(
                 &mut transaction,
                 "order.fulfillment.delivered",
                 serde_json::json!({

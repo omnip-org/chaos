@@ -40,16 +40,16 @@ async fn context(
     .map_err(db)
 }
 
-/// Publish a topic-routed commerce event (`integration.publish_commerce_event`)
+/// Publish a topic-routed commerce event (`integration.publish_topic_event`)
 /// in the same transaction that produced it, so a rolled-back transaction
 /// never delivers a message a consumer would act on. See
 /// `migrations/0004_integration.sql` for the queue bindings this reaches.
-pub(crate) async fn publish_commerce_event(
+pub(crate) async fn publish_topic_event(
     tx: &mut Transaction<'_, Postgres>,
     routing_key: &str,
     payload: Value,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("SELECT integration.publish_commerce_event($1, $2)")
+    sqlx::query("SELECT integration.publish_topic_event($1, $2)")
         .bind(routing_key)
         .bind(payload)
         .execute(&mut **tx)
