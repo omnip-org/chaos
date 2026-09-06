@@ -63,9 +63,9 @@ impl ProviderWebhookWorker {
     }
 
     async fn process(&self, message: &Value, now: OffsetDateTime) -> Result<(), ApplicationError> {
-        let audit_id = message_uuid(message, "webhook_id")?;
+        let webhook_id = message_uuid(message, "webhook_id")?;
         let store_id = message_uuid(message, "store_id")?;
-        let Some(row) = self.audit.load(store_id, audit_id).await? else {
+        let Some(row) = self.audit.load(store_id, webhook_id).await? else {
             // The audit row is gone (store deleted); nothing to apply.
             return Ok(());
         };
@@ -83,7 +83,7 @@ impl ProviderWebhookWorker {
                 tracing::warn!(capability = other, "provider webhook for an unhandled capability");
             }
         }
-        self.audit.mark_processed(store_id, audit_id, now).await
+        self.audit.mark_processed(store_id, webhook_id, now).await
     }
 
     async fn apply_payment(

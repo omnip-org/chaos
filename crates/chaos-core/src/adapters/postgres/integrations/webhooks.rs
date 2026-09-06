@@ -52,7 +52,7 @@ impl WebhookInbox for PostgresIntegrationWebhookRepository {
             .await
             .map_err(database_error)?;
 
-        let audit_id = Uuid::now_v7();
+        let webhook_id = Uuid::now_v7();
         let inserted = sqlx::query(
             "INSERT INTO integration.provider_webhooks \
                  (id, store_id, provider_account_id, capability, provider, provider_event_id, \
@@ -60,7 +60,7 @@ impl WebhookInbox for PostgresIntegrationWebhookRepository {
              VALUES ($1, $2, $3, $4::integration.provider_capability, $5, $6, $7, $8, $9) \
              ON CONFLICT (provider_account_id, provider_event_id) DO NOTHING",
         )
-        .bind(audit_id)
+        .bind(webhook_id)
         .bind(account.1)
         .bind(account.0)
         .bind(&event.capability)
@@ -79,7 +79,7 @@ impl WebhookInbox for PostgresIntegrationWebhookRepository {
             publish_commerce_event(
                 &mut transaction,
                 "provider.webhook.received",
-                json!({ "webhook_id": audit_id, "store_id": account.1 }),
+                json!({ "webhook_id": webhook_id, "store_id": account.1 }),
             )
             .await?;
         }
@@ -114,12 +114,12 @@ impl PostgresProviderWebhookAudit {
         Self { pool }
     }
 
-    /// Loads the audited event for `audit_id`. `store_id` comes from the queue
+    /// Loads the audited event for `webhook_id`. `store_id` comes from the queue
     /// message so the row-level security policy can be set before the read.
     pub async fn load(
         &self,
         store_id: Uuid,
-        audit_id: Uuid,
+        webhook_id: Uuid,
     ) -> Result<Option<ProviderWebhookAuditRow>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.store_id', $1, true)")
@@ -144,7 +144,7 @@ impl PostgresProviderWebhookAudit {
                     provider_event_type, normalized_event_type, payload, processed_at \
              FROM integration.provider_webhooks WHERE id = $1",
         )
-        .bind(audit_id)
+        .bind(webhook_id)
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -166,7 +166,7 @@ impl PostgresProviderWebhookAudit {
     pub async fn mark_processed(
         &self,
         store_id: Uuid,
-        audit_id: Uuid,
+        webhook_id: Uuid,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
@@ -179,7 +179,7 @@ impl PostgresProviderWebhookAudit {
             "UPDATE integration.provider_webhooks SET processed_at = $2 \
              WHERE id = $1 AND processed_at IS NULL",
         )
-        .bind(audit_id)
+        .bind(webhook_id)
         .bind(now)
         .execute(&mut *transaction)
         .await
