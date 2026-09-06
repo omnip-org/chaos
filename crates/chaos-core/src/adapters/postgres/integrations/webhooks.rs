@@ -79,7 +79,7 @@ impl WebhookInbox for PostgresIntegrationWebhookRepository {
             publish_commerce_event(
                 &mut transaction,
                 "provider.webhook.received",
-                json!({ "webhook_audit_id": audit_id, "store_id": account.1 }),
+                json!({ "webhook_id": audit_id, "store_id": account.1 }),
             )
             .await?;
         }

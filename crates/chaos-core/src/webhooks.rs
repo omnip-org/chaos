@@ -13,7 +13,7 @@ use crate::{
 const PROVIDER_WEBHOOKS_QUEUE: &str = "provider_webhooks_queue";
 
 /// Drains `provider_webhooks_queue`. Every job is a pointer
-/// (`{webhook_audit_id, store_id}`) into `integration.provider_webhook_audit`;
+/// (`{webhook_id, store_id}`) into `integration.provider_webhook_audit`;
 /// the worker loads that row and applies the event through the capability that
 /// owns it. Failures ride PGMQ's own retry/backoff/archive, and
 /// `process_webhook_job` is written to be idempotent so a redelivery is safe.
@@ -63,7 +63,7 @@ impl ProviderWebhookWorker {
     }
 
     async fn process(&self, message: &Value, now: OffsetDateTime) -> Result<(), ApplicationError> {
-        let audit_id = message_uuid(message, "webhook_audit_id")?;
+        let audit_id = message_uuid(message, "webhook_id")?;
         let store_id = message_uuid(message, "store_id")?;
         let Some(row) = self.audit.load(store_id, audit_id).await? else {
             // The audit row is gone (store deleted); nothing to apply.
