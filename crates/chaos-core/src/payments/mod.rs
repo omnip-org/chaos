@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use chaos_domain::integration::IntegrationCapability;
 use chaos_domain::{
     sales::OrderId,
     store::{StoreId, StoreRole},
@@ -350,7 +351,7 @@ impl PaymentService {
             .await?;
         let envelope = VerifiedWebhookEvent {
             provider_account_id: event.provider_account_id,
-            capability: "payment".into(),
+            capability: IntegrationCapability::Payment.as_str().into(),
             provider: provider.to_owned(),
             provider_event_id: event.provider_event_id,
             provider_event_type: event.provider_event_type,

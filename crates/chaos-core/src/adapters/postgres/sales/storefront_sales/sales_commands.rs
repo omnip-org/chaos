@@ -432,7 +432,7 @@ impl PostgresStorefrontSalesRepository {
         }
         publish_topic_event(
             &mut transaction,
-            "order.payment.initiated",
+            crate::contracts::ORDER_PAYMENT_INITIATED_TOPIC,
             payment_event_payload(
                 actor.store_id.as_uuid(),
                 order_id.as_uuid(),

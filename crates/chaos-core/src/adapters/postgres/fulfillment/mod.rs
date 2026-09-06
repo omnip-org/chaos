@@ -2,7 +2,10 @@
 
 use crate::{
     ApplicationError,
-    contracts::{AdminActor, FulfillmentDetail, FulfillmentProviderAccountDetail},
+    contracts::{
+        AdminActor, FulfillmentDetail, FulfillmentProviderAccountDetail,
+        ORDER_FULFILLMENT_DELIVERED_TOPIC, ORDER_FULFILLMENT_SHIPPED_TOPIC,
+    },
     error::database_error,
 };
 use chaos_domain::{
@@ -194,7 +197,7 @@ impl PostgresFulfillmentRepository {
         if transitioned {
             crate::adapters::postgres::analytics::publish_topic_event(
                 &mut transaction,
-                "order.fulfillment.shipped",
+                ORDER_FULFILLMENT_SHIPPED_TOPIC,
                 serde_json::json!({
                     "store_id": store_id.as_uuid(),
                     "order_id": order_id.as_uuid(),
@@ -239,7 +242,7 @@ impl PostgresFulfillmentRepository {
         if transitioned {
             crate::adapters::postgres::analytics::publish_topic_event(
                 &mut transaction,
-                "order.fulfillment.delivered",
+                ORDER_FULFILLMENT_DELIVERED_TOPIC,
                 serde_json::json!({
                     "store_id": store_id.as_uuid(),
                     "order_id": order_id.as_uuid(),
@@ -317,7 +320,7 @@ async fn recompute_order_shipping_projection(
     .map_err(database_error)?
     .ok_or_else(|| order_not_found(order_id))?;
 
-    let statuses: Vec<String> = sqlx::query_scalar(
+    let statuses: Vec<FulfillmentStatus> = sqlx::query_scalar::<_, String>(
         "SELECT status::text FROM commerce.order_fulfillments \
          WHERE store_id = $1 AND order_id = $2",
     )
@@ -325,24 +328,32 @@ async fn recompute_order_shipping_projection(
     .bind(order_id.as_uuid())
     .fetch_all(&mut **transaction)
     .await
-    .map_err(database_error)?;
+    .map_err(database_error)?
+    .into_iter()
+    .map(|status| FulfillmentStatus::parse(&status).ok_or_else(corrupt_state))
+    .collect::<Result<_, _>>()?;
     let fulfillment_status = if statuses.is_empty() {
-        "pending"
-    } else if statuses.iter().all(|status| status == "cancelled") {
-        "cancelled"
+        FulfillmentStatus::Pending
     } else if statuses
         .iter()
-        .filter(|status| status.as_str() != "cancelled")
-        .all(|status| status == "delivered")
+        .all(|status| *status == FulfillmentStatus::Cancelled)
     {
-        "delivered"
+        FulfillmentStatus::Cancelled
     } else if statuses
         .iter()
-        .any(|status| status == "shipped" || status == "delivered")
+        .filter(|status| **status != FulfillmentStatus::Cancelled)
+        .all(|status| *status == FulfillmentStatus::Delivered)
     {
-        "shipped"
+        FulfillmentStatus::Delivered
+    } else if statuses.iter().any(|status| {
+        matches!(
+            status,
+            FulfillmentStatus::Shipped | FulfillmentStatus::Delivered
+        )
+    }) {
+        FulfillmentStatus::Shipped
     } else {
-        "pending"
+        FulfillmentStatus::Pending
     };
     sqlx::query(
         "UPDATE commerce.orders \
@@ -353,7 +364,7 @@ async fn recompute_order_shipping_projection(
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
-    .bind(fulfillment_status)
+    .bind(fulfillment_status.as_str())
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;

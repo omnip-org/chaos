@@ -46,8 +46,11 @@ pub use identity::{
     ExternalIdentityVerifier, IdentityAuthentication, IdentityRepository, VerifiedExternalIdentity,
 };
 pub use integration::{
-    IntegrationQueue, MAX_INTEGRATION_ATTEMPTS, ProviderAccountReader, TopicEventJob,
-    VerifiedWebhookEvent, WebhookInbox,
+    ANALYTICS_CAPI_QUEUE, IntegrationQueue, MAX_INTEGRATION_ATTEMPTS, NOTIFICATION_EMAIL_QUEUE,
+    ORDER_FULFILLMENT_DELIVERED_TOPIC, ORDER_FULFILLMENT_SHIPPED_TOPIC,
+    ORDER_PAYMENT_COMPLETED_TOPIC, ORDER_PAYMENT_INITIATED_TOPIC, PRODUCT_UPDATED_TOPIC,
+    PROVIDER_WEBHOOK_RECEIVED_TOPIC, PROVIDER_WEBHOOKS_QUEUE, ProviderAccountReader,
+    SEARCH_INDEX_QUEUE, TopicEventJob, VerifiedWebhookEvent, WebhookInbox,
 };
 pub use inventory::{InventoryAdjustment, VariantInventoryView};
 pub use media::{

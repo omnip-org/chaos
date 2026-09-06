@@ -8,6 +8,18 @@ use crate::ApplicationError;
 /// Maximum number of delivery attempts for every durable integration queue.
 pub const MAX_INTEGRATION_ATTEMPTS: i32 = 8;
 
+pub const SEARCH_INDEX_QUEUE: &str = "search_index_queue";
+pub const ANALYTICS_CAPI_QUEUE: &str = "analytics_capi_queue";
+pub const NOTIFICATION_EMAIL_QUEUE: &str = "notification_email_queue";
+pub const PROVIDER_WEBHOOKS_QUEUE: &str = "provider_webhooks_queue";
+
+pub const PRODUCT_UPDATED_TOPIC: &str = "product.updated";
+pub const ORDER_PAYMENT_INITIATED_TOPIC: &str = "order.payment.initiated";
+pub const ORDER_PAYMENT_COMPLETED_TOPIC: &str = "order.payment.completed";
+pub const ORDER_FULFILLMENT_SHIPPED_TOPIC: &str = "order.fulfillment.shipped";
+pub const ORDER_FULFILLMENT_DELIVERED_TOPIC: &str = "order.fulfillment.delivered";
+pub const PROVIDER_WEBHOOK_RECEIVED_TOPIC: &str = "provider.webhook.received";
+
 /// Canonical webhook envelope produced by a capability/provider verifier.
 /// Verification and normalization are deliberately unaware of how the event
 /// gets delivered onward.

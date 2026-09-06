@@ -328,7 +328,7 @@ async fn apply_payment_event(
         );
         publish_topic_event(
             transaction,
-            "order.payment.completed",
+            crate::contracts::ORDER_PAYMENT_COMPLETED_TOPIC,
             payment_event_payload(
                 store_id.as_uuid(),
                 order_id.as_uuid(),

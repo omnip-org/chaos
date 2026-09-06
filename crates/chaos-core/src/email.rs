@@ -5,13 +5,14 @@ use crate::{
     adapters::postgres::{EmailBrandWrite, EmailProviderAccountWrite, PostgresEmailRepository},
     contracts::{
         EmailAccountConfiguration, EmailBrandDetail, EmailProvider, EmailProviderAccountDetail,
-        EmailProviderAccountPage, EmailWebhookVerifier, IntegrationQueue, ProviderAccountReader,
-        VerifiedWebhookEvent,
+        EmailProviderAccountPage, EmailWebhookVerifier, IntegrationQueue, NOTIFICATION_EMAIL_QUEUE,
+        ORDER_PAYMENT_COMPLETED_TOPIC, ProviderAccountReader, VerifiedWebhookEvent,
     },
     store::StoreActor,
 };
 use chaos_domain::{
     identity::Email,
+    integration::IntegrationCapability,
     store::{StoreId, StoreRole},
 };
 use time::OffsetDateTime;
@@ -55,7 +56,11 @@ impl EmailWebhooks {
     pub async fn receive(&self, request: ReceiveEmailWebhook<'_>) -> Result<(), ApplicationError> {
         let (_, secret) = self
             .accounts
-            .resolve_webhook_secret("email", request.provider, request.provider_account_id)
+            .resolve_webhook_secret(
+                IntegrationCapability::Email.as_str(),
+                request.provider,
+                request.provider_account_id,
+            )
             .await?
             .ok_or_else(|| ApplicationError::NotFound {
                 resource: "email_provider_account",
@@ -80,7 +85,7 @@ impl EmailWebhooks {
             .await?;
         let envelope = VerifiedWebhookEvent {
             provider_account_id: request.provider_account_id,
-            capability: "email".into(),
+            capability: IntegrationCapability::Email.as_str().into(),
             provider: request.provider.into(),
             provider_event_id: event.provider_event_id,
             provider_event_type: event.provider_event_type,
@@ -514,8 +519,6 @@ pub struct EmailWorkers {
     providers: HashMap<String, Arc<dyn EmailProvider>>,
 }
 
-const NOTIFICATION_EMAIL_QUEUE: &str = "notification_email_queue";
-
 impl EmailWorkers {
     pub fn new(
         queue: Arc<dyn IntegrationQueue>,
@@ -555,7 +558,7 @@ impl EmailWorkers {
         payload: &serde_json::Value,
     ) -> Result<(), ApplicationError> {
         match routing_key {
-            "order.payment.completed" => self.send_order_confirmation(payload).await,
+            ORDER_PAYMENT_COMPLETED_TOPIC => self.send_order_confirmation(payload).await,
             other => {
                 // TODO(notification-email): render and send the fulfillment
                 // notices (order.fulfillment.shipped / order.fulfillment.delivered).

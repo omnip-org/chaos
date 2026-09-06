@@ -9,10 +9,8 @@ use crate::{
     adapters::postgres::{
         PostgresProviderWebhookAudit, PostgresStripeRepository, ProviderWebhookAuditRow,
     },
-    contracts::{IntegrationQueue, PaymentProviderRegistry},
+    contracts::{IntegrationQueue, PROVIDER_WEBHOOKS_QUEUE, PaymentProviderRegistry},
 };
-
-const PROVIDER_WEBHOOKS_QUEUE: &str = "provider_webhooks_queue";
 
 /// Drains `provider_webhooks_queue`. Every job is a pointer
 /// (`{webhook_id, store_id}`) into `integration.provider_webhook_audit`;
@@ -78,16 +76,24 @@ impl ProviderWebhookWorker {
             // A redelivery after a crash between commit and finish_topic.
             return Ok(());
         }
-        match row.capability.as_str() {
-            "payment" => self.apply_payment(store_id, &row, now).await?,
-            "email" => {
+        match chaos_domain::integration::IntegrationCapability::parse(&row.capability) {
+            Some(chaos_domain::integration::IntegrationCapability::Payment) => {
+                self.apply_payment(store_id, &row, now).await?
+            }
+            Some(chaos_domain::integration::IntegrationCapability::Email) => {
                 // Verified email provider webhooks have no side effect to apply
                 // today; the audit row is the whole record.
             }
-            other => {
+            Some(capability) => {
                 tracing::warn!(
-                    capability = other,
+                    capability = capability.as_str(),
                     "provider webhook for an unhandled capability"
+                );
+            }
+            None => {
+                tracing::warn!(
+                    capability = %row.capability,
+                    "provider webhook contains an unknown integration capability"
                 );
             }
         }

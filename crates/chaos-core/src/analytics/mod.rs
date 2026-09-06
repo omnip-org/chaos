@@ -7,8 +7,8 @@ use crate::{
     ApplicationError,
     adapters::postgres::PostgresCapiEventStore,
     contracts::{
-        AnalyticsDeliveryCommand, AnalyticsDestination, AnalyticsDestinationConfiguration,
-        AnalyticsEventDestination, IntegrationQueue,
+        ANALYTICS_CAPI_QUEUE, AnalyticsDeliveryCommand, AnalyticsDestination,
+        AnalyticsDestinationConfiguration, AnalyticsEventDestination, IntegrationQueue,
     },
     store::StoreActor,
 };
@@ -63,8 +63,6 @@ pub struct MetaCapiWorker {
     destination: Arc<dyn AnalyticsEventDestination>,
 }
 
-const CAPI_QUEUE: &str = "analytics_capi_queue";
-
 impl MetaCapiWorker {
     pub fn new(
         queue: Arc<dyn IntegrationQueue>,
@@ -79,7 +77,7 @@ impl MetaCapiWorker {
     }
 
     pub async fn run_batch(&self, limit: u16) -> Result<usize, ApplicationError> {
-        let jobs = self.queue.claim_topic(CAPI_QUEUE, limit).await?;
+        let jobs = self.queue.claim_topic(ANALYTICS_CAPI_QUEUE, limit).await?;
         for job in &jobs {
             let result = self.deliver(&job.payload).await;
             if let Err(error) = &result {
@@ -87,7 +85,7 @@ impl MetaCapiWorker {
             }
             self.queue
                 .finish_topic(
-                    CAPI_QUEUE,
+                    ANALYTICS_CAPI_QUEUE,
                     job.msg_id,
                     job.attempts,
                     result.map_err(|error| error.to_string()),

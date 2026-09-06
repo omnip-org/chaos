@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::{
     ApplicationError,
     adapters::postgres::analytics::publish_topic_event,
-    contracts::{VerifiedWebhookEvent, WebhookInbox},
+    contracts::{PROVIDER_WEBHOOK_RECEIVED_TOPIC, VerifiedWebhookEvent, WebhookInbox},
     error::database_error,
 };
 
@@ -78,7 +78,7 @@ impl WebhookInbox for PostgresIntegrationWebhookRepository {
         if inserted {
             publish_topic_event(
                 &mut transaction,
-                "provider.webhook.received",
+                PROVIDER_WEBHOOK_RECEIVED_TOPIC,
                 json!({ "webhook_id": webhook_id, "store_id": account.1 }),
             )
             .await?;

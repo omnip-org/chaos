@@ -7,6 +7,7 @@ pub enum IntegrationCapability {
     Email,
     Payment,
     Shipping,
+    Analytics,
 }
 
 impl IntegrationCapability {
@@ -15,6 +16,17 @@ impl IntegrationCapability {
             Self::Email => "email",
             Self::Payment => "payment",
             Self::Shipping => "shipping",
+            Self::Analytics => "analytics",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "email" => Some(Self::Email),
+            "payment" => Some(Self::Payment),
+            "shipping" => Some(Self::Shipping),
+            "analytics" => Some(Self::Analytics),
+            _ => None,
         }
     }
 }
@@ -104,5 +116,9 @@ mod tests {
         assert_eq!(FulfillmentProvider::Manual.as_str(), "manual");
         assert_eq!(EmailProvider::parse("resend"), Some(EmailProvider::Resend));
         assert_eq!(IntegrationCapability::Payment.as_str(), "payment");
+        assert_eq!(
+            IntegrationCapability::parse("analytics"),
+            Some(IntegrationCapability::Analytics)
+        );
     }
 }

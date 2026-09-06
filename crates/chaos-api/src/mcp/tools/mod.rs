@@ -9,6 +9,22 @@ pub(crate) use params::StoreIdParams;
 
 use chaos_core::contracts::AdminActor;
 use rmcp::{handler::server::router::tool::ToolRouter, model::CallToolResult, tool_handler};
+use serde_json::json;
+use time::format_description::well_known::Rfc3339;
+use uuid::Uuid;
+
+pub(crate) fn parse_uuid_field(value: &str, field: &'static str) -> Result<Uuid, CallToolResult> {
+    Uuid::parse_str(value).map_err(|_| {
+        CallToolResult::structured_error(json!({
+            "code": "invalid_params",
+            "message": format!("{field} must be a valid UUID"),
+        }))
+    })
+}
+
+pub(crate) fn format_time(value: time::OffsetDateTime) -> String {
+    value.format(&Rfc3339).unwrap_or_default()
+}
 
 use crate::http::ApiState;
 

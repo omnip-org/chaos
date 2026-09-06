@@ -19,9 +19,8 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use time::format_description::well_known::Rfc3339;
 
-use crate::mcp::tools::ChaosMcp;
+use crate::mcp::tools::{ChaosMcp, format_time, parse_uuid_field};
 use crate::mcp::{
     error::{text_result, tool_error},
     mutation::require_confirmation,
@@ -1450,17 +1449,4 @@ fn invalid_parameter(field: &'static str, message: &'static str) -> CallToolResu
         "code": "invalid_params",
         "message": format!("{field}: {message}"),
     }))
-}
-
-fn parse_uuid_field(value: &str, field: &'static str) -> Result<uuid::Uuid, CallToolResult> {
-    uuid::Uuid::parse_str(value).map_err(|_| {
-        CallToolResult::structured_error(json!({
-            "code": "invalid_params",
-            "message": format!("{field} must be a valid UUID"),
-        }))
-    })
-}
-
-fn format_time(value: time::OffsetDateTime) -> String {
-    value.format(&Rfc3339).unwrap_or_default()
 }
