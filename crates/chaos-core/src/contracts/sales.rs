@@ -92,7 +92,7 @@ pub struct OrderRefundItem {
 /// `commerce.order_fulfillments`.
 pub struct OrderFulfillmentItem {
     pub id: FulfillmentId,
-    pub fulfillment_provider_account_id: ShippingProviderAccountId,
+    pub provider_account_id: ShippingProviderAccountId,
     pub shipping_provider: ShippingProvider,
     pub provider_reference_id: Option<String>,
     pub status: FulfillmentStatus,

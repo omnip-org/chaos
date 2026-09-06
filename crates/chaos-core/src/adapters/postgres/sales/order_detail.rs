@@ -78,7 +78,7 @@ struct RefundRow {
 #[derive(sqlx::FromRow)]
 struct FulfillmentRow {
     id: Uuid,
-    fulfillment_provider_account_id: Uuid,
+    provider_account_id: Uuid,
     shipping_provider: String,
     provider_reference_id: Option<String>,
     status: String,
@@ -132,7 +132,7 @@ struct BatchRefundRow {
 struct BatchFulfillmentRow {
     order_id: Uuid,
     id: Uuid,
-    fulfillment_provider_account_id: Uuid,
+    provider_account_id: Uuid,
     shipping_provider: String,
     provider_reference_id: Option<String>,
     status: String,
@@ -212,14 +212,14 @@ pub(crate) async fn load(
     .await
     .map_err(database_error)?;
     let fulfillments = sqlx::query_as::<_, FulfillmentRow>(
-        "SELECT fulfillment.id, fulfillment.fulfillment_provider_account_id, \
+        "SELECT fulfillment.id, fulfillment.provider_account_id, \
                 shipping_account.provider::text AS shipping_provider, \
-                fulfillment_provider_reference_id AS provider_reference_id, status::text, tracking_number, \
+                provider_reference_id AS provider_reference_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, fulfillment.created_at, fulfillment.updated_at \
          FROM commerce.order_fulfillments AS fulfillment \
          INNER JOIN integration.provider_accounts AS shipping_account \
            ON shipping_account.store_id = fulfillment.store_id \
-          AND shipping_account.id = fulfillment.fulfillment_provider_account_id \
+          AND shipping_account.id = fulfillment.provider_account_id \
           AND shipping_account.capability = 'shipping' \
          WHERE fulfillment.store_id = $1 AND fulfillment.order_id = $2 \
          ORDER BY fulfillment.created_at, fulfillment.id",
@@ -344,14 +344,14 @@ pub(crate) async fn load_many(
     .await
     .map_err(database_error)?;
     let fulfillments = sqlx::query_as::<_, BatchFulfillmentRow>(
-        "SELECT fulfillment.order_id, fulfillment.id, fulfillment.fulfillment_provider_account_id, \
+        "SELECT fulfillment.order_id, fulfillment.id, fulfillment.provider_account_id, \
                 shipping_account.provider::text AS shipping_provider, \
-                fulfillment_provider_reference_id AS provider_reference_id, status::text, tracking_number, \
+                provider_reference_id AS provider_reference_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, fulfillment.created_at, fulfillment.updated_at \
          FROM commerce.order_fulfillments AS fulfillment \
          INNER JOIN integration.provider_accounts AS shipping_account \
            ON shipping_account.store_id = fulfillment.store_id \
-          AND shipping_account.id = fulfillment.fulfillment_provider_account_id \
+          AND shipping_account.id = fulfillment.provider_account_id \
           AND shipping_account.capability = 'shipping' \
          WHERE fulfillment.store_id = $1 AND fulfillment.order_id = ANY($2::uuid[]) \
          ORDER BY fulfillment.order_id, fulfillment.created_at, fulfillment.id",
@@ -440,7 +440,7 @@ pub(crate) async fn load_many(
                     .map(|fulfillment| {
                         fulfillment_item(FulfillmentRow {
                             id: fulfillment.id,
-                            fulfillment_provider_account_id: fulfillment.fulfillment_provider_account_id,
+                            provider_account_id: fulfillment.provider_account_id,
                             shipping_provider: fulfillment.shipping_provider,
                             provider_reference_id: fulfillment.provider_reference_id,
                             status: fulfillment.status,
@@ -592,8 +592,8 @@ fn refund_item(row: RefundRow) -> Result<OrderRefundItem, ApplicationError> {
 fn fulfillment_item(row: FulfillmentRow) -> Result<OrderFulfillmentItem, ApplicationError> {
     Ok(OrderFulfillmentItem {
         id: FulfillmentId::from_uuid(row.id),
-        fulfillment_provider_account_id: ShippingProviderAccountId::from_uuid(
-            row.fulfillment_provider_account_id,
+        provider_account_id: ShippingProviderAccountId::from_uuid(
+            row.provider_account_id,
         ),
         shipping_provider: ShippingProvider::parse(&row.shipping_provider)
             .ok_or_else(corrupt_state)?,

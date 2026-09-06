@@ -349,7 +349,7 @@ fn order_detail(detail: OrderDetail) -> serde_json::Value {
         })).collect::<Vec<_>>(),
         "fulfillments": fulfillments.into_iter().map(|fulfillment| json!({
             "id": fulfillment.id.as_uuid(),
-            "fulfillment_provider_account_id": fulfillment.fulfillment_provider_account_id.as_uuid(),
+            "provider_account_id": fulfillment.provider_account_id.as_uuid(),
             "shipping_provider": fulfillment.shipping_provider.as_str(),
             "provider_reference_id": fulfillment.provider_reference_id,
             "status": fulfillment.status.as_str(),

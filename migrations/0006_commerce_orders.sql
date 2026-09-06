@@ -286,24 +286,24 @@ CREATE TABLE commerce.order_refunds (
 );
 
 CREATE TABLE commerce.order_fulfillments (
-    id                                UUID                               NOT NULL PRIMARY KEY,
-    store_id                          UUID                               NOT NULL,
-    order_id                          UUID                               NOT NULL,
-    fulfillment_provider_account_id   UUID                               NOT NULL,
-    fulfillment_provider_reference_id TEXT,
-    status                            commerce.order_fulfillment_status     NOT NULL DEFAULT 'awaiting_pickup',
-    tracking_number                   TEXT,
-    tracking_url                      TEXT,
-    shipped_at                        TIMESTAMPTZ,
-    delivered_at                      TIMESTAMPTZ,
-    cancelled_at                      TIMESTAMPTZ,
-    created_at                        TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                        TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id                     UUID                               NOT NULL PRIMARY KEY,
+    store_id               UUID                               NOT NULL,
+    order_id               UUID                               NOT NULL,
+    status                 commerce.order_fulfillment_status  NOT NULL DEFAULT 'pending',
+    provider_account_id    UUID                               NOT NULL,
+    provider_reference_id  TEXT,
+    tracking_number        TEXT,
+    tracking_url           TEXT,
+    shipped_at             TIMESTAMPTZ,
+    delivered_at           TIMESTAMPTZ,
+    cancelled_at           TIMESTAMPTZ,
+    created_at             TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at             TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT fulfillments_store_id_id_key                            UNIQUE (store_id, id),
     CONSTRAINT fulfillments_store_id_order_fkey                        FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders (store_id, id),
-    CONSTRAINT fulfillments_store_id_fulfillment_provider_account_fkey FOREIGN KEY (store_id, fulfillment_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
-    CONSTRAINT fulfillments_fulfillment_provider_reference_check       CHECK (fulfillment_provider_reference_id IS NULL OR length(trim(fulfillment_provider_reference_id)) BETWEEN 1 AND 255),
+    CONSTRAINT fulfillments_store_id_provider_account_fkey             FOREIGN KEY (store_id, provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
+    CONSTRAINT fulfillments_provider_reference_check                   CHECK (provider_reference_id IS NULL OR length(trim(provider_reference_id)) BETWEEN 1 AND 255),
     CONSTRAINT fulfillments_tracking_number_check                      CHECK (tracking_number IS NULL OR length(trim(tracking_number)) BETWEEN 1 AND 255),
     CONSTRAINT fulfillments_tracking_url_check                         CHECK (tracking_url IS NULL OR (length(tracking_url) BETWEEN 9 AND 2048 AND tracking_url ~ '^https://')),
     CONSTRAINT fulfillments_shape_check                                CHECK (
@@ -326,12 +326,12 @@ CREATE UNIQUE INDEX orders_one_order_per_cart_key ON commerce.orders (store_id, 
 CREATE INDEX orders_store_shopper_idx ON commerce.orders (store_id, shopper_id);
 CREATE INDEX orders_store_price_list_currency_idx ON commerce.orders (store_id, price_list_id, currency);
 CREATE UNIQUE INDEX orders_payment_provider_reference_key ON commerce.orders (store_id, payment_provider_account_id, payment_provider_reference_id) WHERE payment_provider_reference_id IS NOT NULL;
-CREATE UNIQUE INDEX fulfillments_shipping_provider_reference_key ON commerce.order_fulfillments (store_id, fulfillment_provider_account_id, fulfillment_provider_reference_id) WHERE fulfillment_provider_reference_id IS NOT NULL;
+CREATE UNIQUE INDEX fulfillments_provider_reference_key ON commerce.order_fulfillments (store_id, provider_account_id, provider_reference_id) WHERE provider_reference_id IS NOT NULL;
 CREATE INDEX refunds_order_created_idx ON commerce.order_refunds (store_id, order_id, created_at DESC);
 CREATE INDEX refunds_payment_provider_account_idx ON commerce.order_refunds (store_id, payment_provider_account_id, order_id);
 CREATE UNIQUE INDEX refunds_payment_provider_reference_key ON commerce.order_refunds (store_id, payment_provider_account_id, payment_provider_reference_id) WHERE payment_provider_reference_id IS NOT NULL;
 CREATE INDEX fulfillments_order_created_idx ON commerce.order_fulfillments (store_id, order_id, created_at DESC);
-CREATE INDEX fulfillments_fulfillment_provider_account_idx ON commerce.order_fulfillments (store_id, fulfillment_provider_account_id, order_id);
+CREATE INDEX fulfillments_provider_account_idx ON commerce.order_fulfillments (store_id, provider_account_id, order_id);
 CREATE INDEX orders_payment_provider_account_idx ON commerce.orders (store_id, payment_provider_account_id);
 
 CREATE FUNCTION commerce.validate_payment_provider_account()
@@ -370,10 +370,10 @@ BEGIN
       INTO account_capability
       FROM integration.provider_accounts AS account
      WHERE account.store_id = NEW.store_id
-       AND account.id = NEW.fulfillment_provider_account_id;
+       AND account.id = NEW.provider_account_id;
 
     IF account_capability IS DISTINCT FROM 'shipping' THEN
-        RAISE EXCEPTION 'fulfillment_provider_account_id must reference a shipping account'
+        RAISE EXCEPTION 'provider_account_id must reference a shipping account'
             USING ERRCODE = '23503';
     END IF;
     RETURN NEW;
@@ -423,7 +423,7 @@ CREATE TRIGGER refunds_payment_provider_capability_check
     FOR EACH ROW EXECUTE FUNCTION commerce.validate_payment_provider_account();
 
 CREATE TRIGGER fulfillments_shipping_provider_capability_check
-    BEFORE INSERT OR UPDATE OF store_id, fulfillment_provider_account_id
+    BEFORE INSERT OR UPDATE OF store_id, provider_account_id
     ON commerce.order_fulfillments
     FOR EACH ROW EXECUTE FUNCTION commerce.validate_shipping_provider_account();
 

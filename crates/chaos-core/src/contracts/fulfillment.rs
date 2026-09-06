@@ -16,7 +16,7 @@ pub struct ShippingProviderAccountDetail {
 pub struct FulfillmentDetail {
     pub id: FulfillmentId,
     pub order_id: OrderId,
-    pub fulfillment_provider_account_id: ShippingProviderAccountId,
+    pub provider_account_id: ShippingProviderAccountId,
     pub provider_reference_id: Option<String>,
     pub status: FulfillmentStatus,
     pub tracking_number: Option<String>,

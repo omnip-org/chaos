@@ -28,7 +28,7 @@ struct ShippingProviderAccountRow {
 struct FulfillmentRow {
     id: Uuid,
     order_id: Uuid,
-    fulfillment_provider_account_id: Uuid,
+    provider_account_id: Uuid,
     provider_reference_id: Option<String>,
     status: String,
     tracking_number: Option<String>,
@@ -91,7 +91,7 @@ impl PostgresFulfillmentRepository {
         actor: AdminActor,
         store_id: StoreId,
         order_id: OrderId,
-        fulfillment_provider_account_id: ShippingProviderAccountId,
+        provider_account_id: ShippingProviderAccountId,
         tracking_number: Option<String>,
         tracking_url: Option<String>,
     ) -> Result<FulfillmentDetail, ApplicationError> {
@@ -112,28 +112,28 @@ impl PostgresFulfillmentRepository {
              WHERE store_id = $1 AND id = $2 AND capability = 'shipping'",
         )
         .bind(store_id.as_uuid())
-        .bind(fulfillment_provider_account_id.as_uuid())
+        .bind(provider_account_id.as_uuid())
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
         account_exists
-            .ok_or_else(|| shipping_provider_account_not_found(fulfillment_provider_account_id))?;
+            .ok_or_else(|| shipping_provider_account_not_found(provider_account_id))?;
         let fulfillment = Fulfillment::create(
             order_id,
-            fulfillment_provider_account_id,
+            provider_account_id,
             tracking_number,
             tracking_url,
         )?;
         sqlx::query(
             "INSERT INTO commerce.order_fulfillments \
-             (id, store_id, order_id, fulfillment_provider_account_id, status, \
+             (id, store_id, order_id, provider_account_id, status, \
               tracking_number, tracking_url) \
              VALUES ($1, $2, $3, $4, 'awaiting_pickup', $5, $6)",
         )
         .bind(fulfillment.id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(order_id.as_uuid())
-        .bind(fulfillment_provider_account_id.as_uuid())
+        .bind(provider_account_id.as_uuid())
         .bind(fulfillment.tracking_number())
         .bind(fulfillment.tracking_url())
         .execute(&mut *transaction)
@@ -204,7 +204,7 @@ impl PostgresFulfillmentRepository {
                     "store_id": store_id.as_uuid(),
                     "order_id": order_id.as_uuid(),
                     "fulfillment_id": id.as_uuid(),
-                    "fulfillment_provider_account_id": fulfillment.fulfillment_provider_account_id().as_uuid(),
+                    "provider_account_id": fulfillment.provider_account_id().as_uuid(),
                     "tracking_number": fulfillment.tracking_number(),
                     "tracking_url": fulfillment.tracking_url(),
                 }),
@@ -371,8 +371,8 @@ async fn load_domain_fulfillment(
     id: FulfillmentId,
 ) -> Result<Fulfillment, ApplicationError> {
     let row = sqlx::query_as::<_, FulfillmentRow>(
-        "SELECT id, order_id, fulfillment_provider_account_id, \
-                fulfillment_provider_reference_id AS provider_reference_id, status::text, tracking_number, \
+        "SELECT id, order_id, provider_account_id, \
+                provider_reference_id AS provider_reference_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
          FROM commerce.order_fulfillments WHERE store_id = $1 AND id = $2 FOR UPDATE",
     )
@@ -385,7 +385,7 @@ async fn load_domain_fulfillment(
     Ok(Fulfillment::rehydrate(
         FulfillmentId::from_uuid(row.id),
         OrderId::from_uuid(row.order_id),
-        ShippingProviderAccountId::from_uuid(row.fulfillment_provider_account_id),
+        ShippingProviderAccountId::from_uuid(row.provider_account_id),
         FulfillmentStatus::parse(&row.status).ok_or_else(corrupt_state)?,
         row.tracking_number,
         row.tracking_url,
@@ -398,8 +398,8 @@ async fn load_fulfillment(
     id: FulfillmentId,
 ) -> Result<Option<FulfillmentDetail>, ApplicationError> {
     sqlx::query_as::<_, FulfillmentRow>(
-        "SELECT id, order_id, fulfillment_provider_account_id, \
-                fulfillment_provider_reference_id AS provider_reference_id, status::text, tracking_number, \
+        "SELECT id, order_id, provider_account_id, \
+                provider_reference_id AS provider_reference_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
          FROM commerce.order_fulfillments WHERE store_id = $1 AND id = $2",
     )
@@ -416,8 +416,8 @@ fn fulfillment_detail(row: FulfillmentRow) -> Result<FulfillmentDetail, Applicat
     Ok(FulfillmentDetail {
         id: FulfillmentId::from_uuid(row.id),
         order_id: OrderId::from_uuid(row.order_id),
-        fulfillment_provider_account_id: ShippingProviderAccountId::from_uuid(
-            row.fulfillment_provider_account_id,
+        provider_account_id: ShippingProviderAccountId::from_uuid(
+            row.provider_account_id,
         ),
         provider_reference_id: row.provider_reference_id,
         status: FulfillmentStatus::parse(&row.status).ok_or_else(corrupt_state)?,
