@@ -33,12 +33,10 @@ fulfillment_id!(FulfillmentId);
 fulfillment_id!(FulfillmentProviderAccountId);
 
 /// Shared shipping vocabulary for Fulfillment rows and the Order's shipping
-/// projection. `Pending` is used only when an Order has no active shipment;
-/// an individual Fulfillment starts at `AwaitingPickup`.
+/// projection. An individual Fulfillment starts at `Pending`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FulfillmentStatus {
     Pending,
-    AwaitingPickup,
     Shipped,
     Delivered,
     Cancelled,
@@ -48,7 +46,6 @@ impl FulfillmentStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
-            Self::AwaitingPickup => "awaiting_pickup",
             Self::Shipped => "shipped",
             Self::Delivered => "delivered",
             Self::Cancelled => "cancelled",
@@ -58,7 +55,6 @@ impl FulfillmentStatus {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "pending" => Some(Self::Pending),
-            "awaiting_pickup" => Some(Self::AwaitingPickup),
             "shipped" => Some(Self::Shipped),
             "delivered" => Some(Self::Delivered),
             "cancelled" => Some(Self::Cancelled),
@@ -89,7 +85,7 @@ impl Fulfillment {
             id: FulfillmentId::new(),
             order_id,
             provider_account_id,
-            status: FulfillmentStatus::AwaitingPickup,
+            status: FulfillmentStatus::Pending,
             tracking_number,
             tracking_url,
         })
@@ -167,13 +163,9 @@ impl Fulfillment {
         }
         let allowed = matches!(
             (self.status, target),
-            (
-                FulfillmentStatus::AwaitingPickup,
-                FulfillmentStatus::Shipped
-            ) | (
-                FulfillmentStatus::AwaitingPickup,
-                FulfillmentStatus::Cancelled
-            ) | (FulfillmentStatus::Shipped, FulfillmentStatus::Delivered)
+            (FulfillmentStatus::Pending, FulfillmentStatus::Shipped)
+                | (FulfillmentStatus::Pending, FulfillmentStatus::Cancelled)
+                | (FulfillmentStatus::Shipped, FulfillmentStatus::Delivered)
                 | (FulfillmentStatus::Shipped, FulfillmentStatus::Cancelled)
         );
         if !allowed {
@@ -223,7 +215,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fulfillment_progresses_awaiting_pickup_to_shipped_to_delivered() {
+    fn fulfillment_progresses_pending_to_shipped_to_delivered() {
         let mut fulfillment = Fulfillment::create(
             OrderId::new(),
             FulfillmentProviderAccountId::new(),
@@ -231,7 +223,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(fulfillment.status(), FulfillmentStatus::AwaitingPickup);
+        assert_eq!(fulfillment.status(), FulfillmentStatus::Pending);
         assert!(fulfillment.mark_delivered().is_err());
         assert!(
             fulfillment

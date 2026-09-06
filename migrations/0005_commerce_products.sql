@@ -416,7 +416,11 @@ CREATE INDEX product_documents_search_idx ON commerce.product_documents USING GI
 CREATE INDEX price_lists_store_activation_idx ON commerce.price_lists (store_id, status, currency, starts_at, ends_at);
 CREATE INDEX prices_variant_lookup_idx ON commerce.price_list_items (store_id, product_variant_id, price_list_id);
 
-CREATE FUNCTION commerce.refresh_product_document (store_id UUID, product_id UUID)
+CREATE FUNCTION commerce.refresh_product_document (
+    store_id    UUID,
+    product_id  UUID,
+    finished_at TIMESTAMPTZ
+)
 RETURNS VOID
 LANGUAGE SQL
 SECURITY DEFINER
@@ -433,7 +437,7 @@ AS $$
             product.description,
             string_agg(concat_ws(' ', variant.title, variant.sku::text), ' ')
         )),
-        CURRENT_TIMESTAMP
+        finished_at
     FROM
         commerce.products AS product
         LEFT JOIN commerce.product_variants AS variant
@@ -550,7 +554,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION commerce.process_events (
+CREATE FUNCTION commerce.process_search_index_events (
     batch_size    INTEGER,
     max_attempts  INTEGER,
     finished_at   TIMESTAMPTZ
@@ -572,7 +576,8 @@ BEGIN
         BEGIN
             PERFORM commerce.refresh_product_document(
                 (event.payload->>'store_id')::uuid,
-                (event.payload->>'product_id')::uuid
+                (event.payload->>'product_id')::uuid,
+                finished_at
             );
             PERFORM integration.finish_topic_event(
                 'search_index_queue', event.msg_id, event.attempts, true, max_attempts
@@ -691,11 +696,11 @@ CREATE POLICY store_isolation ON commerce.price_list_items
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 REVOKE ALL ON FUNCTION commerce.check_price_list_currency () FROM PUBLIC;
-REVOKE ALL ON FUNCTION commerce.refresh_product_document (UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.refresh_product_document (UUID, UUID, TIMESTAMPTZ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.capture_product_change () FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.capture_variant_change () FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.rebuild_store_products (UUID) FROM PUBLIC;
-REVOKE ALL ON FUNCTION commerce.process_events (INTEGER, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.process_search_index_events (INTEGER, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 
 GRANT SELECT, INSERT, UPDATE
     ON commerce.products,
@@ -745,4 +750,4 @@ REVOKE TRUNCATE ON commerce.variant_selected_options,
     commerce.price_list_items
     FROM chaos_runtime;
 
-GRANT EXECUTE ON FUNCTION commerce.process_events (INTEGER, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION commerce.process_search_index_events (INTEGER, INTEGER, TIMESTAMPTZ) TO chaos_runtime;

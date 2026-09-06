@@ -181,7 +181,7 @@ export interface OrderLine {
 /** The subset of a Fulfillment exposed on the order-lookup view: shipping
  * progress and carrier tracking, without the internal Store provider-account id. */
 export interface OrderLookupFulfillment {
-  status: "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
+  status: "pending" | "shipped" | "delivered" | "cancelled";
   tracking_number?: string;
   tracking_url?: string;
   shipped_at?: string;
@@ -201,7 +201,7 @@ export interface OrderLookup {
   payment_status:
     "pending" | "paid" | "failed" | "expired" | "partially_refunded" | "refunded";
   fulfillment_status:
-    "pending" | "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
+    "pending" | "shipped" | "delivered" | "cancelled";
   shipping_locality?: string;
   shipping_country_code?: string;
   subtotal_amount_minor: number;

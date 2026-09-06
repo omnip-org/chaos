@@ -114,7 +114,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Create a Fulfillment for an order in the selected Store, starting in \
-                        awaiting_pickup status. An order may have more than one concurrently \
+                        pending status. An order may have more than one concurrently \
                         active Fulfillment for split shipments; call this again with a different \
                         tracking number for each package. Requires confirm: true."
     )]
@@ -166,7 +166,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Mark a Fulfillment as shipped (awaiting_pickup -> shipped). Requires \
+        description = "Mark a Fulfillment as shipped (pending -> shipped). Requires \
                         confirm: true."
     )]
     async fn mark_fulfillment_shipped(

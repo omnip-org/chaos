@@ -1,7 +1,7 @@
 CREATE TYPE commerce.cart_status AS ENUM ('active', 'locked', 'completed', 'abandoned');
 CREATE TYPE commerce.order_status AS ENUM ('pending', 'confirmed', 'cancelled');
 CREATE TYPE commerce.order_payment_status AS ENUM ('pending', 'paid', 'failed', 'expired', 'partially_refunded', 'refunded');
-CREATE TYPE commerce.order_fulfillment_status AS ENUM ('pending', 'awaiting_pickup', 'shipped', 'delivered', 'cancelled');
+CREATE TYPE commerce.order_fulfillment_status AS ENUM ('pending', 'shipped', 'delivered', 'cancelled');
 CREATE TYPE commerce.order_refund_status AS ENUM ('pending', 'succeeded', 'failed');
 
 CREATE TABLE commerce.carts (
@@ -307,7 +307,7 @@ CREATE TABLE commerce.order_fulfillments (
     CONSTRAINT fulfillments_tracking_number_check                      CHECK (tracking_number IS NULL OR length(trim(tracking_number)) BETWEEN 1 AND 255),
     CONSTRAINT fulfillments_tracking_url_check                         CHECK (tracking_url IS NULL OR (length(tracking_url) BETWEEN 9 AND 2048 AND tracking_url ~ '^https://')),
     CONSTRAINT fulfillments_shape_check                                CHECK (
-        (status = 'awaiting_pickup' AND shipped_at IS NULL AND delivered_at IS NULL AND cancelled_at IS NULL) OR
+        (status = 'pending' AND shipped_at IS NULL AND delivered_at IS NULL AND cancelled_at IS NULL) OR
         (status = 'shipped' AND shipped_at IS NOT NULL AND delivered_at IS NULL AND cancelled_at IS NULL) OR
         (status = 'delivered' AND shipped_at IS NOT NULL AND delivered_at IS NOT NULL AND cancelled_at IS NULL) OR
         (status = 'cancelled' AND cancelled_at IS NOT NULL)

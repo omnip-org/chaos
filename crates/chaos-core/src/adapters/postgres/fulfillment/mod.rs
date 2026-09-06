@@ -123,7 +123,7 @@ impl PostgresFulfillmentRepository {
             "INSERT INTO commerce.order_fulfillments \
              (id, store_id, order_id, provider_account_id, status, \
               tracking_number, tracking_url) \
-             VALUES ($1, $2, $3, $4, 'awaiting_pickup', $5, $6)",
+             VALUES ($1, $2, $3, $4, 'pending', $5, $6)",
         )
         .bind(fulfillment.id().as_uuid())
         .bind(store_id.as_uuid())
@@ -159,7 +159,7 @@ impl PostgresFulfillmentRepository {
                 "UPDATE commerce.order_fulfillments \
                     SET status = 'shipped', tracking_number = $3, tracking_url = $4, \
                         shipped_at = $5, updated_at = $5 \
-                  WHERE store_id = $1 AND id = $2 AND status = 'awaiting_pickup'",
+                  WHERE store_id = $1 AND id = $2 AND status = 'pending'",
             )
             .bind(store_id.as_uuid())
             .bind(id.as_uuid())
@@ -269,7 +269,7 @@ impl PostgresFulfillmentRepository {
         sqlx::query(
             "UPDATE commerce.order_fulfillments \
                 SET status = 'cancelled', cancelled_at = $3, updated_at = $3 \
-              WHERE store_id = $1 AND id = $2 AND status IN ('awaiting_pickup', 'shipped')",
+              WHERE store_id = $1 AND id = $2 AND status IN ('pending', 'shipped')",
         )
         .bind(store_id.as_uuid())
         .bind(id.as_uuid())
@@ -296,10 +296,10 @@ impl PostgresFulfillmentRepository {
 ///
 /// An Order may have several concurrently active (non-cancelled)
 /// Fulfillments — split shipments are normal, not an error — so the
-/// projection takes the weakest link across them: `awaiting_pickup` <
+/// projection takes the weakest link across them: `pending` <
 /// `shipped` < `delivered`. The Order is not `delivered` until every active
 /// Fulfillment is delivered, but becomes `shipped` as soon as any of them
-/// has moved past `awaiting_pickup`. An Order with only cancelled
+/// has moved past `pending`. An Order with only cancelled
 /// Fulfillments is projected as `cancelled`.
 async fn recompute_order_shipping_projection(
     transaction: &mut Transaction<'static, Postgres>,
@@ -342,7 +342,7 @@ async fn recompute_order_shipping_projection(
     {
         "shipped"
     } else {
-        "awaiting_pickup"
+        "pending"
     };
     sqlx::query(
         "UPDATE commerce.orders \
