@@ -108,17 +108,6 @@ impl PostgresStorefrontSalesRepository {
         crate::adapters::postgres::database::set_shopper_context(&mut transaction, shopper.shopper_id)
             .await
             .map_err(database_error)?;
-        sqlx::query(
-            "UPDATE commerce.shoppers \
-             SET last_seen_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP \
-             WHERE store_id = $1 AND id = $2 \
-               AND last_seen_at < CURRENT_TIMESTAMP - INTERVAL '5 minutes'",
-        )
-        .bind(shopper.machine.store_id.as_uuid())
-        .bind(shopper.shopper_id.as_uuid())
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
         Ok(transaction)
     }
 }
