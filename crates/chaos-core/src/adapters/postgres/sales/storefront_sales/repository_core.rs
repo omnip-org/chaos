@@ -34,14 +34,18 @@ const ORDER_NUMBER_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 /// `W-` + 8 Crockford base32 chars (~2^40). Collisions are handled at the
 /// checkout INSERT by regenerating on the per-store UNIQUE, not here.
-fn generate_order_number() -> OrderNumber {
+fn generate_order_number() -> Result<OrderNumber, ApplicationError> {
     let mut random = [0_u8; 8];
     rand::rng().fill_bytes(&mut random);
     let suffix: String = random
         .into_iter()
         .map(|byte| char::from(ORDER_NUMBER_ALPHABET[usize::from(byte & 31)]))
         .collect();
-    OrderNumber::parse(format!("W-{suffix}")).expect("generated order number is always valid")
+    OrderNumber::parse(format!("W-{suffix}")).map_err(|error| {
+        ApplicationError::Unexpected(anyhow::anyhow!(
+            "generated order number failed validation: {error}"
+        ))
+    })
 }
 
 /// A generated number lost the per-store UNIQUE race on every retry — with a

@@ -51,16 +51,12 @@ impl ProviderSecretManagement {
                 resource: "store",
                 id: input.store_id.as_uuid().to_string(),
             })?;
+        let audit_user_id = input
+            .actor
+            .audit_user_id()
+            .ok_or(ApplicationError::Forbidden)?;
         self.writer
-            .create(
-                input.store_id,
-                input
-                    .actor
-                    .audit_user_id()
-                    .expect("require_provider_secret_writer rejects Machine actors above"),
-                input.kind,
-                &input.value,
-            )
+            .create(input.store_id, audit_user_id, input.kind, &input.value)
             .await
     }
 }

@@ -177,9 +177,18 @@ impl McpOAuthService {
         )
         .bind(&client.client_id)
         .bind(&client.client_name)
-        .bind(serde_json::to_value(&client.redirect_uris).expect("redirect URI serialization"))
-        .bind(serde_json::to_value(&client.grant_types).expect("grant type serialization"))
-        .bind(serde_json::to_value(&client.response_types).expect("response type serialization"))
+        .bind(
+            serde_json::to_value(&client.redirect_uris)
+                .map_err(|error| ApplicationError::Unexpected(error.into()))?,
+        )
+        .bind(
+            serde_json::to_value(&client.grant_types)
+                .map_err(|error| ApplicationError::Unexpected(error.into()))?,
+        )
+        .bind(
+            serde_json::to_value(&client.response_types)
+                .map_err(|error| ApplicationError::Unexpected(error.into()))?,
+        )
         .bind(&client.token_endpoint_auth_method)
         .bind(&client.application_type)
         .execute(&self.pool)

@@ -8,7 +8,7 @@ impl Clock for SystemClock {
     fn now(&self) -> OffsetDateTime {
         let now = OffsetDateTime::now_utc();
         now.replace_nanosecond(now.nanosecond() / 1_000 * 1_000)
-            .expect("a truncated nanosecond value is always valid")
+            .unwrap_or(now)
     }
 }
 

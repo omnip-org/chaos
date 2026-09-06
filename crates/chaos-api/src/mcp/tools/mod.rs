@@ -85,7 +85,9 @@ impl ChaosMcp {
         .await?
         {
             AdminActor::Store(actor) => Ok(actor),
-            AdminActor::Machine(_) => unreachable!("MCP authentication returns a User actor"),
+            AdminActor::Machine(_) => Err(crate::mcp::error::tool_error(
+                chaos_core::ApplicationError::Forbidden,
+            )),
         }
     }
 }

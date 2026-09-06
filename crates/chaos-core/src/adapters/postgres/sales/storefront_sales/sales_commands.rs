@@ -356,7 +356,7 @@ impl PostgresStorefrontSalesRepository {
         // near-impossible collision without aborting the checkout transaction,
         // so we regenerate and retry a handful of times. Any other unique
         // conflict (idempotency key, one order per cart) still raises.
-        let mut order_number = generate_order_number();
+        let mut order_number = generate_order_number()?;
         let mut attempt = 0;
         let order_created = loop {
             let inserted = sqlx::query(
@@ -394,7 +394,7 @@ impl PostgresStorefrontSalesRepository {
             if attempt >= 5 {
                 break false;
             }
-            order_number = generate_order_number();
+            order_number = generate_order_number()?;
         };
         if !order_created {
             return Err(order_number_unavailable());

@@ -91,7 +91,11 @@ impl PostgresCatalogProvisioningTransaction {
             .bind(product.store_id().as_uuid())
             .bind(product.id().as_uuid())
             .bind(option.name())
-            .bind(i16::try_from(option.position()).expect("option position fits SMALLINT"))
+            .bind(i16::try_from(option.position()).map_err(|_| {
+                ApplicationError::Unexpected(anyhow::anyhow!(
+                    "product option position exceeds SMALLINT"
+                ))
+            })?)
             .execute(&mut *self.transaction)
             .await
             .map_err(map_catalog_write_error)?;
@@ -106,7 +110,11 @@ impl PostgresCatalogProvisioningTransaction {
                 .bind(product.id().as_uuid())
                 .bind(option.id().as_uuid())
                 .bind(value.value())
-                .bind(i16::try_from(value.position()).expect("option value position fits SMALLINT"))
+                .bind(i16::try_from(value.position()).map_err(|_| {
+                    ApplicationError::Unexpected(anyhow::anyhow!(
+                        "product option value position exceeds SMALLINT"
+                    ))
+                })?)
                 .execute(&mut *self.transaction)
                 .await
                 .map_err(map_catalog_write_error)?;
