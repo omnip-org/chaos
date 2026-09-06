@@ -64,25 +64,25 @@ CREATE TABLE commerce.cart_lines (
 );
 
 CREATE TABLE commerce.orders (
-    id                              UUID                            NOT NULL PRIMARY KEY,
-    order_number                    TEXT                            NOT NULL,
-    store_id                        UUID                            NOT NULL,
-    channel_id                      UUID                            NOT NULL,
-    shopper_id                      UUID                            NOT NULL,
-    cart_id                         UUID                            NOT NULL,
-    currency                        CHAR(3)                         NOT NULL,
-    status                          commerce.order_status           NOT NULL DEFAULT 'pending',
-    payment_status                  commerce.order_payment_status   NOT NULL DEFAULT 'pending',
-    payment_provider_account_id     UUID                            NOT NULL,
+    id                              UUID                              NOT NULL PRIMARY KEY,
+    order_number                    TEXT                              NOT NULL,
+    store_id                        UUID                              NOT NULL,
+    channel_id                      UUID                              NOT NULL,
+    shopper_id                      UUID                              NOT NULL,
+    cart_id                         UUID                              NOT NULL,
+    currency                        CHAR(3)                           NOT NULL,
+    status                          commerce.order_status             NOT NULL DEFAULT 'pending',
+    payment_status                  commerce.order_payment_status     NOT NULL DEFAULT 'pending',
+    payment_provider_account_id     UUID                              NOT NULL,
     payment_provider_reference_id   TEXT,
     payment_failure_code            TEXT,
-    fulfillment_status              commerce.order_fulfillment_status  NOT NULL DEFAULT 'pending',
-    refunded_amount_minor           BIGINT                          NOT NULL DEFAULT 0,
-    subtotal_amount_minor           BIGINT                          NOT NULL,
-    discount_amount_minor           BIGINT                          NOT NULL,
-    tax_amount_minor                BIGINT                          NOT NULL,
-    shipping_amount_minor           BIGINT                          NOT NULL,
-    total_amount_minor              BIGINT                          NOT NULL,
+    fulfillment_status              commerce.order_fulfillment_status NOT NULL DEFAULT 'pending',
+    refunded_amount_minor           BIGINT                            NOT NULL DEFAULT 0,
+    subtotal_amount_minor           BIGINT                            NOT NULL,
+    discount_amount_minor           BIGINT                            NOT NULL,
+    tax_amount_minor                BIGINT                            NOT NULL,
+    shipping_amount_minor           BIGINT                            NOT NULL,
+    total_amount_minor              BIGINT                            NOT NULL,
     amounts_finalized_at            TIMESTAMPTZ,
     contact_email                   extensions.citext,
     contact_phone                   TEXT,
@@ -100,8 +100,8 @@ CREATE TABLE commerce.orders (
     shipping_administrative_area    TEXT,
     shipping_postal_code            TEXT,
     shipping_country_code           CHAR(2),
-    created_at                      TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                      TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at                      TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                      TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT orders_store_id_id_key                         UNIQUE (store_id, id),
     CONSTRAINT orders_store_id_order_number_key               UNIQUE (store_id, order_number),
@@ -119,20 +119,8 @@ CREATE TABLE commerce.orders (
         AND refunded_amount_minor >= 0
         AND refunded_amount_minor <= total_amount_minor
         AND (
-            (
-                amounts_finalized_at IS NULL
-                AND discount_amount_minor = 0
-                AND tax_amount_minor = 0
-                AND shipping_amount_minor = 0
-                AND total_amount_minor = 0
-            )
-            OR (
-                amounts_finalized_at IS NOT NULL
-                AND total_amount_minor::numeric = subtotal_amount_minor::numeric
-                    - discount_amount_minor::numeric
-                    + tax_amount_minor::numeric
-                    + shipping_amount_minor::numeric
-            )
+            (amounts_finalized_at IS NULL AND discount_amount_minor = 0 AND tax_amount_minor = 0 AND shipping_amount_minor = 0 AND total_amount_minor = 0)
+            OR (amounts_finalized_at IS NOT NULL AND total_amount_minor::numeric = subtotal_amount_minor::numeric - discount_amount_minor::numeric + tax_amount_minor::numeric + shipping_amount_minor::numeric)
         )
     ),
     CONSTRAINT orders_contact_email_length_check              CHECK (contact_email IS NULL OR length(trim(contact_email::text)) BETWEEN 3 AND 320),
@@ -147,15 +135,7 @@ CREATE TABLE commerce.orders (
         OR (refunded_amount_minor > 0 AND payment_status IN ('partially_refunded', 'refunded'))
     ),
     CONSTRAINT orders_billing_address_shape_check             CHECK (
-        (
-            billing_full_name IS NULL
-            AND billing_address_line1 IS NULL
-            AND billing_address_line2 IS NULL
-            AND billing_locality IS NULL
-            AND billing_administrative_area IS NULL
-            AND billing_postal_code IS NULL
-            AND billing_country_code IS NULL
-        )
+        (billing_full_name IS NULL AND billing_address_line1 IS NULL AND billing_address_line2 IS NULL AND billing_locality IS NULL AND billing_administrative_area IS NULL AND billing_postal_code IS NULL AND billing_country_code IS NULL)
         OR (
             billing_full_name IS NOT NULL
             AND length(trim(billing_full_name)) BETWEEN 1 AND 200
@@ -167,39 +147,13 @@ CREATE TABLE commerce.orders (
             AND length(trim(billing_locality)) BETWEEN 1 AND 100
             AND billing_locality !~ '[[:cntrl:]]'
             AND billing_country_code IS NOT NULL
-            AND (
-                billing_address_line2 IS NULL
-                OR (
-                    length(trim(billing_address_line2)) BETWEEN 1 AND 255
-                    AND billing_address_line2 !~ '[[:cntrl:]]'
-                )
-            )
-            AND (
-                billing_administrative_area IS NULL
-                OR (
-                    length(trim(billing_administrative_area)) BETWEEN 1 AND 100
-                    AND billing_administrative_area !~ '[[:cntrl:]]'
-                )
-            )
-            AND (
-                billing_postal_code IS NULL
-                OR (
-                    length(trim(billing_postal_code)) BETWEEN 1 AND 32
-                    AND billing_postal_code !~ '[[:cntrl:]]'
-                )
-            )
+            AND (billing_address_line2 IS NULL OR (length(trim(billing_address_line2)) BETWEEN 1 AND 255 AND billing_address_line2 !~ '[[:cntrl:]]'))
+            AND (billing_administrative_area IS NULL OR (length(trim(billing_administrative_area)) BETWEEN 1 AND 100 AND billing_administrative_area !~ '[[:cntrl:]]'))
+            AND (billing_postal_code IS NULL OR (length(trim(billing_postal_code)) BETWEEN 1 AND 32 AND billing_postal_code !~ '[[:cntrl:]]'))
         )
     ),
     CONSTRAINT orders_shipping_address_shape_check            CHECK (
-        (
-            shipping_full_name IS NULL
-            AND shipping_address_line1 IS NULL
-            AND shipping_address_line2 IS NULL
-            AND shipping_locality IS NULL
-            AND shipping_administrative_area IS NULL
-            AND shipping_postal_code IS NULL
-            AND shipping_country_code IS NULL
-        )
+        (shipping_full_name IS NULL AND shipping_address_line1 IS NULL AND shipping_address_line2 IS NULL AND shipping_locality IS NULL AND shipping_administrative_area IS NULL AND shipping_postal_code IS NULL AND shipping_country_code IS NULL)
         OR (
             shipping_full_name IS NOT NULL
             AND length(trim(shipping_full_name)) BETWEEN 1 AND 200
@@ -211,27 +165,9 @@ CREATE TABLE commerce.orders (
             AND length(trim(shipping_locality)) BETWEEN 1 AND 100
             AND shipping_locality !~ '[[:cntrl:]]'
             AND shipping_country_code IS NOT NULL
-            AND (
-                shipping_address_line2 IS NULL
-                OR (
-                    length(trim(shipping_address_line2)) BETWEEN 1 AND 255
-                    AND shipping_address_line2 !~ '[[:cntrl:]]'
-                )
-            )
-            AND (
-                shipping_administrative_area IS NULL
-                OR (
-                    length(trim(shipping_administrative_area)) BETWEEN 1 AND 100
-                    AND shipping_administrative_area !~ '[[:cntrl:]]'
-                )
-            )
-            AND (
-                shipping_postal_code IS NULL
-                OR (
-                    length(trim(shipping_postal_code)) BETWEEN 1 AND 32
-                    AND shipping_postal_code !~ '[[:cntrl:]]'
-                )
-            )
+            AND (shipping_address_line2 IS NULL OR (length(trim(shipping_address_line2)) BETWEEN 1 AND 255 AND shipping_address_line2 !~ '[[:cntrl:]]'))
+            AND (shipping_administrative_area IS NULL OR (length(trim(shipping_administrative_area)) BETWEEN 1 AND 100 AND shipping_administrative_area !~ '[[:cntrl:]]'))
+            AND (shipping_postal_code IS NULL OR (length(trim(shipping_postal_code)) BETWEEN 1 AND 32 AND shipping_postal_code !~ '[[:cntrl:]]'))
         )
     )
 );
