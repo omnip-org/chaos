@@ -338,7 +338,7 @@ impl PostgresEmailRepository {
             shipping_country_code,
         )?;
         let sender = parse_email_account_configuration(account_configuration)?.sender();
-        let lookup_url = order_lookup_url(&origin, &order_number, &contact_email)?;
+        let lookup_url = order_details_url(&origin, &order_number, &contact_email)?;
         let brand = load_email_brand(&mut transaction, StoreId::from_uuid(store_id))
             .await?
             .ok_or_else(email_provider_account_not_found_for_brand)
@@ -756,7 +756,7 @@ fn email_order_corrupt_state() -> ApplicationError {
     ))
 }
 
-fn order_lookup_url(
+fn order_details_url(
     origin: &str,
     order_number: &str,
     email: &str,
@@ -789,17 +789,17 @@ fn invalid_email_url(error: String) -> ApplicationError {
 mod tests {
     use serde_json::json;
 
-    use super::{email_brand_detail, order_lookup_url};
+    use super::{email_brand_detail, order_details_url};
 
     #[test]
     fn lookup_url_uses_the_sales_channel_origin_and_encodes_the_pair() {
-        let first = order_lookup_url(
+        let first = order_details_url(
             "https://first.example.test",
             "W-20260820-7K4M9Q2D",
             "buyer@example.test",
         )
         .unwrap();
-        let second = order_lookup_url(
+        let second = order_details_url(
             "https://second.example.test/",
             "W-20260820-7K4M9Q2D",
             "a+b@example.test",

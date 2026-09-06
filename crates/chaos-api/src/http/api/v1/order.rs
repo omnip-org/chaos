@@ -83,10 +83,10 @@ async fn lookup_order(
         .storefront_sales
         .lookup_order(&actor, body.order_number.trim(), &body.email)
         .await?;
-    Ok(ApiResponse::ok(order_lookup_data(order)))
+    Ok(ApiResponse::ok(order_details_data(order)))
 }
 
-fn order_lookup_data(order: OrderDetail) -> OrderLookupData {
+fn order_details_data(order: OrderDetail) -> OrderLookupData {
     let shipping_address = order.identity.shipping_address();
     OrderLookupData {
         id: order.id.as_uuid(),
@@ -106,7 +106,7 @@ fn order_lookup_data(order: OrderDetail) -> OrderLookupData {
         fulfillments: order
             .fulfillments
             .into_iter()
-            .map(order_lookup_fulfillment_data)
+            .map(order_details_fulfillment_data)
             .collect(),
         lines: order.lines.into_iter().map(order_line_data).collect(),
         created_at: order.created_at.into(),
@@ -114,7 +114,7 @@ fn order_lookup_data(order: OrderDetail) -> OrderLookupData {
     }
 }
 
-fn order_lookup_fulfillment_data(item: OrderFulfillmentItem) -> OrderLookupFulfillmentData {
+fn order_details_fulfillment_data(item: OrderFulfillmentItem) -> OrderLookupFulfillmentData {
     OrderLookupFulfillmentData {
         status: item.status.as_str(),
         tracking_number: item.tracking_number,
@@ -150,7 +150,7 @@ mod tests {
     };
     use uuid::Uuid;
 
-    use super::{OrderDetail, order_lookup_data};
+    use super::{OrderDetail, order_details_data};
 
     fn sample_order() -> OrderDetail {
         let contact = OrderContact::new(Some("buyer@example.com"), Some("+14155552671".into()))
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn lookup_view_exposes_the_order_number_and_shipping_region_only() {
-        let value = serde_json::to_value(order_lookup_data(sample_order())).expect("serialize");
+        let value = serde_json::to_value(order_details_data(sample_order())).expect("serialize");
         let object = value.as_object().expect("object");
 
         assert_eq!(object["order_number"], "W-20260903-7K4M9Q2D");
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn lookup_view_never_echoes_contact_details_or_the_full_address() {
-        let value = serde_json::to_value(order_lookup_data(sample_order())).expect("serialize");
+        let value = serde_json::to_value(order_details_data(sample_order())).expect("serialize");
         let rendered = value.to_string();
 
         for leaked in [
