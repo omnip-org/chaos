@@ -5,48 +5,29 @@ CREATE TYPE commerce.order_refund_status AS ENUM ('pending', 'succeeded', 'faile
 CREATE TYPE commerce.order_fulfillment_status AS ENUM ('pending', 'shipped', 'delivered', 'cancelled');
 
 CREATE TABLE commerce.carts (
-    id                           UUID                    NOT NULL PRIMARY KEY,
-    store_id                     UUID                    NOT NULL,
-    channel_id                   UUID                    NOT NULL,
-    shopper_id                   UUID                    NOT NULL,
-    price_list_id                UUID                    NOT NULL,
-    status                       commerce.cart_status    NOT NULL DEFAULT 'active',
-    payment_client_action        JSONB,
-    attribution                  JSONB,
-    checkout_idempotency_key     UUID,
-    checkout_request_fingerprint BYTEA,
-    created_at                   TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                   TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id                               UUID                     NOT NULL PRIMARY KEY,
+    store_id                         UUID                     NOT NULL,
+    channel_id                       UUID                     NOT NULL,
+    shopper_id                       UUID                     NOT NULL,
+    price_list_id                    UUID                     NOT NULL,
+    status                           commerce.cart_status     NOT NULL DEFAULT 'active',
+    payment_client_action            JSONB,
+    attribution                      JSONB,
+    checkout_idempotency_key         UUID,
+    checkout_request_fingerprint     BYTEA,
+    created_at                       TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                       TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT carts_store_id_id_key              UNIQUE (store_id, id),
-    CONSTRAINT carts_store_id_id_channel_id_shopper_id_key UNIQUE (store_id, id, channel_id, shopper_id),
-    CONSTRAINT carts_store_id_fkey                FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT carts_store_id_channel_fkey        FOREIGN KEY (store_id, channel_id) REFERENCES commerce.channels (store_id, id),
-    CONSTRAINT carts_store_id_shopper_fkey        FOREIGN KEY (store_id, shopper_id) REFERENCES commerce.shoppers (store_id, id),
-    CONSTRAINT carts_store_id_price_list_fkey     FOREIGN KEY (store_id, price_list_id) REFERENCES commerce.price_lists (store_id, id),
-    CONSTRAINT carts_payment_client_action_check  CHECK (
-        payment_client_action IS NULL
-        OR (
-            status = 'locked'
-            AND jsonb_typeof(payment_client_action) = 'object'
-            AND payment_client_action ? 'type'
-            AND jsonb_typeof(payment_client_action->'type') = 'string'
-            AND pg_column_size(payment_client_action) <= 8192
-        )
-    ),
-    CONSTRAINT carts_attribution_check            CHECK (
-        attribution IS NULL
-        OR (jsonb_typeof(attribution) = 'object' AND pg_column_size(attribution) <= 4096)
-    ),
-    CONSTRAINT carts_checkout_idempotency_key_check     CHECK (
-        checkout_idempotency_key IS NULL
-        OR (status <> 'active'
-            AND checkout_idempotency_key <> '00000000-0000-0000-0000-000000000000'::uuid)
-    ),
-    CONSTRAINT carts_checkout_request_fingerprint_check CHECK (
-        checkout_request_fingerprint IS NULL
-        OR octet_length(checkout_request_fingerprint) = 32
-    )
+    CONSTRAINT carts_store_id_id_key                          UNIQUE (store_id, id),
+    CONSTRAINT carts_store_id_id_channel_id_shopper_id_key    UNIQUE (store_id, id, channel_id, shopper_id),
+    CONSTRAINT carts_store_id_fkey                            FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT carts_store_id_channel_fkey                    FOREIGN KEY (store_id, channel_id) REFERENCES commerce.channels (store_id, id),
+    CONSTRAINT carts_store_id_shopper_fkey                    FOREIGN KEY (store_id, shopper_id) REFERENCES commerce.shoppers (store_id, id),
+    CONSTRAINT carts_store_id_price_list_fkey                 FOREIGN KEY (store_id, price_list_id) REFERENCES commerce.price_lists (store_id, id),
+    CONSTRAINT carts_payment_client_action_check              CHECK (payment_client_action IS NULL OR (status = 'locked' AND jsonb_typeof(payment_client_action) = 'object' AND payment_client_action ? 'type' AND jsonb_typeof(payment_client_action->'type') = 'string' AND pg_column_size(payment_client_action) <= 8192)),
+    CONSTRAINT carts_attribution_check                        CHECK (attribution IS NULL OR (jsonb_typeof(attribution) = 'object' AND pg_column_size(attribution) <= 4096)),
+    CONSTRAINT carts_checkout_idempotency_key_check           CHECK (checkout_idempotency_key IS NULL OR (status <> 'active' AND checkout_idempotency_key <> '00000000-0000-0000-0000-000000000000'::uuid)),
+    CONSTRAINT carts_checkout_request_fingerprint_check       CHECK (checkout_request_fingerprint IS NULL OR octet_length(checkout_request_fingerprint) = 32)
 );
 
 CREATE TABLE commerce.cart_lines (
@@ -224,27 +205,27 @@ CREATE TABLE commerce.order_refunds (
 );
 
 CREATE TABLE commerce.order_fulfillments (
-    id                     UUID                               NOT NULL PRIMARY KEY,
-    store_id               UUID                               NOT NULL,
-    order_id               UUID                               NOT NULL,
-    status                 commerce.order_fulfillment_status  NOT NULL DEFAULT 'pending',
-    provider_account_id    UUID                               NOT NULL,
+    id                     UUID                                NOT NULL PRIMARY KEY,
+    store_id               UUID                                NOT NULL,
+    order_id               UUID                                NOT NULL,
+    status                 commerce.order_fulfillment_status   NOT NULL DEFAULT 'pending',
+    provider_account_id    UUID                                NOT NULL,
     provider_reference_id  TEXT,
     tracking_number        TEXT,
     tracking_url           TEXT,
     shipped_at             TIMESTAMPTZ,
     delivered_at           TIMESTAMPTZ,
     cancelled_at           TIMESTAMPTZ,
-    created_at             TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at             TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at             TIMESTAMPTZ                         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at             TIMESTAMPTZ                         NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT fulfillments_store_id_id_key                            UNIQUE (store_id, id),
-    CONSTRAINT fulfillments_store_id_order_fkey                        FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders (store_id, id),
-    CONSTRAINT fulfillments_store_id_provider_account_fkey             FOREIGN KEY (store_id, provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
-    CONSTRAINT fulfillments_provider_reference_check                   CHECK (provider_reference_id IS NULL OR length(trim(provider_reference_id)) BETWEEN 1 AND 255),
-    CONSTRAINT fulfillments_tracking_number_check                      CHECK (tracking_number IS NULL OR length(trim(tracking_number)) BETWEEN 1 AND 255),
-    CONSTRAINT fulfillments_tracking_url_check                         CHECK (tracking_url IS NULL OR (length(tracking_url) BETWEEN 9 AND 2048 AND tracking_url ~ '^https://')),
-    CONSTRAINT fulfillments_shape_check                                CHECK (
+    CONSTRAINT fulfillments_store_id_id_key                    UNIQUE (store_id, id),
+    CONSTRAINT fulfillments_store_id_order_fkey                FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders (store_id, id),
+    CONSTRAINT fulfillments_store_id_provider_account_fkey     FOREIGN KEY (store_id, provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
+    CONSTRAINT fulfillments_provider_reference_check           CHECK (provider_reference_id IS NULL OR length(trim(provider_reference_id)) BETWEEN 1 AND 255),
+    CONSTRAINT fulfillments_tracking_number_check              CHECK (tracking_number IS NULL OR length(trim(tracking_number)) BETWEEN 1 AND 255),
+    CONSTRAINT fulfillments_tracking_url_check                 CHECK (tracking_url IS NULL OR (length(tracking_url) BETWEEN 9 AND 2048 AND tracking_url ~ '^https://')),
+    CONSTRAINT fulfillments_shape_check                        CHECK (
         (status = 'pending' AND shipped_at IS NULL AND delivered_at IS NULL AND cancelled_at IS NULL) OR
         (status = 'shipped' AND shipped_at IS NOT NULL AND delivered_at IS NULL AND cancelled_at IS NULL) OR
         (status = 'delivered' AND shipped_at IS NOT NULL AND delivered_at IS NOT NULL AND cancelled_at IS NULL) OR
