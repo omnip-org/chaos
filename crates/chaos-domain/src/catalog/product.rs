@@ -249,6 +249,7 @@ impl ProductLifecycle {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VariantStatus {
+    Draft,
     Active,
     Archived,
 }
@@ -256,6 +257,7 @@ pub enum VariantStatus {
 impl VariantStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Draft => "draft",
             Self::Active => "active",
             Self::Archived => "archived",
         }
@@ -263,6 +265,7 @@ impl VariantStatus {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "draft" => Some(Self::Draft),
             "active" => Some(Self::Active),
             "archived" => Some(Self::Archived),
             _ => None,
@@ -693,6 +696,12 @@ mod tests {
         lifecycle.archive();
         assert_eq!(lifecycle.status(), ProductStatus::Archived);
         assert!(lifecycle.require_publishable().is_err());
+    }
+
+    #[test]
+    fn variant_status_round_trips_draft() {
+        assert_eq!(VariantStatus::Draft.as_str(), "draft");
+        assert_eq!(VariantStatus::parse("draft"), Some(VariantStatus::Draft));
     }
 
     #[test]

@@ -117,8 +117,8 @@ pub fn resolve_product_media(
         })?;
     if variant.status != VariantStatus::Active {
         return Err(ApplicationError::Conflict {
-            code: "product_variant_archived",
-            message: "effective storefront media can only be resolved for an active Variant",
+            code: "product_variant_not_active",
+            message: "effective storefront media can only be resolved for an active variant",
         });
     }
     let selected_option_pairs = variant

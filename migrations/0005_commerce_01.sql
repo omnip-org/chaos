@@ -1,5 +1,5 @@
 CREATE TYPE commerce.product_status AS ENUM ('draft', 'active', 'archived');
-CREATE TYPE commerce.variant_status AS ENUM ('active', 'archived');
+CREATE TYPE commerce.variant_status AS ENUM ('draft', 'active', 'archived');
 CREATE TYPE commerce.collection_status AS ENUM ('draft', 'active', 'archived');
 CREATE TYPE commerce.media_kind AS ENUM ('image', 'video');
 CREATE TYPE commerce.media_asset_status AS ENUM ('pending', 'ready', 'archived');
@@ -69,7 +69,7 @@ CREATE TABLE commerce.product_variants (
     product_id        UUID                       NOT NULL,
     title             TEXT                       NOT NULL,
     sku               extensions.citext,
-    status            commerce.variant_status    NOT NULL DEFAULT 'active',
+    status            commerce.variant_status    NOT NULL DEFAULT 'draft',
     track_inventory   BOOLEAN                    NOT NULL DEFAULT true,
     on_hand_quantity  BIGINT                     NOT NULL DEFAULT 0,
     reserved_quantity BIGINT                     NOT NULL DEFAULT 0,
