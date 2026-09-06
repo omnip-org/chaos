@@ -1,5 +1,6 @@
 import { ChaosApiError } from "../errors.js";
 import type { ChaosStorefrontClient } from "../client.js";
+import { adAttributionBody } from "../internal/attribution.js";
 import type {
   Cart,
   DataEnvelope,
@@ -155,11 +156,15 @@ export class CartResource {
     const previousQuantity = previousCart.lines.find(
       (line) => line.product_variant_id === productVariantId,
     )?.quantity;
+    // Attach ad-platform attribution only when this raises the quantity —
+    // the server emits AddToCart (to Meta CAPI) only then, and there is no
+    // reason to ship Meta cookies on a decrement or a no-op.
+    const increasing = body.quantity > (previousQuantity ?? 0);
     const response = await this.client.request<DataEnvelope<Cart>>(
       `/carts/${encodeURIComponent(cartId)}/lines/${encodeURIComponent(productVariantId)}`,
       {
         method: "PUT",
-        body,
+        body: increasing ? { ...body, ...adAttributionBody() } : body,
         requiresShopperToken: true,
       },
     );
@@ -172,6 +177,11 @@ export class CartResource {
       previous_quantity: previousQuantity ?? 0,
       new_quantity: newQuantity,
       removed: newQuantity === 0,
+      // The server minted this AddToCart event id when the quantity rose; the
+      // Pixel projection reuses it so Meta deduplicates the CAPI + Pixel copy.
+      ...(response.data.event_id
+        ? { event_id: response.data.event_id }
+        : {}),
     });
     return response;
   }

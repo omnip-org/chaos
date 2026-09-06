@@ -149,6 +149,12 @@ export interface Cart {
   subtotal_amount_minor: number;
   created_at: string;
   updated_at: string;
+  /**
+   * Server-minted Meta CAPI `AddToCart` event id, present only on the
+   * response to a line mutation that raised the quantity. The SDK reuses it
+   * for the browser Pixel's own AddToCart so Meta deduplicates the pair.
+   */
+  event_id?: UUID;
 }
 
 /** Result returned by a storefront cart-line mutation bridge. */
@@ -158,7 +164,11 @@ export interface CartLineMutation {
   previous_quantity: number;
   new_quantity: number;
   removed: boolean;
-  /** Reserved for a caller-supplied dedup id; unset by every SDK code path today. */
+  /**
+   * The server-minted Meta CAPI `AddToCart` event id from the mutation
+   * response, forwarded so the Pixel projection reuses it for deduplication.
+   * Present only when the mutation raised the line quantity.
+   */
   event_id?: string;
 }
 

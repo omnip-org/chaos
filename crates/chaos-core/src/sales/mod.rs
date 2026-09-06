@@ -45,6 +45,11 @@ pub struct SetCartLineInput {
     pub cart_id: CartId,
     pub product_variant_id: ProductVariantId,
     pub quantity: u32,
+    pub now: OffsetDateTime,
+    /// Ad-platform attribution the browser read off its own cookies/URL,
+    /// forwarded to the server-side Meta CAPI `AddToCart` event when this
+    /// mutation increases the line quantity. Best-effort enrichment only.
+    pub attribution: Option<CheckoutAttributionInput>,
 }
 
 pub struct RemoveCartLineInput {
@@ -135,10 +140,14 @@ impl StorefrontSales {
             .ok_or_else(|| cart_not_found(cart_id))
     }
 
+    /// Returns the updated Cart and, when this mutation raised the line
+    /// quantity, the server-minted Meta CAPI `AddToCart` event id — the
+    /// storefront reuses it for the browser Pixel's own AddToCart so Meta
+    /// deduplicates the pair.
     pub async fn set_cart_line(
         &self,
         input: SetCartLineInput,
-    ) -> Result<CartDetail, ApplicationError> {
+    ) -> Result<(CartDetail, Option<uuid::Uuid>), ApplicationError> {
         input.actor.machine.require_sales_channel()?;
         if !(1..=999).contains(&input.quantity) {
             return Err(validation("quantity", "must be between 1 and 999"));
@@ -149,6 +158,8 @@ impl StorefrontSales {
                 input.cart_id,
                 input.product_variant_id,
                 input.quantity,
+                input.now,
+                checkout_attribution_value(input.attribution),
             )
             .await
     }

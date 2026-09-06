@@ -1,7 +1,10 @@
 import type { ChaosStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
+import {
+  defaultAdAttribution,
+  hasAdAttribution,
+} from "../internal/attribution.js";
 import { isRecord, requireData } from "../internal/response.js";
-import { readUtmTags } from "../internal/utm.js";
 import type {
   Cart,
   CheckoutAttribution,
@@ -127,39 +130,9 @@ function toEmbeddedCheckoutRequest(
     payment_provider: "stripe",
     return_url: options.returnUrl,
   };
-  const attribution = options.attribution ?? defaultAttribution();
-  const hasAttribution =
-    attribution.source_url ||
-    (attribution.utm && Object.keys(attribution.utm).length > 0) ||
-    (attribution.meta && (attribution.meta.fbc || attribution.meta.fbp));
-  if (hasAttribution) {
+  const attribution = options.attribution ?? defaultAdAttribution();
+  if (hasAdAttribution(attribution)) {
     body.attribution = attribution;
   }
   return body;
-}
-
-/** Meta's Pixel install sets `_fbp` itself; `_fbc` is chaos-js's own copy of
- * the `fbclid` URL param (see `events/browser.ts`'s `maintainFbcCookie`).
- * Both are plain, non-HttpOnly cookies by Meta's own design, so reading them
- * here needs no extra wiring. `source_url` is the checkout page's own URL —
- * this is Meta CAPI InitiateCheckout's `event_source_url`. */
-function defaultAttribution(): CheckoutAttribution {
-  const fbc = readCookie("_fbc");
-  const fbp = readCookie("_fbp");
-  const sourceUrl = typeof window === "undefined" ? undefined : window.location.href;
-  const utm = readUtmTags();
-  return {
-    ...(sourceUrl && { source_url: sourceUrl }),
-    ...(utm && { utm }),
-    ...((fbc || fbp) && { meta: { ...(fbc && { fbc }), ...(fbp && { fbp }) } }),
-  };
-}
-
-function readCookie(name: string): string | undefined {
-  const cookie =
-    typeof document === "undefined" ? undefined : document.cookie;
-  if (typeof cookie !== "string") return undefined;
-  const prefix = `${name}=`;
-  const entry = cookie.split("; ").find((value) => value.startsWith(prefix));
-  return entry ? decodeURIComponent(entry.slice(prefix.length)) : undefined;
 }

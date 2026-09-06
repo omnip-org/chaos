@@ -6,6 +6,7 @@ SELECT pgmq.create('notification_email_queue');
 SELECT pgmq.create('provider_webhooks_queue');
 
 SELECT pgmq.bind_topic('product.updated',             'search_index_queue');
+SELECT pgmq.bind_topic('cart.item.added',             'analytics_capi_queue');
 SELECT pgmq.bind_topic('order.payment.initiated',     'analytics_capi_queue');
 SELECT pgmq.bind_topic('order.payment.completed',     'analytics_capi_queue');
 SELECT pgmq.bind_topic('order.payment.completed',     'notification_email_queue');

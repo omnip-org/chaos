@@ -135,13 +135,21 @@ impl PostgresStorefrontSalesRepository {
         Ok(detail)
     }
 
+    /// Also emits `cart.item.added` (→ Meta CAPI `AddToCart`) when this
+    /// mutation is a net quantity increase, mirroring chaos-js's own Pixel
+    /// projection: the event value is the *added* units, and its id is minted
+    /// here inside the transaction so a queue retry replays the same id and
+    /// Meta deduplicates it against the browser Pixel copy (which reuses the
+    /// id returned from this call).
     pub(crate) async fn set_cart_line(
         &self,
         shopper: &ShopperActor,
         cart_id: CartId,
         product_variant_id: ProductVariantId,
         quantity: u32,
-    ) -> Result<CartDetail, ApplicationError> {
+        now: OffsetDateTime,
+        attribution: Option<Value>,
+    ) -> Result<(CartDetail, Option<Uuid>), ApplicationError> {
         let actor = &shopper.machine;
         let mut transaction = self.begin_shopper(shopper).await?;
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
@@ -156,6 +164,17 @@ impl PostgresStorefrontSalesRepository {
         )
         .await?
         .ok_or_else(|| variant_unavailable(product_variant_id))?;
+        let previous_quantity: i64 = sqlx::query_scalar(
+            "SELECT quantity FROM commerce.cart_lines \
+             WHERE store_id = $1 AND cart_id = $2 AND product_variant_id = $3",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(cart_id.as_uuid())
+        .bind(product_variant_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .unwrap_or(0);
         if row.4 {
             let available: Option<i64> = sqlx::query_scalar(
                 "SELECT on_hand_quantity - reserved_quantity \
@@ -183,11 +202,47 @@ impl PostgresStorefrontSalesRepository {
         )?;
         insert_or_replace_line(&mut transaction, actor, cart_id, &line).await?;
         bump_cart(&mut transaction, actor, cart_id).await?;
+
+        let added = i64::from(quantity) - previous_quantity;
+        let add_to_cart_event_id = if added >= 1 {
+            let event_id = Uuid::now_v7();
+            let mut properties = json!({
+                "_source": "server",
+                "value_minor": added * row.5,
+                "currency": currency.as_str(),
+                "items": [{
+                    "product_id": row.0,
+                    "product_variant_id": product_variant_id.as_uuid(),
+                    "quantity": added,
+                    "price_minor": row.5,
+                }],
+            });
+            if let Some(attribution) = &attribution {
+                splice_attribution(&mut properties, attribution);
+            }
+            publish_topic_event(
+                &mut transaction,
+                crate::contracts::CART_ITEM_ADDED_TOPIC,
+                cart_event_payload(
+                    actor.store_id.as_uuid(),
+                    event_id,
+                    shopper.shopper_id.as_uuid(),
+                    "add_to_cart",
+                    now,
+                    properties,
+                ),
+            )
+            .await?;
+            Some(event_id)
+        } else {
+            None
+        };
+
         let detail = load_cart(&mut transaction, actor, cart_id)
             .await?
             .ok_or_else(|| cart_not_found(cart_id))?;
         transaction.commit().await.map_err(database_error)?;
-        Ok(detail)
+        Ok((detail, add_to_cart_event_id))
     }
 
     pub(crate) async fn remove_cart_line(

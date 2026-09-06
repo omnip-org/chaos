@@ -700,6 +700,70 @@ test("cart line mutations report the resulting quantity delta to analytics", asy
   ]);
 });
 
+test("a quantity-raising line mutation forwards attribution and the server AddToCart event id", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    value: { location: { href: "https://shop.example.com/product/shoes" } },
+    configurable: true,
+  });
+  const mutations: unknown[] = [];
+  const bodies: Array<{ method: string | undefined; body: unknown }> = [];
+  try {
+    const client = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      storage: null,
+      fetch: (async (url: string, init: RequestInit) => {
+        if (url.endsWith("/shopper/sessions")) {
+          return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+        }
+        if (url.endsWith("/carts/cart-1")) {
+          return jsonResponse(200, {
+            data: {
+              id: "cart-1",
+              currency: "USD",
+              subtotal_amount_minor: 0,
+              lines: [],
+            },
+          });
+        }
+        bodies.push({
+          method: init.method,
+          body: typeof init.body === "string" ? JSON.parse(init.body) : undefined,
+        });
+        return jsonResponse(200, {
+          data: {
+            id: "cart-1",
+            currency: "USD",
+            subtotal_amount_minor: 500,
+            event_id: "018f9b2a-7c3d-7e4f-8a1b-2c3d4e5f6071",
+            lines: [{ product_id: "p-1", product_variant_id: "v-1", quantity: 1, unit_price_amount_minor: 500 }],
+          },
+        });
+      }) as unknown as typeof fetch,
+    });
+    client.recordCartMutation = (mutation) => mutations.push(mutation);
+
+    await client.cart.addLine("cart-1", "v-1", 1);
+
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0]!.method, "PUT");
+    assert.deepEqual(bodies[0]!.body, {
+      quantity: 1,
+      attribution: { source_url: "https://shop.example.com/product/shoes" },
+    });
+    assert.equal(
+      (mutations[0] as { event_id?: string }).event_id,
+      "018f9b2a-7c3d-7e4f-8a1b-2c3d4e5f6071",
+    );
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(globalThis, "window", descriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+  }
+});
+
 test("checkout creation keeps the source Cart snapshot when rotating the Cart", async () => {
   const sourceCart = {
     id: "cart-1",

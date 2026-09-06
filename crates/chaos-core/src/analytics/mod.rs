@@ -50,9 +50,10 @@ impl AnalyticsAdministration {
     }
 }
 
-/// Consumes `analytics_capi_queue` (bound to the `order.payment.initiated`/
-/// `order.payment.completed` routing keys — see `migrations/0004_integration.sql`)
-/// and delivers to the one configured Meta CAPI destination. Topic routing
+/// Consumes `analytics_capi_queue` (bound to `cart.item.added`,
+/// `order.payment.initiated`, and `order.payment.completed` — see
+/// `migrations/0004_integration.sql`) and delivers to the one configured
+/// Meta CAPI destination. Topic routing
 /// already picked this consumer, so there's no provider-name dispatch here
 /// the way a shared queue would need; a second ad-platform destination
 /// would get its own queue, binding, and worker instance instead of joining
@@ -100,10 +101,11 @@ impl MetaCapiWorker {
         let Some(account) = self.repository.resolve_meta_account(store_id).await? else {
             return Ok(());
         };
-        // event_id is always the Order id in this codebase (see
-        // payment_event_payload's doc comment) — the same id chaos-js's own
-        // Pixel projection reuses, so Meta dedupes the two.
-        let event_id = topic_uuid(payload, "order_id")?;
+        // Every analytics topic payload carries an explicit event_id: for the
+        // payment keys it equals the Order id, for cart.item.added it is minted
+        // in the cart transaction. chaos-js's Pixel projection reuses the same
+        // id, so Meta dedupes the two copies.
+        let event_id = topic_uuid(payload, "event_id")?;
         let shopper_id = topic_uuid(payload, "shopper_id")?;
         let event_name = payload
             .get("event_name")

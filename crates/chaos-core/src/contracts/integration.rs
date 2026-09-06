@@ -14,6 +14,7 @@ pub const NOTIFICATION_EMAIL_QUEUE: &str = "notification_email_queue";
 pub const PROVIDER_WEBHOOKS_QUEUE: &str = "provider_webhooks_queue";
 
 pub const PRODUCT_UPDATED_TOPIC: &str = "product.updated";
+pub const CART_ITEM_ADDED_TOPIC: &str = "cart.item.added";
 pub const ORDER_PAYMENT_INITIATED_TOPIC: &str = "order.payment.initiated";
 pub const ORDER_PAYMENT_COMPLETED_TOPIC: &str = "order.payment.completed";
 pub const ORDER_FULFILLMENT_SHIPPED_TOPIC: &str = "order.fulfillment.shipped";

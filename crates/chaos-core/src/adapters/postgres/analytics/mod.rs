@@ -59,12 +59,12 @@ pub(crate) async fn publish_topic_event(
 }
 
 /// Shared payload shape for `order.payment.initiated`/`order.payment.completed`:
-/// enough for the notification-email consumer (`order_id`) and the CAPI consumer
-/// (`event_name`/`occurred_at`/`shopper_id`/`properties` — everything
-/// `AnalyticsDeliveryCommand` needs to build a Meta CAPI event; `event_id`
-/// is always `order_id` in this codebase, so the CAPI consumer derives it
-/// directly rather than carrying a redundant field, and `event_source` is
-/// always `"server"` for these two routing keys).
+/// enough for the notification-email consumer (`order_id`) and the CAPI
+/// consumer (`event_id`/`event_name`/`occurred_at`/`shopper_id`/`properties` —
+/// everything `AnalyticsDeliveryCommand` needs to build a Meta CAPI event).
+/// `event_id` equals `order_id` for these two routing keys — the browser
+/// Pixel copy reuses it so Meta deduplicates the pair — and `event_source`
+/// is always `"server"`.
 pub(crate) fn payment_event_payload(
     store_id: Uuid,
     order_id: Uuid,
@@ -76,6 +76,31 @@ pub(crate) fn payment_event_payload(
     serde_json::json!({
         "store_id": store_id,
         "order_id": order_id,
+        "event_id": order_id,
+        "event_name": event_name,
+        "occurred_at": occurred_at.format(&Rfc3339).unwrap_or_default(),
+        "shopper_id": shopper_id,
+        "properties": properties,
+    })
+}
+
+/// Payload for `cart.item.added` (bound to `analytics_capi_queue` in
+/// `migrations/0004_integration.sql`). There is no Order yet, so the Meta
+/// CAPI `event_id` is minted by the caller inside the cart transaction and
+/// carried explicitly; a queue retry replays the same id, and the browser
+/// Pixel copy reuses it for Meta's deduplication. `event_source` is always
+/// `"server"` for this key.
+pub(crate) fn cart_event_payload(
+    store_id: Uuid,
+    event_id: Uuid,
+    shopper_id: Uuid,
+    event_name: &'static str,
+    occurred_at: OffsetDateTime,
+    properties: Value,
+) -> Value {
+    serde_json::json!({
+        "store_id": store_id,
+        "event_id": event_id,
         "event_name": event_name,
         "occurred_at": occurred_at.format(&Rfc3339).unwrap_or_default(),
         "shopper_id": shopper_id,
@@ -365,8 +390,45 @@ fn db(error: sqlx::Error) -> ApplicationError {
 
 #[cfg(test)]
 mod tests {
-    use super::{OrderIdentityContext, merge_order_identity, sha256_hex, splice_attribution};
+    use super::{
+        OrderIdentityContext, cart_event_payload, merge_order_identity, payment_event_payload,
+        sha256_hex, splice_attribution,
+    };
     use serde_json::json;
+    use time::OffsetDateTime;
+    use uuid::Uuid;
+
+    #[test]
+    fn payment_event_payload_carries_event_id_equal_to_order_id() {
+        let order_id = Uuid::now_v7();
+        let payload = payment_event_payload(
+            Uuid::now_v7(),
+            order_id,
+            Uuid::now_v7(),
+            "purchase",
+            OffsetDateTime::UNIX_EPOCH,
+            json!({}),
+        );
+        assert_eq!(payload["order_id"], json!(order_id.to_string()));
+        assert_eq!(payload["event_id"], json!(order_id.to_string()));
+    }
+
+    #[test]
+    fn cart_event_payload_carries_an_explicit_event_id_and_no_order() {
+        let event_id = Uuid::now_v7();
+        let payload = cart_event_payload(
+            Uuid::now_v7(),
+            event_id,
+            Uuid::now_v7(),
+            "add_to_cart",
+            OffsetDateTime::UNIX_EPOCH,
+            json!({ "value_minor": 500 }),
+        );
+        assert_eq!(payload["event_id"], json!(event_id.to_string()));
+        assert_eq!(payload["event_name"], json!("add_to_cart"));
+        assert_eq!(payload["occurred_at"], json!("1970-01-01T00:00:00Z"));
+        assert!(payload.get("order_id").is_none());
+    }
 
     #[test]
     fn hashes_and_splits_shipping_identity_for_meta_matching() {
