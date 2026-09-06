@@ -1,8 +1,8 @@
 CREATE TYPE commerce.cart_status AS ENUM ('active', 'locked', 'completed', 'abandoned');
 CREATE TYPE commerce.order_status AS ENUM ('pending', 'confirmed', 'cancelled');
 CREATE TYPE commerce.order_payment_status AS ENUM ('pending', 'paid', 'failed', 'expired', 'partially_refunded', 'refunded');
-CREATE TYPE commerce.order_fulfillment_status AS ENUM ('pending', 'shipped', 'delivered', 'cancelled');
 CREATE TYPE commerce.order_refund_status AS ENUM ('pending', 'succeeded', 'failed');
+CREATE TYPE commerce.order_fulfillment_status AS ENUM ('pending', 'shipped', 'delivered', 'cancelled');
 
 CREATE TABLE commerce.carts (
     id                    UUID                    NOT NULL PRIMARY KEY,
