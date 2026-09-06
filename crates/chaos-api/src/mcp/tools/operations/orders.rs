@@ -41,7 +41,7 @@ pub struct ListOrdersParams {
     /// Filter by order status.
     #[serde(default)]
     pub status: Option<OrderStatusParam>,
-    /// Exact customer-facing Order number, for example W-20260820-7K4M9Q2D.
+    /// Exact customer-facing Order number, for example W-7K4M9Q2D.
     #[serde(default)]
     pub order_number: Option<String>,
 }
@@ -448,7 +448,7 @@ mod tests {
         (
             OrderDetail {
                 id: order_id,
-                order_number: OrderNumber::parse("W-20260820-7K4M9Q2D").unwrap(),
+                order_number: OrderNumber::parse("W-7K4M9Q2D").unwrap(),
                 shopper_id,
                 price_list_id,
                 currency: CurrencyCode::USD,

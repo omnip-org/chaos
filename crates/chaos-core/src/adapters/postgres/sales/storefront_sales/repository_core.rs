@@ -32,21 +32,24 @@ use uuid::Uuid;
 
 const ORDER_NUMBER_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-fn generate_order_number(now: OffsetDateTime) -> Result<OrderNumber, ApplicationError> {
+/// `W-` + 8 Crockford base32 chars (~2^40). Collisions are handled at the
+/// checkout INSERT by regenerating on the per-store UNIQUE, not here.
+fn generate_order_number() -> OrderNumber {
     let mut random = [0_u8; 8];
     rand::rng().fill_bytes(&mut random);
     let suffix: String = random
         .into_iter()
         .map(|byte| char::from(ORDER_NUMBER_ALPHABET[usize::from(byte & 31)]))
         .collect();
-    let date = now.date();
-    OrderNumber::parse(format!(
-        "W-{:04}{:02}{:02}-{suffix}",
-        date.year(),
-        u8::from(date.month()),
-        date.day()
+    OrderNumber::parse(format!("W-{suffix}")).expect("generated order number is always valid")
+}
+
+/// A generated number lost the per-store UNIQUE race on every retry — with a
+/// 2^40 space this only happens if generation is broken.
+fn order_number_unavailable() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "could not allocate a unique order number"
     ))
-    .map_err(ApplicationError::from)
 }
 type CartHeaderRow = (
     Uuid,

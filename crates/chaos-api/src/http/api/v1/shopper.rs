@@ -9,6 +9,7 @@ pub(crate) fn routes() -> Router<ApiState> {
     Router::new().route("/shopper/sessions", post(create_shopper_session))
 }
 
+// TODO: 加一个 shopper_id
 #[derive(Serialize)]
 struct ShopperSessionData {
     shopper_token: String,

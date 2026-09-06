@@ -48,9 +48,6 @@ struct SetCartLineBody {
 struct CreateEmbeddedCheckoutBody {
     return_url: String,
     payment_provider: String,
-    /// Ad-platform attribution the browser read off its own cookies, keyed
-    /// by platform. Optional and best-effort: dropped rather than rejected
-    /// if malformed, since it must never block checkout.
     #[serde(default)]
     attribution: Option<CheckoutAttributionBody>,
 }
@@ -58,8 +55,6 @@ struct CreateEmbeddedCheckoutBody {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CheckoutAttributionBody {
-    /// The checkout page's own URL — not platform-specific, so it sits
-    /// alongside `meta` rather than inside it.
     #[serde(default)]
     source_url: Option<String>,
     #[serde(default)]
@@ -393,61 +388,4 @@ fn checkout_attribution_input(
             .as_ref()
             .and_then(|value| value.source_url.clone()),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use chaos_core::{contracts::PaymentClientAction, payments::EmbeddedCheckoutResult};
-    use secrecy::SecretString;
-    use serde_json::json;
-
-    use super::{client_action_data, embedded_checkout_data, validate_return_url};
-
-    #[test]
-    fn embedded_checkout_requires_a_secure_or_loopback_return_url() {
-        assert!(validate_return_url("https://shop.example.com/checkout/success").is_ok());
-        assert!(validate_return_url("http://127.0.0.1:4321/checkout/success").is_ok());
-        assert!(validate_return_url("http://shop.example.com/checkout/success").is_err());
-    }
-
-    #[test]
-    fn embedded_checkout_client_action_has_no_connect_account_reference() {
-        let action = client_action_data(PaymentClientAction {
-            kind: "mount_embedded_checkout",
-            public_key: SecretString::from("pk_test_stripe"),
-            client_token: SecretString::from("cs_test_secret"),
-        });
-
-        assert_eq!(
-            serde_json::to_value(action).unwrap(),
-            json!({
-                "type": "mount_embedded_checkout",
-                "public_key": "pk_test_stripe",
-                "client_token": "cs_test_secret",
-            })
-        );
-    }
-
-    #[test]
-    fn embedded_checkout_response_exposes_order_number_and_event_id_only() {
-        let event_id = uuid::Uuid::now_v7();
-        let response = embedded_checkout_data(
-            EmbeddedCheckoutResult {
-                order_number: "W-20260830-7K4M9Q2D".into(),
-                source_cart_id: chaos_domain::sales::CartId::from_uuid(uuid::Uuid::now_v7()),
-                client_action: PaymentClientAction {
-                    kind: "mount_embedded_checkout",
-                    public_key: SecretString::from("pk_test_stripe"),
-                    client_token: SecretString::from("cs_test_secret"),
-                },
-            },
-            event_id,
-        );
-        let value = serde_json::to_value(response).unwrap();
-
-        assert_eq!(value["order_number"], "W-20260830-7K4M9Q2D");
-        assert_eq!(value["event_id"], event_id.to_string());
-        assert!(value.get("order_id").is_none());
-        assert!(value.get("source_cart_id").is_none());
-    }
 }

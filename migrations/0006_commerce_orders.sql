@@ -107,7 +107,7 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_currency_format_check                   CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT orders_idempotency_key_not_nil_check           CHECK (idempotency_key <> '00000000-0000-0000-0000-000000000000'::uuid),
     CONSTRAINT orders_checkout_request_fingerprint_check      CHECK (checkout_request_fingerprint IS NULL OR octet_length(checkout_request_fingerprint) = 32),
-    CONSTRAINT orders_order_number_check                      CHECK (order_number ~ '^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$'),
+    CONSTRAINT orders_order_number_check                      CHECK (order_number ~ '^W-[0-9A-HJKMNP-TV-Z]{8}$'),
     CONSTRAINT orders_amounts_check                           CHECK (
         subtotal_amount_minor >= 0
         AND discount_amount_minor >= 0

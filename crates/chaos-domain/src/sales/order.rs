@@ -32,17 +32,15 @@ impl OrderNumber {
     pub fn parse(value: impl Into<String>) -> Result<Self, DomainError> {
         let value = value.into();
         let bytes = value.as_bytes();
-        let valid = bytes.len() == 19
+        let valid = bytes.len() == 10
             && &bytes[..2] == b"W-"
-            && bytes[2..10].iter().all(u8::is_ascii_digit)
-            && bytes[10] == b'-'
-            && bytes[11..]
+            && bytes[2..]
                 .iter()
                 .all(|byte| b"0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(byte));
         if !valid {
             return Err(DomainError::Validation(vec![FieldViolation {
                 field: "order_number",
-                reason: "must use the W-YYYYMMDD-XXXXXXXX format".into(),
+                reason: "must use the W-XXXXXXXX format".into(),
             }]));
         }
         Ok(Self(value))
@@ -190,9 +188,10 @@ mod tests {
 
     #[test]
     fn order_number_is_bounded_readable_and_non_sequential() {
-        let number = OrderNumber::parse("W-20260820-7K4M9Q2D").unwrap();
-        assert_eq!(number.as_str(), "W-20260820-7K4M9Q2D");
-        assert!(OrderNumber::parse("W-20260820-000001").is_err());
-        assert!(OrderNumber::parse("W-20260820-ILOU1234").is_err());
+        let number = OrderNumber::parse("W-7K4M9Q2D").unwrap();
+        assert_eq!(number.as_str(), "W-7K4M9Q2D");
+        assert!(OrderNumber::parse("W-000001").is_err()); // too short
+        assert!(OrderNumber::parse("W-ILOU1234").is_err()); // ambiguous letters
+        assert!(OrderNumber::parse("W-20260820-7K4M9Q2D").is_err()); // old dated format
     }
 }
