@@ -505,8 +505,8 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO commerce.product_variants \
-             (id, store_id, product_id, title, sku) \
-             VALUES ($1, $2, $3, 'Blue', 'READ-BLUE')",
+             (id, store_id, product_id, title, sku, status) \
+             VALUES ($1, $2, $3, 'Blue', 'READ-BLUE', 'active')",
         )
         .bind(variant_id.as_uuid())
         .bind(store_id.as_uuid())
