@@ -6,7 +6,7 @@ use crate::{
     error::database_error,
 };
 use chaos_domain::{
-    fulfillment::{Fulfillment, FulfillmentId, FulfillmentStatus, FulfillmentProviderAccountId},
+    fulfillment::{Fulfillment, FulfillmentId, FulfillmentProviderAccountId, FulfillmentStatus},
     integration::FulfillmentProvider,
     sales::OrderId,
     store::StoreId,
@@ -116,14 +116,9 @@ impl PostgresFulfillmentRepository {
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
-        account_exists
-            .ok_or_else(|| shipping_provider_account_not_found(provider_account_id))?;
-        let fulfillment = Fulfillment::create(
-            order_id,
-            provider_account_id,
-            tracking_number,
-            tracking_url,
-        )?;
+        account_exists.ok_or_else(|| shipping_provider_account_not_found(provider_account_id))?;
+        let fulfillment =
+            Fulfillment::create(order_id, provider_account_id, tracking_number, tracking_url)?;
         sqlx::query(
             "INSERT INTO commerce.order_fulfillments \
              (id, store_id, order_id, provider_account_id, status, \
@@ -416,9 +411,7 @@ fn fulfillment_detail(row: FulfillmentRow) -> Result<FulfillmentDetail, Applicat
     Ok(FulfillmentDetail {
         id: FulfillmentId::from_uuid(row.id),
         order_id: OrderId::from_uuid(row.order_id),
-        provider_account_id: FulfillmentProviderAccountId::from_uuid(
-            row.provider_account_id,
-        ),
+        provider_account_id: FulfillmentProviderAccountId::from_uuid(row.provider_account_id),
         provider_reference_id: row.provider_reference_id,
         status: FulfillmentStatus::parse(&row.status).ok_or_else(corrupt_state)?,
         tracking_number: row.tracking_number,

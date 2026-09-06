@@ -142,13 +142,11 @@ impl ChaosMcp {
             Ok(id) => OrderId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let provider_account_id = match parse_uuid_field(
-            &params.provider_account_id,
-            "provider_account_id",
-        ) {
-            Ok(id) => chaos_domain::fulfillment::FulfillmentProviderAccountId::from_uuid(id),
-            Err(result) => return Ok(result),
-        };
+        let provider_account_id =
+            match parse_uuid_field(&params.provider_account_id, "provider_account_id") {
+                Ok(id) => chaos_domain::fulfillment::FulfillmentProviderAccountId::from_uuid(id),
+                Err(result) => return Ok(result),
+            };
         match self
             .state
             .fulfillment_management

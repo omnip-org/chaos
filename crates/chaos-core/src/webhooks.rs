@@ -6,7 +6,9 @@ use uuid::Uuid;
 
 use crate::{
     ApplicationError,
-    adapters::postgres::{PostgresProviderWebhookAudit, PostgresStripeRepository, ProviderWebhookAuditRow},
+    adapters::postgres::{
+        PostgresProviderWebhookAudit, PostgresStripeRepository, ProviderWebhookAuditRow,
+    },
     contracts::{IntegrationQueue, PaymentProviderRegistry},
 };
 
@@ -44,7 +46,10 @@ impl ProviderWebhookWorker {
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<usize, ApplicationError> {
-        let jobs = self.queue.claim_topic(PROVIDER_WEBHOOKS_QUEUE, limit).await?;
+        let jobs = self
+            .queue
+            .claim_topic(PROVIDER_WEBHOOKS_QUEUE, limit)
+            .await?;
         for job in &jobs {
             let result = self.process(&job.payload, now).await;
             if let Err(error) = &result {
@@ -80,7 +85,10 @@ impl ProviderWebhookWorker {
                 // today; the audit row is the whole record.
             }
             other => {
-                tracing::warn!(capability = other, "provider webhook for an unhandled capability");
+                tracing::warn!(
+                    capability = other,
+                    "provider webhook for an unhandled capability"
+                );
             }
         }
         self.audit.mark_processed(store_id, webhook_id, now).await
@@ -113,12 +121,13 @@ impl ProviderWebhookWorker {
             )
             .await?;
         if let Some(context) = reconciliation {
-            let gateway = self.payment_providers.get(&row.provider).ok_or(
-                ApplicationError::Conflict {
-                    code: "payment_provider_not_supported",
-                    message: "the configured Payment provider has no adapter",
-                },
-            )?;
+            let gateway =
+                self.payment_providers
+                    .get(&row.provider)
+                    .ok_or(ApplicationError::Conflict {
+                        code: "payment_provider_not_supported",
+                        message: "the configured Payment provider has no adapter",
+                    })?;
             let observations = gateway
                 .list_refunds(
                     &context.credential_secret_reference,

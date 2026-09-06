@@ -1,5 +1,5 @@
 use chaos_domain::{
-    fulfillment::{FulfillmentId, FulfillmentStatus, FulfillmentProviderAccountId},
+    fulfillment::{FulfillmentId, FulfillmentProviderAccountId, FulfillmentStatus},
     integration::FulfillmentProvider,
     sales::OrderId,
 };

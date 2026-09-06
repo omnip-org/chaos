@@ -88,7 +88,7 @@ impl FulfillmentProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmailProvider, IntegrationCapability, PaymentProvider, FulfillmentProvider};
+    use super::{EmailProvider, FulfillmentProvider, IntegrationCapability, PaymentProvider};
 
     #[test]
     fn providers_round_trip_their_database_values() {

@@ -65,7 +65,9 @@ impl WorkerRuntime {
         ]));
         let provider_webhook_worker = Arc::new(ProviderWebhookWorker::new(
             integration_queue.clone(),
-            Arc::new(PostgresProviderWebhookAudit::new(infrastructure.runtime_pool())),
+            Arc::new(PostgresProviderWebhookAudit::new(
+                infrastructure.runtime_pool(),
+            )),
             Arc::new(PostgresStripeRepository::new(infrastructure.runtime_pool())),
             payment_providers,
         ));

@@ -224,9 +224,13 @@ mod tests {
 
     #[test]
     fn fulfillment_progresses_awaiting_pickup_to_shipped_to_delivered() {
-        let mut fulfillment =
-            Fulfillment::create(OrderId::new(), FulfillmentProviderAccountId::new(), None, None)
-                .unwrap();
+        let mut fulfillment = Fulfillment::create(
+            OrderId::new(),
+            FulfillmentProviderAccountId::new(),
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(fulfillment.status(), FulfillmentStatus::AwaitingPickup);
         assert!(fulfillment.mark_delivered().is_err());
         assert!(
@@ -245,9 +249,13 @@ mod tests {
 
     #[test]
     fn fulfillment_can_be_cancelled_before_delivery_but_not_after() {
-        let mut fulfillment =
-            Fulfillment::create(OrderId::new(), FulfillmentProviderAccountId::new(), None, None)
-                .unwrap();
+        let mut fulfillment = Fulfillment::create(
+            OrderId::new(),
+            FulfillmentProviderAccountId::new(),
+            None,
+            None,
+        )
+        .unwrap();
         assert!(fulfillment.cancel().unwrap());
         assert!(fulfillment.mark_shipped(None, None).is_err());
     }

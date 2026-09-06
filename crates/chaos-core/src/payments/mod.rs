@@ -258,7 +258,12 @@ impl PaymentService {
         let store_id = input.store_id.as_uuid();
         let detail = self
             .repository
-            .create_refund(input.actor, input.store_id, input.order_id, input.amount_minor)
+            .create_refund(
+                input.actor,
+                input.store_id,
+                input.order_id,
+                input.amount_minor,
+            )
             .await?;
         // The refund now exists as a pending row; issue it at the provider in
         // the same request. On provider failure the row stays pending and the

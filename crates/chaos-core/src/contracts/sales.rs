@@ -1,8 +1,8 @@
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductVariantId},
-    fulfillment::{FulfillmentId, FulfillmentStatus, FulfillmentProviderAccountId},
-    integration::{PaymentProvider, FulfillmentProvider},
+    fulfillment::{FulfillmentId, FulfillmentProviderAccountId, FulfillmentStatus},
+    integration::{FulfillmentProvider, PaymentProvider},
     payments::{PaymentAttemptStatus, RefundId, RefundStatus},
     pricing::PriceListId,
     sales::{
