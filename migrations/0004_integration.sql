@@ -5,13 +5,13 @@ SELECT pgmq.create('analytics_capi_queue');
 SELECT pgmq.create('notification_email_queue');
 SELECT pgmq.create('provider_webhooks_queue');
 
-SELECT pgmq.bind_topic('product.updated',                  'search_index_queue');
-SELECT pgmq.bind_topic('order.payment.initiated',          'analytics_capi_queue');
-SELECT pgmq.bind_topic('order.payment.completed',          'analytics_capi_queue');
-SELECT pgmq.bind_topic('order.payment.completed',          'notification_email_queue');
-SELECT pgmq.bind_topic('order.fulfillment.shipped',        'notification_email_queue');
-SELECT pgmq.bind_topic('order.fulfillment.delivered',      'notification_email_queue');
-SELECT pgmq.bind_topic('provider.webhook.received',        'provider_webhooks_queue');
+SELECT pgmq.bind_topic('product.updated',             'search_index_queue');
+SELECT pgmq.bind_topic('order.payment.initiated',     'analytics_capi_queue');
+SELECT pgmq.bind_topic('order.payment.completed',     'analytics_capi_queue');
+SELECT pgmq.bind_topic('order.payment.completed',     'notification_email_queue');
+SELECT pgmq.bind_topic('order.fulfillment.shipped',   'notification_email_queue');
+SELECT pgmq.bind_topic('order.fulfillment.delivered', 'notification_email_queue');
+SELECT pgmq.bind_topic('provider.webhook.received',   'provider_webhooks_queue');
 
 CREATE TYPE integration.provider_capability AS ENUM ('email', 'payment', 'shipping', 'analytics');
 
