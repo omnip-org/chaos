@@ -13,6 +13,8 @@ CREATE TABLE commerce.carts (
     status                commerce.cart_status    NOT NULL DEFAULT 'active',
     payment_client_action JSONB,
     attribution           JSONB,
+    checkout_idempotency_key     UUID,
+    checkout_request_fingerprint BYTEA,
     created_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -35,6 +37,19 @@ CREATE TABLE commerce.carts (
     CONSTRAINT carts_attribution_check            CHECK (
         attribution IS NULL
         OR (jsonb_typeof(attribution) = 'object' AND pg_column_size(attribution) <= 4096)
+    ),
+    -- Checkout-request idempotency lives on the Cart, not the Order: it is
+    -- keyed by the checkout attempt (which targets a Cart) and there is
+    -- exactly one Order per Cart. Stamped when the Cart leaves 'active' and
+    -- never cleared or re-activated, so it is set iff a checkout has started.
+    CONSTRAINT carts_checkout_idempotency_key_check     CHECK (
+        checkout_idempotency_key IS NULL
+        OR (status <> 'active'
+            AND checkout_idempotency_key <> '00000000-0000-0000-0000-000000000000'::uuid)
+    ),
+    CONSTRAINT carts_checkout_request_fingerprint_check CHECK (
+        checkout_request_fingerprint IS NULL
+        OR octet_length(checkout_request_fingerprint) = 32
     )
 );
 
@@ -60,8 +75,6 @@ CREATE TABLE commerce.orders (
     shopper_id                      UUID                            NOT NULL,
     cart_id                         UUID                            NOT NULL,
     price_list_id                   UUID                            NOT NULL,
-    idempotency_key                 UUID                            NOT NULL,
-    checkout_request_fingerprint    BYTEA,
     currency                        CHAR(3)                         NOT NULL,
     status                          commerce.order_status           NOT NULL DEFAULT 'pending',
     payment_status                  commerce.order_payment_status   NOT NULL DEFAULT 'pending',
@@ -98,13 +111,10 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_store_id_id_key                         UNIQUE (store_id, id),
     CONSTRAINT orders_store_id_order_number_key               UNIQUE (store_id, order_number),
     CONSTRAINT orders_store_id_id_currency_key                UNIQUE (store_id, id, currency),
-    CONSTRAINT orders_store_id_channel_id_shopper_id_idempotency_key_key UNIQUE (store_id, channel_id, shopper_id, idempotency_key),
     CONSTRAINT orders_store_cart_context_fkey                 FOREIGN KEY (store_id, cart_id, channel_id, shopper_id, price_list_id) REFERENCES commerce.carts (store_id, id, channel_id, shopper_id, price_list_id),
     CONSTRAINT orders_store_id_price_list_currency_fkey       FOREIGN KEY (store_id, price_list_id, currency) REFERENCES commerce.price_lists (store_id, id, currency),
     CONSTRAINT orders_store_id_payment_provider_account_fkey  FOREIGN KEY (store_id, payment_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
     CONSTRAINT orders_currency_format_check                   CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT orders_idempotency_key_not_nil_check           CHECK (idempotency_key <> '00000000-0000-0000-0000-000000000000'::uuid),
-    CONSTRAINT orders_checkout_request_fingerprint_check      CHECK (checkout_request_fingerprint IS NULL OR octet_length(checkout_request_fingerprint) = 32),
     CONSTRAINT orders_order_number_check                      CHECK (order_number ~ '^W-[0-9A-HJKMNP-TV-Z]{8}$'),
     CONSTRAINT orders_amounts_check                           CHECK (
         subtotal_amount_minor >= 0
@@ -314,6 +324,7 @@ CREATE TABLE commerce.order_fulfillments (
 
 CREATE INDEX carts_channel_updated_idx ON commerce.carts (store_id, channel_id, status, updated_at DESC, id DESC);
 CREATE UNIQUE INDEX carts_one_active_per_shopper_key ON commerce.carts (store_id, channel_id, shopper_id) WHERE status = 'active';
+CREATE UNIQUE INDEX carts_checkout_idempotency_key_key ON commerce.carts (store_id, channel_id, shopper_id, checkout_idempotency_key) WHERE checkout_idempotency_key IS NOT NULL;
 CREATE INDEX carts_store_shopper_idx ON commerce.carts (store_id, shopper_id, id);
 CREATE INDEX carts_store_price_list_idx ON commerce.carts (store_id, price_list_id, id);
 CREATE INDEX cart_lines_variant_lookup_idx ON commerce.cart_lines (store_id, product_variant_id, cart_id);
@@ -391,8 +402,6 @@ BEGIN
        OR NEW.channel_id IS DISTINCT FROM OLD.channel_id
        OR NEW.shopper_id IS DISTINCT FROM OLD.shopper_id
        OR NEW.cart_id IS DISTINCT FROM OLD.cart_id
-       OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
-       OR NEW.checkout_request_fingerprint IS DISTINCT FROM OLD.checkout_request_fingerprint
        OR NEW.price_list_id IS DISTINCT FROM OLD.price_list_id
        OR NEW.currency IS DISTINCT FROM OLD.currency
        OR NEW.payment_provider_account_id IS DISTINCT FROM OLD.payment_provider_account_id THEN
@@ -410,8 +419,7 @@ CREATE TRIGGER orders_payment_provider_capability_check
 
 CREATE TRIGGER orders_identity_immutable
     BEFORE UPDATE OF id, order_number, store_id, channel_id, shopper_id, cart_id,
-        idempotency_key, checkout_request_fingerprint, price_list_id, currency,
-        payment_provider_account_id
+        price_list_id, currency, payment_provider_account_id
     ON commerce.orders
     FOR EACH ROW EXECUTE FUNCTION commerce.prevent_order_identity_change();
 

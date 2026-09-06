@@ -330,19 +330,25 @@ impl PostgresStorefrontSalesRepository {
         .ok_or_else(payment_provider_unavailable)?;
         // The checkout transaction owns the complete handoff: freeze the Cart,
         // reserve stock, create the pending Order, and persist its immutable
-        // line snapshot. Any later failure rolls the whole handoff back.
+        // line snapshot. Any later failure rolls the whole handoff back. The
+        // client idempotency key and request fingerprint are stamped onto the
+        // Cart here (one checkout per Cart); a reused key from another Cart
+        // trips `carts_checkout_idempotency_key_key`.
         let cart_locked = sqlx::query(
             "UPDATE commerce.carts SET status = 'locked'::commerce.cart_status, \
-                    updated_at = $3, attribution = $4 \
+                    updated_at = $3, attribution = $4, \
+                    checkout_idempotency_key = $5, checkout_request_fingerprint = $6 \
              WHERE store_id = $1 AND id = $2 AND status = 'active'",
         )
         .bind(actor.store_id.as_uuid())
         .bind(cart_id.as_uuid())
         .bind(request.now)
         .bind(&request.attribution)
+        .bind(request.idempotency_key)
+        .bind(request_fingerprint.as_slice())
         .execute(&mut *transaction)
         .await
-        .map_err(database_error)?
+        .map_err(checkout_insert_error)?
         .rows_affected();
         if cart_locked != 1 {
             return Err(cart_not_active());
@@ -351,19 +357,18 @@ impl PostgresStorefrontSalesRepository {
         // `order_number` is 8 random Crockford chars (~2^40). `ON CONFLICT
         // DO NOTHING` on the per-store number leaves rows_affected at 0 on the
         // near-impossible collision without aborting the checkout transaction,
-        // so we regenerate and retry a handful of times. Any other unique
-        // conflict (idempotency key, one order per cart) still raises.
+        // so we regenerate and retry a handful of times. The one-order-per-cart
+        // unique index still raises.
         let mut order_number = generate_order_number()?;
         let mut attempt = 0;
         let order_created = loop {
             let inserted = sqlx::query(
                 "INSERT INTO commerce.orders \
-                 (id, store_id, order_number, channel_id, cart_id, shopper_id, idempotency_key, \
+                 (id, store_id, order_number, channel_id, cart_id, shopper_id, \
                   price_list_id, currency, payment_provider_account_id, contact_email, \
-                 checkout_request_fingerprint, \
                  subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
                  shipping_amount_minor, total_amount_minor, created_at, updated_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,0,0,0,$14,$14) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,0,0,0,$12,$12) \
                  ON CONFLICT ON CONSTRAINT orders_store_id_order_number_key DO NOTHING",
             )
             .bind(requested_order_id.as_uuid())
@@ -372,12 +377,10 @@ impl PostgresStorefrontSalesRepository {
             .bind(channel_id.as_uuid())
             .bind(cart_id.as_uuid())
             .bind(shopper.shopper_id.as_uuid())
-            .bind(request.idempotency_key)
             .bind(header.1)
             .bind(currency.as_str())
             .bind(payment_provider_account_id)
             .bind(None::<&str>)
-            .bind(request_fingerprint.as_slice())
             .bind(subtotal)
             .bind(request.now)
             .execute(&mut *transaction)
@@ -509,18 +512,22 @@ async fn existing_checkout_draft(
         (
             Uuid,
             String,
-            Uuid,
+            Option<Uuid>,
             String,
             String,
             i64,
             Option<Vec<u8>>,
         ),
     >(
+        // Checkout idempotency now lives on the Cart (one Order per Cart); the
+        // Order still carries id/status/currency/subtotal for the draft.
         "SELECT sales_order.id, sales_order.status::text, \
-                sales_order.idempotency_key, sales_order.payment_status::text, \
+                cart.checkout_idempotency_key, sales_order.payment_status::text, \
                 sales_order.currency::text, sales_order.subtotal_amount_minor, \
-                sales_order.checkout_request_fingerprint \
+                cart.checkout_request_fingerprint \
          FROM commerce.orders AS sales_order \
+         INNER JOIN commerce.carts AS cart \
+           ON cart.store_id = sales_order.store_id AND cart.id = sales_order.cart_id \
          WHERE sales_order.store_id = $1 AND sales_order.channel_id = $2 \
            AND sales_order.shopper_id = $3 AND sales_order.cart_id = $4",
     )
@@ -535,7 +542,7 @@ async fn existing_checkout_draft(
         return Ok(None);
     };
 
-    if row.2 != request.idempotency_key {
+    if row.2 != Some(request.idempotency_key) {
         return Err(checkout_cart_already_started());
     }
     if let Some(stored_fingerprint) = row.6 {

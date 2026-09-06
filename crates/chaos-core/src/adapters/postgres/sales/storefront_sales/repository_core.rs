@@ -210,9 +210,7 @@ fn checkout_insert_error(error: sqlx::Error) -> ApplicationError {
         _ => None,
     };
     match constraint {
-        Some("orders_store_id_channel_id_shopper_id_idempotency_key_key") => {
-            idempotency_key_reused()
-        }
+        Some("carts_checkout_idempotency_key_key") => idempotency_key_reused(),
         Some("orders_one_order_per_cart_key") => checkout_cart_already_started(),
         _ => database_error(error),
     }
