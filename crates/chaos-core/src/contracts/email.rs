@@ -11,6 +11,9 @@ use crate::ApplicationError;
 pub struct EmailMessage {
     pub from: String,
     pub to: String,
+    /// Address a recipient's reply is routed to. `None` lets the reply fall
+    /// back to `from`.
+    pub reply_to: Option<String>,
     pub subject: String,
     pub text: String,
     pub html: Option<String>,
@@ -24,6 +27,9 @@ pub struct EmailMessage {
 pub struct EmailAccountConfiguration {
     pub from_email: String,
     pub from_name: Option<String>,
+    /// Optional address recipients reach when they reply to a transactional
+    /// email. `None` means replies go back to `from_email`.
+    pub reply_to_email: Option<String>,
 }
 
 impl EmailAccountConfiguration {
@@ -45,8 +51,6 @@ pub struct EmailBrandConfiguration {
     pub surface_color: String,
     pub text_color: String,
     pub muted_text_color: String,
-    pub support_email: Option<String>,
-    pub support_url: Option<String>,
 }
 
 impl EmailBrandConfiguration {
@@ -60,8 +64,6 @@ impl EmailBrandConfiguration {
             surface_color: "#FFFFFF".into(),
             text_color: "#17202A".into(),
             muted_text_color: "#667085".into(),
-            support_email: None,
-            support_url: None,
         }
     }
 }

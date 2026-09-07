@@ -6,6 +6,6 @@
 
 {{tracking_text}}View your order: {{lookup_url}}
 
-{{support_text}}
+Need help? Just reply to this email.
 
 Thank you for shopping with us.

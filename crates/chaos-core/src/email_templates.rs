@@ -65,7 +65,6 @@ pub(crate) fn render_order_confirmation(
     let shipping_address_text = render_shipping_address_text(data.shipping_address);
     let discount_text =
         render_discount_text(data.discount_amount_minor, &discount_amount, &currency);
-    let support_text = render_support_text(data.brand);
 
     let html_order_number = escape_html(&order_number);
     let html_subtotal_amount = escape_html(&subtotal_amount);
@@ -90,7 +89,6 @@ pub(crate) fn render_order_confirmation(
         &currency,
         data.brand,
     );
-    let support_html = render_support_html(data.brand);
 
     let subject = render_template(
         &template.subject_template,
@@ -118,7 +116,6 @@ pub(crate) fn render_order_confirmation(
             ("lookup_url", lookup_url.as_str()),
             ("line_items_text", line_items_text.as_str()),
             ("shipping_address_text", shipping_address_text.as_str()),
-            ("support_text", support_text.as_str()),
         ],
     );
     let html = render_template(
@@ -142,7 +139,6 @@ pub(crate) fn render_order_confirmation(
             ("lookup_url", html_lookup_url.as_str()),
             ("line_items_html", line_items_html.as_str()),
             ("shipping_address_html", shipping_address_html.as_str()),
-            ("support_html", support_html.as_str()),
         ],
     );
 
@@ -205,12 +201,10 @@ pub(crate) fn render_fulfillment_update(
         data.tracking_url
     };
     let tracking_text = render_tracking_text(tracking_number, tracking_url);
-    let support_text = render_support_text(data.brand);
 
     let brand_header_html = render_brand_header_html(data.brand);
     let body_html = escape_html(&body_text);
     let tracking_html = render_tracking_html(tracking_number, tracking_url, data.brand);
-    let support_html = render_support_html(data.brand);
     let html_brand_name = escape_html(&data.brand.brand_name);
     let html_order_number = escape_html(&order_number);
     let html_lookup_url = escape_html(&lookup_url);
@@ -239,7 +233,6 @@ pub(crate) fn render_fulfillment_update(
             ("body_text", body_text.as_str()),
             ("tracking_text", tracking_text.as_str()),
             ("lookup_url", lookup_url.as_str()),
-            ("support_text", support_text.as_str()),
         ],
     );
     let html = render_template(
@@ -259,7 +252,6 @@ pub(crate) fn render_fulfillment_update(
             ("tracking_html", tracking_html.as_str()),
             ("order_number", html_order_number.as_str()),
             ("lookup_url", html_lookup_url.as_str()),
-            ("support_html", support_html.as_str()),
         ],
     );
 
@@ -494,38 +486,6 @@ fn address_locality_line(address: &PostalAddress) -> String {
     }
 }
 
-fn render_support_html(brand: &EmailBrandConfiguration) -> String {
-    let mut links = Vec::new();
-    if let Some(email) = brand.support_email.as_deref() {
-        let email = escape_html(email);
-        links.push(format!(
-            "<a href=\"mailto:{email}\" style=\"color:{};\">{email}</a>",
-            escape_html(&brand.primary_color)
-        ));
-    }
-    if let Some(url) = brand.support_url.as_deref() {
-        links.push(format!(
-            "<a href=\"{}\" style=\"color:{};\">Help center</a>",
-            escape_html(url),
-            escape_html(&brand.primary_color),
-        ));
-    }
-    if links.is_empty() {
-        "Reply to this email if you need help.".into()
-    } else {
-        format!("Need help? {}", links.join(" · "))
-    }
-}
-
-fn render_support_text(brand: &EmailBrandConfiguration) -> String {
-    match (brand.support_email.as_deref(), brand.support_url.as_deref()) {
-        (Some(email), Some(url)) => format!("Need help? Email {email} or visit {url}"),
-        (Some(email), None) => format!("Need help? Email {email}"),
-        (None, Some(url)) => format!("Need help? Visit {url}"),
-        (None, None) => "Reply to this email if you need help.".into(),
-    }
-}
-
 fn escape_html(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
@@ -580,10 +540,6 @@ mod tests {
 
     #[test]
     fn renders_shipped_notice_with_escaped_tracking() {
-        let brand = EmailBrandConfiguration {
-            support_email: Some("help@example.com".into()),
-            ..EmailBrandConfiguration::defaults("A <Store>".into())
-        };
         let rendered = render_fulfillment_update(
             &default_fulfillment_update_template(),
             &FulfillmentUpdateTemplateData {
@@ -592,7 +548,7 @@ mod tests {
                 tracking_number: Some("1Z<99>"),
                 tracking_url: Some("https://track.example/pkg?id=1&x=2"),
                 lookup_url: "https://shop.example/orders/details?order_number=W-1&email=a&b",
-                brand: &brand,
+                brand: &EmailBrandConfiguration::defaults("A <Store>".into()),
             },
         );
 
@@ -604,7 +560,11 @@ mod tests {
                 .text
                 .contains("Track your shipment: https://track.example/pkg?id=1&x=2")
         );
-        assert!(rendered.text.contains("Need help? Email help@example.com"));
+        assert!(
+            rendered
+                .text
+                .contains("Need help? Just reply to this email.")
+        );
         assert!(rendered.html.contains("ORD-&lt;7&gt;"));
         assert!(rendered.html.contains("1Z&lt;99&gt;"));
         assert!(
@@ -637,7 +597,7 @@ mod tests {
         assert!(
             rendered
                 .html
-                .contains("Reply to this email if you need help.")
+                .contains("Need help? Just reply to this email.")
         );
     }
 
@@ -716,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_a_fallback_when_an_order_has_no_line_items_or_support_contact() {
+    fn renders_a_fallback_when_an_order_has_no_line_items() {
         let rendered = render_order_confirmation(
             &default_order_confirmation_template(),
             &OrderConfirmationTemplateData {
@@ -738,7 +698,7 @@ mod tests {
         assert!(
             rendered
                 .text
-                .contains("Reply to this email if you need help.")
+                .contains("Need help? Just reply to this email.")
         );
         assert!(rendered.html.contains("No item details available."));
         assert!(!rendered.text.contains("Shipping address:"));

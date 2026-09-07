@@ -133,8 +133,6 @@ pub struct ConfigureEmailBrandInput {
     pub surface_color: String,
     pub text_color: String,
     pub muted_text_color: String,
-    pub support_email: Option<String>,
-    pub support_url: Option<String>,
 }
 
 pub struct ResetEmailBrandInput {
@@ -151,8 +149,6 @@ struct EmailBrandFields {
     surface_color: String,
     text_color: String,
     muted_text_color: String,
-    support_email: Option<String>,
-    support_url: Option<String>,
 }
 
 /// Owner-facing administration for Store-owned email provider accounts.
@@ -288,8 +284,6 @@ impl EmailBrandAdministration {
             surface_color,
             text_color,
             muted_text_color,
-            support_email,
-            support_url,
         } = input;
         require_email_provider_account_administrator(&actor)?;
         let configuration = validate_brand_configuration(EmailBrandFields {
@@ -301,8 +295,6 @@ impl EmailBrandAdministration {
             surface_color,
             text_color,
             muted_text_color,
-            support_email,
-            support_url,
         })?;
         self.repository
             .upsert_email_brand(actor, store_id, &configuration)
@@ -370,9 +362,18 @@ fn validate_configuration(
             }
         })
         .transpose()?;
+    let reply_to_email = configuration
+        .reply_to_email
+        .map(|value| {
+            Email::parse(value)
+                .map(|email| email.as_str().to_owned())
+                .map_err(|_| validation("reply_to_email", "must be a valid email address"))
+        })
+        .transpose()?;
     Ok(EmailAccountConfiguration {
         from_email: from_email.as_str().to_owned(),
         from_name,
+        reply_to_email,
     })
 }
 
@@ -418,24 +419,12 @@ fn validate_brand_configuration(
         surface_color,
         text_color,
         muted_text_color,
-        support_email,
-        support_url,
     } = fields;
     let brand_name = brand_name
         .map(|value| validate_optional_text("brand_name", &value, 120))
         .transpose()?;
     let logo_url = logo_url
         .map(|value| validate_https_url("logo_url", &value))
-        .transpose()?;
-    let support_email = support_email
-        .map(|value| {
-            Email::parse(value)
-                .map(|email| email.as_str().to_owned())
-                .map_err(|_| validation("support_email", "must be a valid email address"))
-        })
-        .transpose()?;
-    let support_url = support_url
-        .map(|value| validate_https_url("support_url", &value))
         .transpose()?;
     Ok(EmailBrandWrite {
         brand_name,
@@ -446,8 +435,6 @@ fn validate_brand_configuration(
         surface_color: validate_color("surface_color", &surface_color)?,
         text_color: validate_color("text_color", &text_color)?,
         muted_text_color: validate_color("muted_text_color", &muted_text_color)?,
-        support_email,
-        support_url,
     })
 }
 
@@ -664,12 +651,26 @@ mod tests {
         let configuration = validate_configuration(EmailAccountConfiguration {
             from_email: " Orders@Example.COM ".into(),
             from_name: Some("  Example Store  ".into()),
+            reply_to_email: Some(" Help@Example.COM ".into()),
         })
         .unwrap();
 
         assert_eq!(configuration.from_email, "orders@example.com");
         assert_eq!(configuration.from_name.as_deref(), Some("Example Store"));
+        assert_eq!(
+            configuration.reply_to_email.as_deref(),
+            Some("help@example.com")
+        );
         assert_eq!(configuration.sender(), "Example Store <orders@example.com>");
+
+        assert!(
+            validate_configuration(EmailAccountConfiguration {
+                from_email: "orders@example.com".into(),
+                from_name: None,
+                reply_to_email: Some("not-an-email".into()),
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -711,8 +712,6 @@ mod tests {
             surface_color: "#ffffff".into(),
             text_color: "#17202a".into(),
             muted_text_color: "#667085".into(),
-            support_email: Some("support@example.com".into()),
-            support_url: Some("https://example.com/help".into()),
         })
         .unwrap();
 
@@ -728,8 +727,6 @@ mod tests {
                 surface_color: "#FFFFFF".into(),
                 text_color: "#17202A".into(),
                 muted_text_color: "#667085".into(),
-                support_email: None,
-                support_url: None,
             })
             .is_err()
         );
