@@ -15,6 +15,6 @@ Total: {{total_amount}} {{currency}}
 
 View your order: {{lookup_url}}
 
-{{support_text}}
+Need help? Just reply to this email.
 
 Thank you for your order.

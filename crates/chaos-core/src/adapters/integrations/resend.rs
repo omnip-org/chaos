@@ -53,6 +53,8 @@ impl ResendEmailProvider {
 struct SendRequest<'a> {
     from: &'a str,
     to: [&'a str; 1],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply_to: Option<&'a str>,
     subject: &'a str,
     text: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -204,6 +206,7 @@ impl EmailProvider for ResendEmailProvider {
             .json(&SendRequest {
                 from: &message.from,
                 to: [&message.to],
+                reply_to: message.reply_to.as_deref(),
                 subject: &message.subject,
                 text: &message.text,
                 html: message.html.as_deref(),

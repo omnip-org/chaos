@@ -59,6 +59,9 @@ pub struct CreateEmailAccountParams {
     pub from_email: String,
     /// Optional sender display name.
     pub from_name: Option<String>,
+    /// Optional address recipients reach when they reply to a notification
+    /// email. Leave null to route replies back to from_email.
+    pub reply_to_email: Option<String>,
     /// Whether this account may send transactional email immediately.
     pub enabled: bool,
     /// Must be explicitly set to true. This action affects live Store data.
@@ -82,6 +85,9 @@ pub struct UpdateEmailAccountParams {
     pub from_email: String,
     /// Optional sender display name.
     pub from_name: Option<String>,
+    /// Optional address recipients reach when they reply to a notification
+    /// email. Null routes replies back to from_email.
+    pub reply_to_email: Option<String>,
     pub enabled: bool,
     pub confirm: bool,
 }
@@ -112,10 +118,6 @@ pub struct ConfigureEmailBrandParams {
     pub text_color: String,
     /// Muted text color.
     pub muted_text_color: String,
-    /// Optional customer support email address.
-    pub support_email: Option<String>,
-    /// Optional public HTTPS customer support URL.
-    pub support_url: Option<String>,
     /// Must be explicitly set to true. This action changes live Store data.
     pub confirm: bool,
 }
@@ -222,6 +224,7 @@ impl ChaosMcp {
                 configuration: EmailAccountConfiguration {
                     from_email: params.from_email,
                     from_name: params.from_name,
+                    reply_to_email: params.reply_to_email,
                 },
                 enabled: params.enabled,
             })
@@ -268,6 +271,7 @@ impl ChaosMcp {
                 configuration: EmailAccountConfiguration {
                     from_email: params.from_email,
                     from_name: params.from_name,
+                    reply_to_email: params.reply_to_email,
                 },
                 enabled: params.enabled,
             })
@@ -306,7 +310,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Configure the selected Store's Email brand tokens in the database. Set brand_name, logo_url, colors, and optional support contacts; the global server-owned template will use them while Chaos continues to render product information, totals, and tracking links. logo_url and support_url must be public HTTPS URLs. Requires Owner role and confirm: true."
+        description = "Configure the selected Store's Email brand tokens in the database. Set brand_name, logo_url, and colors; the global server-owned template will use them while Chaos continues to render product information, totals, and tracking links. logo_url must be a public HTTPS URL. Requires Owner role and confirm: true."
     )]
     async fn configure_email_brand(
         &self,
@@ -335,8 +339,6 @@ impl ChaosMcp {
                 surface_color: params.surface_color,
                 text_color: params.text_color,
                 muted_text_color: params.muted_text_color,
-                support_email: params.support_email,
-                support_url: params.support_url,
             })
             .await
         {
@@ -413,6 +415,7 @@ fn email_account_json(
         "sender": {
             "email": account.configuration.from_email,
             "name": account.configuration.from_name,
+            "reply_to": account.configuration.reply_to_email,
         },
         "email_setup": {
             "webhook_url": webhook_url,
@@ -444,8 +447,6 @@ fn email_brand_json(brand: EmailBrandDetail) -> serde_json::Value {
             "surface_color": configuration.surface_color,
             "text_color": configuration.text_color,
             "muted_text_color": configuration.muted_text_color,
-            "support_email": configuration.support_email,
-            "support_url": configuration.support_url,
         },
         "template_policy": {
             "scope": "global",
@@ -467,9 +468,7 @@ fn email_brand_json(brand: EmailBrandDetail) -> serde_json::Value {
                 "background_color",
                 "surface_color",
                 "text_color",
-                "muted_text_color",
-                "support_email",
-                "support_url"
+                "muted_text_color"
             ]
         },
     })

@@ -13,7 +13,6 @@ use crate::{
     store::StoreActor,
 };
 use chaos_domain::{
-    identity::Email,
     sales::PostalAddress,
     store::{StoreId, StorefrontOrigin},
 };
@@ -44,8 +43,6 @@ pub(crate) struct EmailBrandWrite {
     pub surface_color: String,
     pub text_color: String,
     pub muted_text_color: String,
-    pub support_email: Option<String>,
-    pub support_url: Option<String>,
 }
 
 impl PostgresEmailRepository {
@@ -338,7 +335,8 @@ impl PostgresEmailRepository {
             shipping_postal_code,
             shipping_country_code,
         )?;
-        let sender = parse_email_account_configuration(account_configuration)?.sender();
+        let configuration = parse_email_account_configuration(account_configuration)?;
+        let sender = configuration.sender();
         let lookup_url = order_details_url(&origin, &order_number, &contact_email)?;
         let brand = load_email_brand(&mut transaction, StoreId::from_uuid(store_id))
             .await?
@@ -381,8 +379,9 @@ impl PostgresEmailRepository {
             provider,
             credential_secret_reference,
             EmailMessage {
-                from: sender.to_owned(),
+                from: sender,
                 to: contact_email,
+                reply_to: configuration.reply_to_email,
                 subject: template.subject,
                 text: template.text,
                 html: Some(template.html),
@@ -448,7 +447,8 @@ impl PostgresEmailRepository {
             transaction.commit().await.map_err(database_error)?;
             return Ok(None);
         };
-        let sender = parse_email_account_configuration(account_configuration)?.sender();
+        let configuration = parse_email_account_configuration(account_configuration)?;
+        let sender = configuration.sender();
         let lookup_url = order_details_url(&origin, &order_number, &contact_email)?;
         let brand = load_email_brand(&mut transaction, StoreId::from_uuid(store_id))
             .await?
@@ -478,6 +478,7 @@ impl PostgresEmailRepository {
             EmailMessage {
                 from: sender,
                 to: contact_email,
+                reply_to: configuration.reply_to_email,
                 subject: template.subject,
                 text: template.text,
                 html: Some(template.html),
@@ -575,8 +576,6 @@ fn email_brand_detail(row: EmailBrandRow) -> Result<EmailBrandDetail, Applicatio
         surface_color: required_brand_color(brand, "surface_color")?,
         text_color: required_brand_color(brand, "text_color")?,
         muted_text_color: required_brand_color(brand, "muted_text_color")?,
-        support_email: optional_brand_email(brand, "support_email")?,
-        support_url: optional_brand_url(brand, "support_url")?,
     };
     Ok(EmailBrandDetail {
         configuration,
@@ -669,19 +668,6 @@ fn optional_brand_url(
     Ok(Some(value.to_owned()))
 }
 
-fn optional_brand_email(
-    brand: &serde_json::Map<String, Value>,
-    key: &str,
-) -> Result<Option<String>, ApplicationError> {
-    optional_brand_string(brand, key)?
-        .map(|value| {
-            Email::parse(value)
-                .map(|email| email.as_str().to_owned())
-                .map_err(|_| email_brand_corrupt_state())
-        })
-        .transpose()
-}
-
 fn email_order_line_item(row: EmailOrderLineRow) -> EmailOrderLineItem {
     EmailOrderLineItem {
         product_title: row.0,
@@ -733,6 +719,7 @@ fn email_configuration_json(configuration: &EmailAccountConfiguration) -> Value 
     json!({
         "from_email": configuration.from_email,
         "from_name": configuration.from_name,
+        "reply_to_email": configuration.reply_to_email,
     })
 }
 
@@ -746,8 +733,6 @@ fn email_brand_configuration_json(configuration: &EmailBrandWrite) -> Value {
         "surface_color": configuration.surface_color,
         "text_color": configuration.text_color,
         "muted_text_color": configuration.muted_text_color,
-        "support_email": configuration.support_email,
-        "support_url": configuration.support_url,
     })
 }
 
@@ -764,9 +749,15 @@ fn parse_email_account_configuration(
         Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
         _ => return Err(email_provider_account_corrupt_state()),
     };
+    let reply_to_email = match value.get("reply_to_email") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
+        _ => return Err(email_provider_account_corrupt_state()),
+    };
     Ok(EmailAccountConfiguration {
         from_email: from_email.to_owned(),
         from_name,
+        reply_to_email,
     })
 }
 
@@ -935,9 +926,7 @@ mod tests {
                     "background_color": "#f4f6f8",
                     "surface_color": "#ffffff",
                     "text_color": "#17202a",
-                    "muted_text_color": "#667085",
-                    "support_email": "SUPPORT@example.com",
-                    "support_url": "https://example.com/help"
+                    "muted_text_color": "#667085"
                 }
             }),
         ))
@@ -946,10 +935,6 @@ mod tests {
         assert!(detail.customized);
         assert_eq!(detail.configuration.brand_name, "Example Brand");
         assert_eq!(detail.configuration.primary_color, "#175CD3");
-        assert_eq!(
-            detail.configuration.support_email.as_deref(),
-            Some("support@example.com")
-        );
     }
 
     #[test]
