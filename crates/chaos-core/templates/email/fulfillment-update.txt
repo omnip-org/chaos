@@ -1,0 +1,11 @@
+{{brand_name}}
+
+{{headline}}
+
+{{body_text}}
+
+{{tracking_text}}View your order: {{lookup_url}}
+
+{{support_text}}
+
+Thank you for shopping with us.

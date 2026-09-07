@@ -6,6 +6,11 @@ const ORDER_CONFIRMED_SUBJECT: &str =
 const ORDER_CONFIRMED_TEXT: &str = include_str!("../templates/email/order-confirmed.txt");
 const ORDER_CONFIRMED_HTML: &str = include_str!("../templates/email/order-confirmed.html");
 
+const FULFILLMENT_UPDATE_SUBJECT: &str =
+    include_str!("../templates/email/fulfillment-update.subject.txt");
+const FULFILLMENT_UPDATE_TEXT: &str = include_str!("../templates/email/fulfillment-update.txt");
+const FULFILLMENT_UPDATE_HTML: &str = include_str!("../templates/email/fulfillment-update.html");
+
 /// The template structure is owned by the platform. Store configuration only
 /// supplies branding tokens; order data and repeated line-item fragments are
 /// always assembled by the server from the order snapshot.
@@ -146,6 +151,158 @@ pub(crate) fn render_order_confirmation(
         text,
         html,
     }
+}
+
+pub(crate) fn default_fulfillment_update_template() -> EmailTemplateContent {
+    EmailTemplateContent {
+        subject_template: FULFILLMENT_UPDATE_SUBJECT.trim_end().to_owned(),
+        text_template: FULFILLMENT_UPDATE_TEXT.to_owned(),
+        html_template: FULFILLMENT_UPDATE_HTML.to_owned(),
+    }
+}
+
+pub(crate) struct FulfillmentUpdateTemplateData<'a> {
+    pub order_number: &'a str,
+    /// `true` renders the delivered notice, `false` the shipped notice.
+    pub delivered: bool,
+    pub tracking_number: Option<&'a str>,
+    pub tracking_url: Option<&'a str>,
+    pub lookup_url: &'a str,
+    pub brand: &'a EmailBrandConfiguration,
+}
+
+pub(crate) fn render_fulfillment_update(
+    template: &EmailTemplateContent,
+    data: &FulfillmentUpdateTemplateData<'_>,
+) -> RenderedEmailTemplate {
+    let order_number = data.order_number.to_owned();
+    let lookup_url = data.lookup_url.to_owned();
+    let (status_phrase, label, headline, body_text) = if data.delivered {
+        (
+            "delivered",
+            "Delivery update",
+            "Your order has arrived",
+            format!("Order {order_number} has been delivered. We hope you enjoy it."),
+        )
+    } else {
+        (
+            "shipped",
+            "Shipping update",
+            "Your order is on its way",
+            format!("Order {order_number} has shipped and is on its way to you."),
+        )
+    };
+    // A delivered notice never carries tracking; a shipped notice carries it
+    // only when the Fulfillment recorded a tracking number.
+    let tracking_number = if data.delivered {
+        None
+    } else {
+        data.tracking_number
+    };
+    let tracking_url = if data.delivered {
+        None
+    } else {
+        data.tracking_url
+    };
+    let tracking_text = render_tracking_text(tracking_number, tracking_url);
+    let support_text = render_support_text(data.brand);
+
+    let brand_header_html = render_brand_header_html(data.brand);
+    let body_html = escape_html(&body_text);
+    let tracking_html = render_tracking_html(tracking_number, tracking_url, data.brand);
+    let support_html = render_support_html(data.brand);
+    let html_brand_name = escape_html(&data.brand.brand_name);
+    let html_order_number = escape_html(&order_number);
+    let html_lookup_url = escape_html(&lookup_url);
+    let html_primary_color = escape_html(&data.brand.primary_color);
+    let html_accent_color = escape_html(&data.brand.accent_color);
+    let html_background_color = escape_html(&data.brand.background_color);
+    let html_surface_color = escape_html(&data.brand.surface_color);
+    let html_text_color = escape_html(&data.brand.text_color);
+    let html_muted_text_color = escape_html(&data.brand.muted_text_color);
+
+    let subject = render_template(
+        &template.subject_template,
+        &[
+            ("brand_name", data.brand.brand_name.as_str()),
+            ("order_number", order_number.as_str()),
+            ("status_phrase", status_phrase),
+        ],
+    )
+    .trim()
+    .to_owned();
+    let text = render_template(
+        &template.text_template,
+        &[
+            ("brand_name", data.brand.brand_name.as_str()),
+            ("headline", headline),
+            ("body_text", body_text.as_str()),
+            ("tracking_text", tracking_text.as_str()),
+            ("lookup_url", lookup_url.as_str()),
+            ("support_text", support_text.as_str()),
+        ],
+    );
+    let html = render_template(
+        &template.html_template,
+        &[
+            ("brand_name", html_brand_name.as_str()),
+            ("brand_header_html", brand_header_html.as_str()),
+            ("primary_color", html_primary_color.as_str()),
+            ("accent_color", html_accent_color.as_str()),
+            ("background_color", html_background_color.as_str()),
+            ("surface_color", html_surface_color.as_str()),
+            ("text_color", html_text_color.as_str()),
+            ("muted_text_color", html_muted_text_color.as_str()),
+            ("label", label),
+            ("headline", headline),
+            ("body_html", body_html.as_str()),
+            ("tracking_html", tracking_html.as_str()),
+            ("order_number", html_order_number.as_str()),
+            ("lookup_url", html_lookup_url.as_str()),
+            ("support_html", support_html.as_str()),
+        ],
+    );
+
+    RenderedEmailTemplate {
+        subject,
+        text,
+        html,
+    }
+}
+
+fn render_tracking_text(number: Option<&str>, url: Option<&str>) -> String {
+    let Some(number) = number else {
+        return String::new();
+    };
+    match url {
+        Some(url) => format!("Tracking number: {number}\nTrack your shipment: {url}\n\n"),
+        None => format!("Tracking number: {number}\n\n"),
+    }
+}
+
+fn render_tracking_html(
+    number: Option<&str>,
+    url: Option<&str>,
+    brand: &EmailBrandConfiguration,
+) -> String {
+    let Some(number) = number else {
+        return String::new();
+    };
+    let border_color = escape_html(&brand.accent_color);
+    let muted_text_color = escape_html(&brand.muted_text_color);
+    let text_color = escape_html(&brand.text_color);
+    let number = escape_html(number);
+    let button = match url {
+        Some(url) => format!(
+            "<p style=\"margin:12px 0 0\"><a href=\"{}\" style=\"display:inline-block;background:{};color:#ffffff;text-decoration:none;border-radius:8px;padding:10px 16px\">Track your shipment</a></p>",
+            escape_html(url),
+            escape_html(&brand.primary_color),
+        ),
+        None => String::new(),
+    };
+    format!(
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:0 0 24px;border:1px solid {border_color};border-radius:8px\"><tr><td style=\"padding:12px 16px;color:{muted_text_color};border-bottom:1px solid {border_color};font-weight:600\">Tracking</td></tr><tr><td style=\"padding:12px 16px;color:{text_color};font-size:14px\">{number}{button}</td></tr></table>"
+    )
 }
 
 fn render_template(template: &str, values: &[(&str, &str)]) -> String {
@@ -416,9 +573,73 @@ mod tests {
     use chaos_domain::sales::PostalAddress;
 
     use super::{
-        OrderConfirmationTemplateData, default_order_confirmation_template,
-        render_order_confirmation,
+        FulfillmentUpdateTemplateData, OrderConfirmationTemplateData,
+        default_fulfillment_update_template, default_order_confirmation_template,
+        render_fulfillment_update, render_order_confirmation,
     };
+
+    #[test]
+    fn renders_shipped_notice_with_escaped_tracking() {
+        let brand = EmailBrandConfiguration {
+            support_email: Some("help@example.com".into()),
+            ..EmailBrandConfiguration::defaults("A <Store>".into())
+        };
+        let rendered = render_fulfillment_update(
+            &default_fulfillment_update_template(),
+            &FulfillmentUpdateTemplateData {
+                order_number: "ORD-<7>",
+                delivered: false,
+                tracking_number: Some("1Z<99>"),
+                tracking_url: Some("https://track.example/pkg?id=1&x=2"),
+                lookup_url: "https://shop.example/orders/details?order_number=W-1&email=a&b",
+                brand: &brand,
+            },
+        );
+
+        assert_eq!(rendered.subject, "A <Store> · Order ORD-<7> shipped");
+        assert!(rendered.text.contains("on its way to you."));
+        assert!(rendered.text.contains("Tracking number: 1Z<99>"));
+        assert!(
+            rendered
+                .text
+                .contains("Track your shipment: https://track.example/pkg?id=1&x=2")
+        );
+        assert!(rendered.text.contains("Need help? Email help@example.com"));
+        assert!(rendered.html.contains("ORD-&lt;7&gt;"));
+        assert!(rendered.html.contains("1Z&lt;99&gt;"));
+        assert!(
+            rendered
+                .html
+                .contains("https://track.example/pkg?id=1&amp;x=2")
+        );
+        assert!(!rendered.html.contains("1Z<99>"));
+    }
+
+    #[test]
+    fn renders_delivered_notice_and_drops_any_tracking() {
+        let rendered = render_fulfillment_update(
+            &default_fulfillment_update_template(),
+            &FulfillmentUpdateTemplateData {
+                order_number: "ORD-8",
+                delivered: true,
+                tracking_number: Some("SHOULD-NOT-APPEAR"),
+                tracking_url: Some("https://track.example/x"),
+                lookup_url: "https://shop.example/lookup",
+                brand: &EmailBrandConfiguration::defaults("Example Store".into()),
+            },
+        );
+
+        assert_eq!(rendered.subject, "Example Store · Order ORD-8 delivered");
+        assert!(rendered.text.contains("has been delivered"));
+        assert!(!rendered.text.contains("Tracking"));
+        assert!(!rendered.text.contains("SHOULD-NOT-APPEAR"));
+        assert!(!rendered.html.contains("SHOULD-NOT-APPEAR"));
+        assert!(
+            rendered
+                .html
+                .contains("Reply to this email if you need help.")
+        );
+    }
 
     #[test]
     fn renders_brand_and_order_snapshot_in_text_and_html() {

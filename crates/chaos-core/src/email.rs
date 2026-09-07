@@ -6,6 +6,7 @@ use crate::{
     contracts::{
         EmailAccountConfiguration, EmailBrandDetail, EmailProvider, EmailProviderAccountDetail,
         EmailProviderAccountPage, EmailWebhookVerifier, IntegrationQueue, NOTIFICATION_EMAIL_QUEUE,
+        ORDER_FULFILLMENT_DELIVERED_TOPIC, ORDER_FULFILLMENT_SHIPPED_TOPIC,
         ORDER_PAYMENT_COMPLETED_TOPIC, ProviderAccountReader, VerifiedWebhookEvent,
     },
     store::StoreActor,
@@ -559,12 +560,12 @@ impl EmailWorkers {
     ) -> Result<(), ApplicationError> {
         match routing_key {
             ORDER_PAYMENT_COMPLETED_TOPIC => self.send_order_confirmation(payload).await,
+            ORDER_FULFILLMENT_SHIPPED_TOPIC => self.send_fulfillment_update(payload, false).await,
+            ORDER_FULFILLMENT_DELIVERED_TOPIC => self.send_fulfillment_update(payload, true).await,
             other => {
-                // TODO(notification-email): render and send the fulfillment
-                // notices (order.fulfillment.shipped / order.fulfillment.delivered).
-                // `notification_email_queue` is bound to those routing keys in
-                // migrations/0004_integration.sql, but no templates exist yet,
-                // so the events are acknowledged and dropped here.
+                // Any routing key bound to `notification_email_queue` in
+                // migrations/0004_integration.sql without a handler above is
+                // acknowledged and dropped rather than retried forever.
                 tracing::info!(
                     routing_key = other,
                     "notification email for this routing key is not implemented yet"
@@ -587,6 +588,45 @@ impl EmailWorkers {
         else {
             // No contact email to send to (yet). This is a terminal outcome,
             // not a transient failure: nothing will change on retry.
+            return Ok(());
+        };
+        let provider = self
+            .providers
+            .get(&provider)
+            .ok_or_else(|| ApplicationError::Conflict {
+                code: "email_provider_not_supported",
+                message: "the configured Email provider has no adapter",
+            })?;
+        provider.send(&reference, message).await.map(|_| ())
+    }
+
+    async fn send_fulfillment_update(
+        &self,
+        payload: &serde_json::Value,
+        delivered: bool,
+    ) -> Result<(), ApplicationError> {
+        let store_id = topic_uuid(payload, "store_id")?;
+        let order_id = topic_uuid(payload, "order_id")?;
+        let fulfillment_id = topic_uuid(payload, "fulfillment_id")?;
+        let tracking_number = payload
+            .get("tracking_number")
+            .and_then(serde_json::Value::as_str);
+        let tracking_url = payload
+            .get("tracking_url")
+            .and_then(serde_json::Value::as_str);
+        let Some((provider, reference, message)) = self
+            .repository
+            .prepare_fulfillment_update(
+                store_id,
+                order_id,
+                fulfillment_id,
+                delivered,
+                tracking_number,
+                tracking_url,
+            )
+            .await?
+        else {
+            // No contact email to send to — terminal, same as order confirmation.
             return Ok(());
         };
         let provider = self

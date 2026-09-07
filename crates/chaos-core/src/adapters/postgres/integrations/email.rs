@@ -5,8 +5,9 @@ use crate::{
         EmailOrderLineItem, EmailProviderAccountDetail, EmailProviderAccountPage,
     },
     email_templates::{
-        OrderConfirmationTemplateData, default_order_confirmation_template,
-        render_order_confirmation,
+        FulfillmentUpdateTemplateData, OrderConfirmationTemplateData,
+        default_fulfillment_update_template, default_order_confirmation_template,
+        render_fulfillment_update, render_order_confirmation,
     },
     error::database_error,
     store::StoreActor,
@@ -389,6 +390,101 @@ impl PostgresEmailRepository {
             },
         )))
     }
+
+    /// Renders the shipped / delivered notice for a Fulfillment. Returns `None`
+    /// when the Order still has no contact email — a terminal outcome, exactly
+    /// as in [`Self::prepare_order_confirmation`]. The idempotency key is keyed
+    /// by `fulfillment_id` so split shipments each send their own notice.
+    pub async fn prepare_fulfillment_update(
+        &self,
+        store_id: Uuid,
+        order_id: Uuid,
+        fulfillment_id: Uuid,
+        delivered: bool,
+        tracking_number: Option<&str>,
+        tracking_url: Option<&str>,
+    ) -> Result<Option<(String, String, EmailMessage)>, ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(store_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        let row = sqlx::query_as::<_, EmailFulfillmentUpdateRow>(
+            "SELECT order_row.contact_email::text AS contact_email, \
+                    order_row.order_number AS order_number, \
+                    channel.origin AS origin, \
+                    account.provider AS provider, \
+                    account.credential_secret_reference AS credential_secret_reference, \
+                    account.configuration AS account_configuration \
+             FROM commerce.orders AS order_row \
+             INNER JOIN commerce.channels AS channel \
+               ON channel.store_id = order_row.store_id \
+              AND channel.id = order_row.channel_id \
+             INNER JOIN integration.provider_accounts AS account \
+               ON account.store_id = order_row.store_id \
+              AND account.capability = 'email' \
+              AND account.provider = 'resend' \
+              AND account.enabled \
+              AND account.credential_secret_reference IS NOT NULL \
+             WHERE order_row.store_id = $1 AND order_row.id = $2 \
+             ORDER BY account.id LIMIT 1",
+        )
+        .bind(store_id)
+        .bind(order_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(email_provider_unavailable)?;
+        let EmailFulfillmentUpdateRow {
+            contact_email,
+            order_number,
+            origin,
+            provider,
+            credential_secret_reference,
+            account_configuration,
+        } = row;
+        let Some(contact_email) = contact_email else {
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(None);
+        };
+        let sender = parse_email_account_configuration(account_configuration)?.sender();
+        let lookup_url = order_details_url(&origin, &order_number, &contact_email)?;
+        let brand = load_email_brand(&mut transaction, StoreId::from_uuid(store_id))
+            .await?
+            .ok_or_else(email_provider_account_not_found_for_brand)
+            .and_then(email_brand_detail)?
+            .configuration;
+        transaction.commit().await.map_err(database_error)?;
+        let template = render_fulfillment_update(
+            &default_fulfillment_update_template(),
+            &FulfillmentUpdateTemplateData {
+                order_number: &order_number,
+                delivered,
+                tracking_number,
+                tracking_url,
+                lookup_url: lookup_url.as_str(),
+                brand: &brand,
+            },
+        );
+        let idempotency_prefix = if delivered {
+            "order-delivered"
+        } else {
+            "order-shipped"
+        };
+        Ok(Some((
+            provider,
+            credential_secret_reference,
+            EmailMessage {
+                from: sender,
+                to: contact_email,
+                subject: template.subject,
+                text: template.text,
+                html: Some(template.html),
+                idempotency_key: format!("{idempotency_prefix}-{}", fulfillment_id.simple()),
+            },
+        )))
+    }
 }
 
 type EmailProviderAccountRow = (
@@ -420,6 +516,16 @@ struct EmailOrderConfirmationRow {
     shipping_administrative_area: Option<String>,
     shipping_postal_code: Option<String>,
     shipping_country_code: Option<String>,
+    origin: String,
+    provider: String,
+    credential_secret_reference: String,
+    account_configuration: Value,
+}
+
+#[derive(sqlx::FromRow)]
+struct EmailFulfillmentUpdateRow {
+    contact_email: Option<String>,
+    order_number: String,
     origin: String,
     provider: String,
     credential_secret_reference: String,
