@@ -51,7 +51,11 @@ impl ProviderWebhookWorker {
         for job in &jobs {
             let result = self.process(&job.payload, now).await;
             if let Err(error) = &result {
-                tracing::warn!(error = %error, "provider webhook processing failed");
+                tracing::warn!(
+                    webhook_job = %job.payload,
+                    error = %error,
+                    "provider webhook processing failed"
+                );
             }
             self.queue
                 .finish_topic(

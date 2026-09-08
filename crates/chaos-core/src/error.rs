@@ -17,13 +17,13 @@ pub enum ApplicationError {
     },
     #[error("request rate limit exceeded; retry after {retry_after_seconds} seconds")]
     RateLimited { retry_after_seconds: u32 },
-    #[error("dependency {service} is unavailable")]
+    #[error("dependency {service} is unavailable: {source:#}")]
     Unavailable {
         service: &'static str,
         #[source]
         source: anyhow::Error,
     },
-    #[error("an unexpected application error occurred")]
+    #[error("an unexpected application error occurred: {0:#}")]
     Unexpected(#[source] anyhow::Error),
 }
 
