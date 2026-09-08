@@ -96,6 +96,19 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
 
+# Give every container outbound IPv6 so migrate/api/worker can reach Supabase's
+# IPv6-only direct database endpoint (db.<ref>.supabase.co). The host has global
+# IPv6 but Docker containers don't by default. Docker masquerades (NAT66) this
+# ULA range to the host's IPv6 address. Needs Docker Engine >= 26.0; the explicit
+# subnet also covers 26.0-27.0, which can't auto-allocate one. Harmless (just
+# unused) when DATABASE_URL points at the IPv4 pooler (...pooler.supabase.com).
+networks:
+  default:
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: fd2c:0a05:5eed::/64
+
 # docker volume create chaos-postgres-data
 # docker volume create chaos-redis-data
 volumes:
