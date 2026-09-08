@@ -4,13 +4,13 @@ A headless commerce engine where Users create, join, and leave independent Store
 
 ## Local development
 
-Requirements: Docker and Docker Compose. `deploy/docker-compose.yaml` defines PostgreSQL, Redis, the migration job, blue and green API replicas, an independent Worker, and the gateway. API replicas never run background polling loops. Migrations run through the `migrate` service, not application startup.
+Requirements: Docker and Docker Compose. `deploy/docker-compose.yaml` defines Redis, the migration job, blue and green API replicas, an independent Worker, and the gateway. PostgreSQL is external: production points `DATABASE_URL` at a managed database (Supabase), and the `local` compose profile starts one for development. API replicas never run background polling loops. Migrations run through the `migrate` service, not application startup.
 
-Its data volumes are `external: true` everywhere, so create them once:
+Its data volumes are `external: true`, so create them once (the postgres one is only used by the `local` profile):
 
 ```bash
-docker volume create chaos-postgres-data
 docker volume create chaos-redis-data
+docker volume create chaos-postgres-data  # only for --profile local
 ```
 
 Build a local image and bring the whole stack up:
@@ -20,9 +20,11 @@ docker build -t chaos-api:local .
 cp deploy/.env.example deploy/.env
 # deploy/.env.example is the same template used in production: replace every
 # CHANGE_ME_* value (openssl rand -base64 32/48 as noted inline) before
-# the stack will boot. There is no weaker "just for local dev" shortcut.
+# the stack will boot. For local dev, also uncomment the POSTGRES_* /
+# local DATABASE_URL block. There is no weaker "just for local dev" shortcut.
 export CHAOS_IMAGE=chaos-api:local
 cd deploy
+docker compose -f docker-compose.yaml --profile local up -d postgres
 CHAOS_IMAGE=chaos-api:local ./deploy.sh
 ```
 
@@ -56,7 +58,7 @@ docker compose -f deploy/docker-compose.yaml down
 
 The data volumes are `external: true`, so `down -v` cannot delete them — use `docker volume rm chaos-postgres-data chaos-redis-data` if you deliberately want a clean slate.
 
-The custom PostgreSQL 18 image includes `pg_cron`, `pgmq`, and `pg_partman`. The initial migration activates them with isolated extension-owned schemas. See [PostgreSQL extensions](docs/postgresql-extensions.md) for lifecycle and security requirements.
+PostgreSQL must have the `pgmq` and `citext` extensions available; the first migration enables them (citext in a `chaos_extensions` schema) and defines its own exact-match topic routing on top of `pgmq.send` (so pgmq 1.5.x, as shipped by Supabase, is enough). Every project-owned schema is `chaos_`-prefixed (`chaos_commerce`, `chaos_identity`, `chaos_integration`, `chaos_extensions`). The `local` profile's image bundles `pgmq` (plus currently-unused `pg_cron` / `pg_partman`).
 
 ## Development commands
 
