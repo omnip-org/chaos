@@ -90,7 +90,7 @@ impl AppState {
                             FROM pg_class AS relation
                             INNER JOIN pg_namespace AS namespace
                                ON namespace.oid = relation.relnamespace
-                            WHERE namespace.nspname = 'commerce'
+                            WHERE namespace.nspname = 'chaos_commerce'
                               AND relation.relname = 'orders'
                               AND relation.relowner = role.oid
                         )
@@ -133,7 +133,7 @@ impl AppState {
                             FROM pg_class AS relation
                             INNER JOIN pg_namespace AS namespace
                                ON namespace.oid = relation.relnamespace
-                            WHERE namespace.nspname = 'identity'
+                            WHERE namespace.nspname = 'chaos_identity'
                               AND relation.relname = 'users'
                               AND relation.relowner = role.oid
                         )

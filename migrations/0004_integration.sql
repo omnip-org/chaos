@@ -1,25 +1,33 @@
-CREATE SCHEMA integration;
+CREATE SCHEMA chaos_integration;
 
 SELECT pgmq.create('search_index_queue');
 SELECT pgmq.create('analytics_capi_queue');
 SELECT pgmq.create('notification_email_queue');
 SELECT pgmq.create('provider_webhooks_queue');
 
-SELECT pgmq.bind_topic('product.updated',             'search_index_queue');
-SELECT pgmq.bind_topic('cart.item.added',             'analytics_capi_queue');
-SELECT pgmq.bind_topic('order.payment.initiated',     'analytics_capi_queue');
-SELECT pgmq.bind_topic('order.payment.completed',     'analytics_capi_queue');
-SELECT pgmq.bind_topic('order.payment.completed',     'notification_email_queue');
-SELECT pgmq.bind_topic('order.fulfillment.shipped',   'notification_email_queue');
-SELECT pgmq.bind_topic('order.fulfillment.delivered', 'notification_email_queue');
-SELECT pgmq.bind_topic('provider.webhook.received',   'provider_webhooks_queue');
+CREATE TABLE chaos_integration.topic_bindings (
+    routing_key TEXT NOT NULL,
+    queue_name  TEXT NOT NULL,
 
-CREATE TYPE integration.provider_capability AS ENUM ('email', 'payment', 'shipping', 'analytics');
+    CONSTRAINT topic_bindings_pkey PRIMARY KEY (routing_key, queue_name)
+);
 
-CREATE TABLE integration.provider_accounts (
+INSERT INTO chaos_integration.topic_bindings (routing_key, queue_name) VALUES
+    ('product.updated',             'search_index_queue'),
+    ('cart.item.added',             'analytics_capi_queue'),
+    ('order.payment.initiated',     'analytics_capi_queue'),
+    ('order.payment.completed',     'analytics_capi_queue'),
+    ('order.payment.completed',     'notification_email_queue'),
+    ('order.fulfillment.shipped',   'notification_email_queue'),
+    ('order.fulfillment.delivered', 'notification_email_queue'),
+    ('provider.webhook.received',   'provider_webhooks_queue');
+
+CREATE TYPE chaos_integration.provider_capability AS ENUM ('email', 'payment', 'shipping', 'analytics');
+
+CREATE TABLE chaos_integration.provider_accounts (
     id                           UUID                            NOT NULL PRIMARY KEY,
     store_id                     UUID                            NOT NULL,
-    capability                   integration.provider_capability NOT NULL,
+    capability                   chaos_integration.provider_capability NOT NULL,
     provider                     TEXT                            NOT NULL,
     display_name                 TEXT                            NOT NULL DEFAULT 'Integration Provider',
     credential_secret_reference  TEXT,
@@ -32,7 +40,7 @@ CREATE TABLE integration.provider_accounts (
     CONSTRAINT provider_accounts_store_capability_provider_key     UNIQUE (store_id, capability, provider),
     CONSTRAINT provider_accounts_store_id_id_key                   UNIQUE (store_id, id),
     CONSTRAINT provider_accounts_store_id_capability_provider_key  UNIQUE (store_id, id, capability, provider),
-    CONSTRAINT provider_accounts_store_id_fkey                     FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT provider_accounts_store_id_fkey                     FOREIGN KEY (store_id) REFERENCES chaos_commerce.stores (id) ON DELETE CASCADE,
     CONSTRAINT provider_accounts_provider_format_check             CHECK (provider ~ '^[a-z][a-z0-9_]*$'),
     CONSTRAINT provider_accounts_display_name_length_check         CHECK (length(trim(display_name)) BETWEEN 1 AND 120),
     CONSTRAINT provider_accounts_credential_reference_check        CHECK (credential_secret_reference IS NULL OR credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$' OR (char_length(credential_secret_reference) <= 32768 AND credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$')),
@@ -41,11 +49,11 @@ CREATE TABLE integration.provider_accounts (
     CONSTRAINT provider_accounts_configuration_size_check          CHECK (pg_column_size(configuration) <= 32768)
 );
 
-CREATE TABLE integration.provider_webhooks (
+CREATE TABLE chaos_integration.provider_webhooks (
     id                     UUID                            NOT NULL PRIMARY KEY,
     store_id               UUID                            NOT NULL,
     provider_account_id    UUID                            NOT NULL,
-    capability             integration.provider_capability NOT NULL,
+    capability             chaos_integration.provider_capability NOT NULL,
     provider               TEXT                            NOT NULL,
     provider_event_id      TEXT                            NOT NULL,
     provider_event_type    TEXT                            NOT NULL,
@@ -55,17 +63,17 @@ CREATE TABLE integration.provider_webhooks (
     processed_at           TIMESTAMPTZ,
 
     CONSTRAINT provider_webhooks_dedup_key              UNIQUE (provider_account_id, provider_event_id),
-    CONSTRAINT provider_webhooks_account_fkey           FOREIGN KEY (store_id, provider_account_id) REFERENCES integration.provider_accounts (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT provider_webhooks_account_fkey           FOREIGN KEY (store_id, provider_account_id) REFERENCES chaos_integration.provider_accounts (store_id, id) ON DELETE CASCADE,
     CONSTRAINT provider_webhooks_provider_format_check  CHECK (provider ~ '^[a-z][a-z0-9_]*$'),
     CONSTRAINT provider_webhooks_payload_object_check   CHECK (jsonb_typeof(payload) = 'object'),
     CONSTRAINT provider_webhooks_payload_size_check     CHECK (pg_column_size(payload) <= 524288)
 );
 
-CREATE INDEX provider_accounts_store_capability_created_idx ON integration.provider_accounts (store_id, capability, created_at DESC, id DESC);
-CREATE INDEX provider_webhooks_store_received_idx ON integration.provider_webhooks (store_id, received_at DESC, id DESC);
-CREATE INDEX provider_webhooks_unprocessed_idx ON integration.provider_webhooks (received_at) WHERE processed_at IS NULL;
+CREATE INDEX provider_accounts_store_capability_created_idx ON chaos_integration.provider_accounts (store_id, capability, created_at DESC, id DESC);
+CREATE INDEX provider_webhooks_store_received_idx ON chaos_integration.provider_webhooks (store_id, received_at DESC, id DESC);
+CREATE INDEX provider_webhooks_unprocessed_idx ON chaos_integration.provider_webhooks (received_at) WHERE processed_at IS NULL;
 
-CREATE FUNCTION integration.prevent_provider_account_identity_change ()
+CREATE FUNCTION chaos_integration.prevent_provider_account_identity_change ()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -85,27 +93,40 @@ $$;
 
 CREATE TRIGGER provider_accounts_identity_immutable
     BEFORE UPDATE OF id, store_id, capability, provider
-    ON integration.provider_accounts
-    FOR EACH ROW EXECUTE FUNCTION integration.prevent_provider_account_identity_change();
+    ON chaos_integration.provider_accounts
+    FOR EACH ROW EXECUTE FUNCTION chaos_integration.prevent_provider_account_identity_change();
 
-CREATE FUNCTION integration.publish_topic_event (
+CREATE FUNCTION chaos_integration.publish_topic_event (
     routing_key TEXT,
     payload     JSONB
 )
 RETURNS INTEGER
-LANGUAGE SQL
+LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    SELECT pgmq.send_topic(
-        routing_key,
-        payload,
-        jsonb_build_object('routing_key', routing_key),
-        0
-    );
+DECLARE
+    binding RECORD;
+    delivered INTEGER := 0;
+BEGIN
+    FOR binding IN
+        SELECT tb.queue_name
+        FROM chaos_integration.topic_bindings AS tb
+        WHERE tb.routing_key = publish_topic_event.routing_key
+    LOOP
+        PERFORM pgmq.send(
+            binding.queue_name,
+            payload,
+            jsonb_build_object('routing_key', publish_topic_event.routing_key),
+            0
+        );
+        delivered := delivered + 1;
+    END LOOP;
+    RETURN delivered;
+END;
 $$;
 
-CREATE FUNCTION integration.claim_topic_queue (
+CREATE FUNCTION chaos_integration.claim_topic_queue (
     requested_queue_name TEXT,
     batch_size            INTEGER
 )
@@ -130,7 +151,7 @@ AS $$
     ) AS queued;
 $$;
 
-CREATE FUNCTION integration.finish_topic_event (
+CREATE FUNCTION chaos_integration.finish_topic_event (
     requested_queue_name TEXT,
     requested_msg_id     BIGINT,
     attempts             INTEGER,
@@ -158,15 +179,15 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION integration.resolve_provider_account (
-    requested_capability  integration.provider_capability,
+CREATE FUNCTION chaos_integration.resolve_provider_account (
+    requested_capability  chaos_integration.provider_capability,
     requested_provider    TEXT,
     requested_account_id  UUID
 )
 RETURNS TABLE (
     provider_account_id UUID,
     store_id            UUID,
-    capability          integration.provider_capability,
+    capability          chaos_integration.provider_capability,
     provider            TEXT
 )
 LANGUAGE SQL
@@ -175,15 +196,15 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
     SELECT account.id, account.store_id, account.capability, account.provider
-    FROM integration.provider_accounts AS account
+    FROM chaos_integration.provider_accounts AS account
     WHERE account.id = requested_account_id
       AND account.capability = requested_capability
       AND account.provider = requested_provider
       AND account.enabled;
 $$;
 
-CREATE FUNCTION integration.resolve_webhook_secret_reference (
-    requested_capability  integration.provider_capability,
+CREATE FUNCTION chaos_integration.resolve_webhook_secret_reference (
+    requested_capability  chaos_integration.provider_capability,
     requested_provider    TEXT,
     requested_account_id  UUID
 )
@@ -198,7 +219,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
     SELECT account.id, account.store_id, account.webhook_secret_reference
-    FROM integration.provider_accounts AS account
+    FROM chaos_integration.provider_accounts AS account
     WHERE account.id = requested_account_id
       AND account.capability = requested_capability
       AND account.provider = requested_provider
@@ -206,44 +227,46 @@ AS $$
       AND account.webhook_secret_reference IS NOT NULL;
 $$;
 
-ALTER TABLE integration.provider_accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chaos_integration.provider_accounts ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY store_isolation ON integration.provider_accounts
+CREATE POLICY store_isolation ON chaos_integration.provider_accounts
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-ALTER TABLE integration.provider_webhooks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chaos_integration.provider_webhooks ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY store_isolation ON integration.provider_webhooks
+CREATE POLICY store_isolation ON chaos_integration.provider_webhooks
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-REVOKE ALL ON FUNCTION integration.publish_topic_event (TEXT, JSONB) FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.claim_topic_queue (TEXT, INTEGER) FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.finish_topic_event (TEXT, BIGINT, INTEGER, BOOLEAN, INTEGER) FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.resolve_provider_account (integration.provider_capability, TEXT, UUID) FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.resolve_webhook_secret_reference (integration.provider_capability, TEXT, UUID) FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.prevent_provider_account_identity_change () FROM PUBLIC;
+REVOKE ALL ON FUNCTION chaos_integration.publish_topic_event (TEXT, JSONB) FROM PUBLIC;
+REVOKE ALL ON FUNCTION chaos_integration.claim_topic_queue (TEXT, INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION chaos_integration.finish_topic_event (TEXT, BIGINT, INTEGER, BOOLEAN, INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION chaos_integration.resolve_provider_account (chaos_integration.provider_capability, TEXT, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION chaos_integration.resolve_webhook_secret_reference (chaos_integration.provider_capability, TEXT, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION chaos_integration.prevent_provider_account_identity_change () FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION integration.publish_topic_event (TEXT, JSONB) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION integration.claim_topic_queue (TEXT, INTEGER) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION integration.finish_topic_event (TEXT, BIGINT, INTEGER, BOOLEAN, INTEGER) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION integration.resolve_provider_account (integration.provider_capability, TEXT, UUID) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION integration.resolve_webhook_secret_reference (integration.provider_capability, TEXT, UUID) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION chaos_integration.publish_topic_event (TEXT, JSONB) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION chaos_integration.claim_topic_queue (TEXT, INTEGER) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION chaos_integration.finish_topic_event (TEXT, BIGINT, INTEGER, BOOLEAN, INTEGER) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION chaos_integration.resolve_provider_account (chaos_integration.provider_capability, TEXT, UUID) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION chaos_integration.resolve_webhook_secret_reference (chaos_integration.provider_capability, TEXT, UUID) TO chaos_runtime;
 
-GRANT USAGE ON SCHEMA integration TO chaos_runtime;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA integration TO chaos_runtime;
-ALTER DEFAULT PRIVILEGES IN SCHEMA integration GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+GRANT USAGE ON SCHEMA chaos_integration TO chaos_runtime;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA chaos_integration TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA chaos_integration GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA chaos_integration TO chaos_runtime;
 
-REVOKE UPDATE ON integration.provider_accounts FROM chaos_runtime;
-GRANT UPDATE (display_name, credential_secret_reference, webhook_secret_reference, configuration, enabled, updated_at) ON integration.provider_accounts TO chaos_runtime;
-REVOKE DELETE, TRUNCATE ON integration.provider_accounts FROM chaos_runtime;
+REVOKE ALL ON chaos_integration.topic_bindings FROM chaos_runtime;
 
-REVOKE UPDATE, DELETE, TRUNCATE ON integration.provider_webhooks FROM chaos_runtime;
-GRANT UPDATE (processed_at) ON integration.provider_webhooks TO chaos_runtime;
+REVOKE UPDATE ON chaos_integration.provider_accounts FROM chaos_runtime;
+GRANT UPDATE (display_name, credential_secret_reference, webhook_secret_reference, configuration, enabled, updated_at) ON chaos_integration.provider_accounts TO chaos_runtime;
+REVOKE DELETE, TRUNCATE ON chaos_integration.provider_accounts FROM chaos_runtime;
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA integration GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
+REVOKE UPDATE, DELETE, TRUNCATE ON chaos_integration.provider_webhooks FROM chaos_runtime;
+GRANT UPDATE (processed_at) ON chaos_integration.provider_webhooks TO chaos_runtime;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA chaos_integration GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;

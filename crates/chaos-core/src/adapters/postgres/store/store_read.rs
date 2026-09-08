@@ -34,7 +34,7 @@ impl StoreReadRepository for PostgresStoreReadRepository {
         set_user_context(&mut transaction, user_id).await?;
         let role = sqlx::query_scalar::<_, String>(
             "SELECT role::text \
-             FROM commerce.store_memberships \
+             FROM chaos_commerce.store_memberships \
              WHERE store_id = $1 AND user_id = $2",
         )
         .bind(store_id.as_uuid())
@@ -61,8 +61,8 @@ impl StoreReadRepository for PostgresStoreReadRepository {
         let rows = sqlx::query_as::<_, (Uuid, String, String, String, String, String)>(
             "SELECT store.id, store.name, store.region::text, \
                     store.currency::text, store.status::text, membership.role::text \
-             FROM commerce.store_memberships AS membership \
-             INNER JOIN commerce.stores AS store ON store.id = membership.store_id \
+             FROM chaos_commerce.store_memberships AS membership \
+             INNER JOIN chaos_commerce.stores AS store ON store.id = membership.store_id \
              WHERE membership.user_id = $1 \
                AND ($2::uuid IS NULL OR store.id > $2) \
              ORDER BY store.id ASC \
@@ -148,7 +148,7 @@ mod tests {
         let unique_suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         for (id, label) in [(user_id, "reader"), (other_user_id, "other")] {
-            sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+            sqlx::query("INSERT INTO chaos_identity.users (id, email) VALUES ($1, $2)")
                 .bind(id.as_uuid())
                 .bind(format!("directory-{label}-{unique_suffix}@example.com"))
                 .execute(&owner_pool)
@@ -160,7 +160,7 @@ mod tests {
             (second_store_id, "Second"),
             (other_store_id, "Other"),
         ] {
-            sqlx::query("INSERT INTO commerce.stores (id, name) VALUES ($1, $2)")
+            sqlx::query("INSERT INTO chaos_commerce.stores (id, name) VALUES ($1, $2)")
                 .bind(id.as_uuid())
                 .bind(name)
                 .execute(&owner_pool)
@@ -173,7 +173,7 @@ mod tests {
             (other_store_id, other_user_id),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.store_memberships \
+                "INSERT INTO chaos_commerce.store_memberships \
                  (store_id, user_id, role) VALUES ($1, $2, 'owner')",
             )
             .bind(store_id.as_uuid())
@@ -209,7 +209,7 @@ mod tests {
             None
         );
 
-        sqlx::query("DELETE FROM commerce.stores WHERE id = ANY($1)")
+        sqlx::query("DELETE FROM chaos_commerce.stores WHERE id = ANY($1)")
             .bind(vec![
                 first_store_id.as_uuid(),
                 second_store_id.as_uuid(),
@@ -218,7 +218,7 @@ mod tests {
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM identity.users WHERE id = ANY($1)")
+        sqlx::query("DELETE FROM chaos_identity.users WHERE id = ANY($1)")
             .bind(vec![user_id.as_uuid(), other_user_id.as_uuid()])
             .execute(&owner_pool)
             .await

@@ -7,7 +7,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 /// Meta's destination config (`get_destination`/`configure_destination`,
-/// `integration.provider_accounts` with `capability = 'analytics'`) and the
+/// `chaos_integration.provider_accounts` with `capability = 'analytics'`) and the
 /// `analytics_capi_queue` consumer's credential lookup
 /// (`resolve_meta_account`) share this store — both just read/write the
 /// same provider account row, no separate analytics-specific table.
@@ -40,7 +40,7 @@ async fn context(
     .map_err(db)
 }
 
-/// Publish a topic-routed commerce event (`integration.publish_topic_event`)
+/// Publish a topic-routed commerce event (`chaos_integration.publish_topic_event`)
 /// in the same transaction that produced it, so a rolled-back transaction
 /// never delivers a message a consumer would act on. See
 /// `migrations/0004_integration.sql` for the queue bindings this reaches.
@@ -49,7 +49,7 @@ pub(crate) async fn publish_topic_event(
     routing_key: &str,
     payload: Value,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("SELECT integration.publish_topic_event($1, $2)")
+    sqlx::query("SELECT chaos_integration.publish_topic_event($1, $2)")
         .bind(routing_key)
         .bind(payload)
         .execute(&mut **tx)
@@ -108,7 +108,7 @@ pub(crate) fn cart_event_payload(
     })
 }
 
-/// Splice the ad-platform attribution captured on `commerce.carts` at
+/// Splice the ad-platform attribution captured on `chaos_commerce.carts` at
 /// checkout time (`checkout_attribution_value` in `crate::sales`) into a
 /// server-authoritative event's `_meta`. Shared by the InitiateCheckout
 /// append at checkout creation and the Purchase append at payment
@@ -271,7 +271,7 @@ impl PostgresCapiEventStore {
         context(&mut tx, store.as_uuid(), Some(actor.user_id().as_uuid())).await?;
         let row: Option<ProviderAccountRow> = sqlx::query_as(
             "SELECT id, provider, credential_secret_reference IS NOT NULL, configuration, enabled, created_at, updated_at \
-               FROM integration.provider_accounts \
+               FROM chaos_integration.provider_accounts \
               WHERE store_id=$1 AND capability='analytics' AND provider=$2",
         )
         .bind(store.as_uuid())
@@ -300,7 +300,7 @@ impl PostgresCapiEventStore {
             );
         }
         let row: ProviderAccountRow = sqlx::query_as(
-            "INSERT INTO integration.provider_accounts \
+            "INSERT INTO chaos_integration.provider_accounts \
                 (id, store_id, capability, provider, credential_secret_reference, configuration, enabled, created_at, updated_at) \
              VALUES (uuidv7(), $1, 'analytics', $2, $3, $4, $5, $6, $6) \
              ON CONFLICT (store_id, capability, provider) DO UPDATE SET \
@@ -335,7 +335,7 @@ impl PostgresCapiEventStore {
         context(&mut tx, store_id, None).await?;
         let row: Option<(String, Value)> = sqlx::query_as(
             "SELECT credential_secret_reference, configuration \
-               FROM integration.provider_accounts \
+               FROM chaos_integration.provider_accounts \
               WHERE store_id=$1 AND capability='analytics' AND provider='meta' \
                 AND enabled AND credential_secret_reference IS NOT NULL",
         )

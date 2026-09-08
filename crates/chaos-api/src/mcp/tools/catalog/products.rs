@@ -322,7 +322,7 @@ impl ChaosMcp {
     #[tool(
         description = "List products in the selected Store, including draft and \
                         archived products. The returned title is the canonical Store catalog \
-                        title from commerce.products, not translated storefront content. \
+                        title from chaos_commerce.products, not translated storefront content. \
                         Paginated; use the returned next_cursor for more pages."
     )]
     async fn list_products(
@@ -415,8 +415,8 @@ impl ChaosMcp {
                         options, variants, their selected option values, and \
                         metadata (both product-level and per-variant; each metadata value must be \
                         a JSON object at the root, though nested arrays are allowed). The product title and \
-                        description are canonical fields from commerce.products, and each \
-                        variant title is the canonical field from commerce.product_variants. \
+                        description are canonical fields from chaos_commerce.products, and each \
+                        variant title is the canonical field from chaos_commerce.product_variants. \
                         This tool returns the Store's English catalog fields."
     )]
     async fn get_product(

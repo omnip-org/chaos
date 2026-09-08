@@ -168,10 +168,10 @@ pub(crate) async fn load(
                 order_row.shipping_locality, order_row.shipping_administrative_area, \
                 order_row.shipping_postal_code, order_row.shipping_country_code::text AS shipping_country_code, \
                 order_row.created_at, order_row.updated_at \
-         FROM commerce.orders AS order_row \
-         INNER JOIN commerce.carts AS cart \
+         FROM chaos_commerce.orders AS order_row \
+         INNER JOIN chaos_commerce.carts AS cart \
            ON cart.store_id = order_row.store_id AND cart.id = order_row.cart_id \
-         INNER JOIN integration.provider_accounts AS payment_account \
+         INNER JOIN chaos_integration.provider_accounts AS payment_account \
            ON payment_account.id = order_row.payment_provider_account_id \
           AND payment_account.store_id = order_row.store_id \
           AND payment_account.capability = 'payment' \
@@ -193,7 +193,7 @@ pub(crate) async fn load(
     let lines = sqlx::query_as::<_, OrderLineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 track_inventory, quantity, unit_price_amount_minor, \
-                subtotal_amount_minor FROM commerce.order_lines \
+                subtotal_amount_minor FROM chaos_commerce.order_lines \
          WHERE store_id = $1 AND order_id = $2 ORDER BY position",
     )
     .bind(store_id.as_uuid())
@@ -205,7 +205,7 @@ pub(crate) async fn load(
         "SELECT id, status::text, amount_minor, \
                 payment_provider_reference_id AS provider_reference_id, \
                 failure_code, created_at, updated_at \
-         FROM commerce.order_refunds WHERE store_id = $1 AND order_id = $2 \
+         FROM chaos_commerce.order_refunds WHERE store_id = $1 AND order_id = $2 \
          ORDER BY created_at, id",
     )
     .bind(store_id.as_uuid())
@@ -218,8 +218,8 @@ pub(crate) async fn load(
                 shipping_account.provider::text AS shipping_provider, \
                 provider_reference_id AS provider_reference_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, fulfillment.created_at, fulfillment.updated_at \
-         FROM commerce.order_fulfillments AS fulfillment \
-         INNER JOIN integration.provider_accounts AS shipping_account \
+         FROM chaos_commerce.order_fulfillments AS fulfillment \
+         INNER JOIN chaos_integration.provider_accounts AS shipping_account \
            ON shipping_account.store_id = fulfillment.store_id \
           AND shipping_account.id = fulfillment.provider_account_id \
           AND shipping_account.capability = 'shipping' \
@@ -302,10 +302,10 @@ pub(crate) async fn load_many(
                 order_row.shipping_locality, order_row.shipping_administrative_area, \
                 order_row.shipping_postal_code, order_row.shipping_country_code::text AS shipping_country_code, \
                 order_row.created_at, order_row.updated_at \
-         FROM commerce.orders AS order_row \
-         INNER JOIN commerce.carts AS cart \
+         FROM chaos_commerce.orders AS order_row \
+         INNER JOIN chaos_commerce.carts AS cart \
            ON cart.store_id = order_row.store_id AND cart.id = order_row.cart_id \
-         INNER JOIN integration.provider_accounts AS payment_account \
+         INNER JOIN chaos_integration.provider_accounts AS payment_account \
            ON payment_account.id = order_row.payment_provider_account_id \
           AND payment_account.store_id = order_row.store_id \
           AND payment_account.capability = 'payment' \
@@ -326,7 +326,7 @@ pub(crate) async fn load_many(
     let lines = sqlx::query_as::<_, BatchOrderLineRow>(
         "SELECT order_id, product_id, product_variant_id, product_title, variant_title, sku, \
                 track_inventory, quantity, unit_price_amount_minor, subtotal_amount_minor \
-         FROM commerce.order_lines \
+         FROM chaos_commerce.order_lines \
          WHERE store_id = $1 AND order_id = ANY($2::uuid[]) \
          ORDER BY order_id, position",
     )
@@ -339,7 +339,7 @@ pub(crate) async fn load_many(
         "SELECT order_id, id, status::text, amount_minor, \
                 payment_provider_reference_id AS provider_reference_id, \
                 failure_code, created_at, updated_at \
-         FROM commerce.order_refunds WHERE store_id = $1 AND order_id = ANY($2::uuid[]) \
+         FROM chaos_commerce.order_refunds WHERE store_id = $1 AND order_id = ANY($2::uuid[]) \
          ORDER BY order_id, created_at, id",
     )
     .bind(store_id.as_uuid())
@@ -352,8 +352,8 @@ pub(crate) async fn load_many(
                 shipping_account.provider::text AS shipping_provider, \
                 provider_reference_id AS provider_reference_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, fulfillment.created_at, fulfillment.updated_at \
-         FROM commerce.order_fulfillments AS fulfillment \
-         INNER JOIN integration.provider_accounts AS shipping_account \
+         FROM chaos_commerce.order_fulfillments AS fulfillment \
+         INNER JOIN chaos_integration.provider_accounts AS shipping_account \
            ON shipping_account.store_id = fulfillment.store_id \
           AND shipping_account.id = fulfillment.provider_account_id \
           AND shipping_account.capability = 'shipping' \

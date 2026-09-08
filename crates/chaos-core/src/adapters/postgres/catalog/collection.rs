@@ -64,7 +64,7 @@ impl PostgresCollectionRepository {
     ) -> Result<CollectionId, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
         require_store(&mut tx, &actor, record.store_id).await?;
-        sqlx::query("INSERT INTO commerce.collections (id, store_id, handle, title, description, meta, status, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,'draft',$7,$7)")
+        sqlx::query("INSERT INTO chaos_commerce.collections (id, store_id, handle, title, description, meta, status, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,'draft',$7,$7)")
             .bind(record.id.as_uuid()).bind(record.store_id.as_uuid())
             .bind(record.content.handle().as_str()).bind(record.content.title()).bind(record.content.description())
             .bind(record.content.metadata().map(chaos_domain::catalog::CatalogMetadata::as_str)).bind(record.created_at)
@@ -85,7 +85,7 @@ impl PostgresCollectionRepository {
             return Ok(None);
         }
         let rows = sqlx::query_as::<_, (Uuid,String,String,String,i64,OffsetDateTime,OffsetDateTime)>(
-            "SELECT collection.id, collection.handle::text, collection.title, collection.status::text, count(member.product_id), collection.created_at, collection.updated_at FROM commerce.collections AS collection LEFT JOIN commerce.collection_products AS member ON member.store_id = collection.store_id AND member.collection_id = collection.id WHERE collection.store_id = $1 AND ($2::uuid IS NULL OR collection.id > $2) GROUP BY collection.id ORDER BY collection.id LIMIT $3")
+            "SELECT collection.id, collection.handle::text, collection.title, collection.status::text, count(member.product_id), collection.created_at, collection.updated_at FROM chaos_commerce.collections AS collection LEFT JOIN chaos_commerce.collection_products AS member ON member.store_id = collection.store_id AND member.collection_id = collection.id WHERE collection.store_id = $1 AND ($2::uuid IS NULL OR collection.id > $2) GROUP BY collection.id ORDER BY collection.id LIMIT $3")
             .bind(store_id.as_uuid()).bind(after.map(CollectionId::as_uuid)).bind(i64::from(limit))
             .fetch_all(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
@@ -112,15 +112,15 @@ impl PostgresCollectionRepository {
         collection_id: CollectionId,
     ) -> Result<Option<CollectionDetail>, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
-        let header = sqlx::query_as::<_, (Uuid,String,String,String,String,Option<serde_json::Value>,OffsetDateTime,OffsetDateTime)>("SELECT id, handle::text, title, description, status::text, meta, created_at, updated_at FROM commerce.collections WHERE store_id=$1 AND id=$2")
+        let header = sqlx::query_as::<_, (Uuid,String,String,String,String,Option<serde_json::Value>,OffsetDateTime,OffsetDateTime)>("SELECT id, handle::text, title, description, status::text, meta, created_at, updated_at FROM chaos_commerce.collections WHERE store_id=$1 AND id=$2")
             .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_optional(&mut *tx).await.map_err(database_error)?;
         let Some(row) = header else {
             tx.commit().await.map_err(database_error)?;
             return Ok(None);
         };
-        let products = sqlx::query_as::<_, (Uuid,i32)>("SELECT product_id, position FROM commerce.collection_products WHERE store_id=$1 AND collection_id=$2 ORDER BY position")
+        let products = sqlx::query_as::<_, (Uuid,i32)>("SELECT product_id, position FROM chaos_commerce.collection_products WHERE store_id=$1 AND collection_id=$2 ORDER BY position")
             .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_all(&mut *tx).await.map_err(database_error)?;
-        let channels = sqlx::query_scalar::<_,Uuid>("SELECT channel_id FROM commerce.collection_publications WHERE store_id=$1 AND collection_id=$2 ORDER BY channel_id")
+        let channels = sqlx::query_scalar::<_,Uuid>("SELECT channel_id FROM chaos_commerce.collection_publications WHERE store_id=$1 AND collection_id=$2 ORDER BY channel_id")
             .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_all(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
         Ok(Some(CollectionDetail {
@@ -158,7 +158,7 @@ impl PostgresCollectionRepository {
     ) -> Result<CollectionId, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
         require_writable_collection(&mut tx, &actor, store_id, collection_id).await?;
-        let changed=sqlx::query("UPDATE commerce.collections SET handle=$3,title=$4,description=$5,meta=$6::jsonb,updated_at=$7 WHERE store_id=$1 AND id=$2")
+        let changed=sqlx::query("UPDATE chaos_commerce.collections SET handle=$3,title=$4,description=$5,meta=$6::jsonb,updated_at=$7 WHERE store_id=$1 AND id=$2")
             .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(content.handle().as_str()).bind(content.title()).bind(content.description()).bind(content.metadata().map(chaos_domain::catalog::CatalogMetadata::as_str)).bind(now).execute(&mut *tx).await.map_err(map_collection_error)?.rows_affected();
         require_changed(changed, collection_id)?;
         tx.commit().await.map_err(database_error)?;
@@ -174,14 +174,14 @@ impl PostgresCollectionRepository {
         now: OffsetDateTime,
     ) -> Result<CollectionId, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
-        let changed=sqlx::query("UPDATE commerce.collections SET status=$3::commerce.collection_status,updated_at=$4 WHERE store_id=$1 AND id=$2 AND (($3='active' AND status='draft') OR ($3='archived' AND status IN ('draft','active')))")
+        let changed=sqlx::query("UPDATE chaos_commerce.collections SET status=$3::chaos_commerce.collection_status,updated_at=$4 WHERE store_id=$1 AND id=$2 AND (($3='active' AND status='draft') OR ($3='archived' AND status IN ('draft','active')))")
             .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(status.as_str()).bind(now).execute(&mut *tx).await.map_err(database_error)?.rows_affected();
         if changed == 0 && !collection_exists(&mut tx, &actor, store_id, collection_id).await? {
             return Err(not_found(collection_id));
         }
         if changed == 0 && status == CollectionStatus::Active {
             let current: String = sqlx::query_scalar(
-                "SELECT status::text FROM commerce.collections WHERE store_id=$1 AND id=$2",
+                "SELECT status::text FROM chaos_commerce.collections WHERE store_id=$1 AND id=$2",
             )
             .bind(store_id.as_uuid())
             .bind(collection_id.as_uuid())
@@ -211,7 +211,7 @@ impl PostgresCollectionRepository {
         require_writable_collection(&mut tx, &actor, store_id, collection_id).await?;
         let ids: Vec<Uuid> = product_ids.iter().map(|id| id.as_uuid()).collect();
         let count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM commerce.products WHERE store_id=$1 AND id=ANY($2::uuid[])",
+            "SELECT count(*) FROM chaos_commerce.products WHERE store_id=$1 AND id=ANY($2::uuid[])",
         )
         .bind(store_id.as_uuid())
         .bind(&ids)
@@ -227,7 +227,7 @@ impl PostgresCollectionRepository {
             });
         }
         sqlx::query(
-            "DELETE FROM commerce.collection_products WHERE store_id=$1 AND collection_id=$2",
+            "DELETE FROM chaos_commerce.collection_products WHERE store_id=$1 AND collection_id=$2",
         )
         .bind(store_id.as_uuid())
         .bind(collection_id.as_uuid())
@@ -235,15 +235,17 @@ impl PostgresCollectionRepository {
         .await
         .map_err(database_error)?;
         for (position, id) in ids.iter().enumerate() {
-            sqlx::query("INSERT INTO commerce.collection_products (store_id,collection_id,product_id,position,created_at) VALUES ($1,$2,$3,$4,$5)").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(id).bind(i32::try_from(position).map_err(|_|invalid_snapshot())?).bind(now).execute(&mut *tx).await.map_err(database_error)?;
+            sqlx::query("INSERT INTO chaos_commerce.collection_products (store_id,collection_id,product_id,position,created_at) VALUES ($1,$2,$3,$4,$5)").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(id).bind(i32::try_from(position).map_err(|_|invalid_snapshot())?).bind(now).execute(&mut *tx).await.map_err(database_error)?;
         }
-        sqlx::query("UPDATE commerce.collections SET updated_at=$3 WHERE store_id=$1 AND id=$2")
-            .bind(store_id.as_uuid())
-            .bind(collection_id.as_uuid())
-            .bind(now)
-            .execute(&mut *tx)
-            .await
-            .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE chaos_commerce.collections SET updated_at=$3 WHERE store_id=$1 AND id=$2",
+        )
+        .bind(store_id.as_uuid())
+        .bind(collection_id.as_uuid())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
         Ok(collection_id)
     }
@@ -262,7 +264,7 @@ impl PostgresCollectionRepository {
         } = record;
         let mut tx = self.begin(&actor).await?;
         let status: String = sqlx::query_scalar(
-            "SELECT status::text FROM commerce.collections WHERE store_id=$1 AND id=$2",
+            "SELECT status::text FROM chaos_commerce.collections WHERE store_id=$1 AND id=$2",
         )
         .bind(store_id.as_uuid())
         .bind(collection_id.as_uuid())
@@ -276,7 +278,7 @@ impl PostgresCollectionRepository {
                 message: "the Collection must be active before publication",
             });
         }
-        let channel:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM commerce.channels WHERE store_id=$1 AND id=$2 AND status='active')").bind(store_id.as_uuid()).bind(channel_id.as_uuid()).fetch_one(&mut *tx).await.map_err(database_error)?;
+        let channel:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chaos_commerce.channels WHERE store_id=$1 AND id=$2 AND status='active')").bind(store_id.as_uuid()).bind(channel_id.as_uuid()).fetch_one(&mut *tx).await.map_err(database_error)?;
         if published && !channel {
             return Err(ApplicationError::NotFound {
                 resource: "channel",
@@ -284,9 +286,9 @@ impl PostgresCollectionRepository {
             });
         }
         if published {
-            sqlx::query("INSERT INTO commerce.collection_publications (store_id,collection_id,channel_id,published_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(channel_id.as_uuid()).bind(now).execute(&mut *tx).await.map_err(database_error)?;
+            sqlx::query("INSERT INTO chaos_commerce.collection_publications (store_id,collection_id,channel_id,published_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(channel_id.as_uuid()).bind(now).execute(&mut *tx).await.map_err(database_error)?;
         } else {
-            sqlx::query("DELETE FROM commerce.collection_publications WHERE store_id=$1 AND collection_id=$2 AND channel_id=$3").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(channel_id.as_uuid()).execute(&mut *tx).await.map_err(database_error)?;
+            sqlx::query("DELETE FROM chaos_commerce.collection_publications WHERE store_id=$1 AND collection_id=$2 AND channel_id=$3").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(channel_id.as_uuid()).execute(&mut *tx).await.map_err(database_error)?;
         }
         tx.commit().await.map_err(database_error)?;
         Ok(collection_id)
@@ -300,7 +302,7 @@ impl PostgresCollectionRepository {
     ) -> Result<Vec<StorefrontCollectionItem>, ApplicationError> {
         let channel = actor.channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut tx = self.begin_storefront(actor).await?;
-        let rows=sqlx::query_as::<_,(Uuid,String,String,String,Option<serde_json::Value>,i64)>("SELECT collection.id,collection.handle::text,collection.title,collection.description,collection.meta,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM commerce.collections AS collection INNER JOIN commerce.collection_publications AS publication ON publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.channel_id=$2 INNER JOIN commerce.stores AS store ON store.id=collection.store_id AND store.status='active' INNER JOIN commerce.channels AS channel ON channel.store_id=collection.store_id AND channel.id=$2 AND channel.status='active' LEFT JOIN commerce.collection_products AS member ON member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN commerce.products AS product ON product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN commerce.product_publications AS product_publication ON product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.channel_id=$2 WHERE collection.store_id=$1 AND collection.status='active' AND ($3::uuid IS NULL OR collection.id>$3) GROUP BY collection.id ORDER BY collection.id LIMIT $4")
+        let rows=sqlx::query_as::<_,(Uuid,String,String,String,Option<serde_json::Value>,i64)>("SELECT collection.id,collection.handle::text,collection.title,collection.description,collection.meta,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM chaos_commerce.collections AS collection INNER JOIN chaos_commerce.collection_publications AS publication ON publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.channel_id=$2 INNER JOIN chaos_commerce.stores AS store ON store.id=collection.store_id AND store.status='active' INNER JOIN chaos_commerce.channels AS channel ON channel.store_id=collection.store_id AND channel.id=$2 AND channel.status='active' LEFT JOIN chaos_commerce.collection_products AS member ON member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN chaos_commerce.products AS product ON product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN chaos_commerce.product_publications AS product_publication ON product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.channel_id=$2 WHERE collection.store_id=$1 AND collection.status='active' AND ($3::uuid IS NULL OR collection.id>$3) GROUP BY collection.id ORDER BY collection.id LIMIT $4")
             .bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(after.map(CollectionId::as_uuid)).bind(i64::from(limit)).fetch_all(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
         rows.into_iter().map(storefront_item).collect()
@@ -313,7 +315,7 @@ impl PostgresCollectionRepository {
     ) -> Result<Option<StorefrontCollectionItem>, ApplicationError> {
         let channel = actor.channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut tx = self.begin_storefront(actor).await?;
-        let row=sqlx::query_as::<_,(Uuid,String,String,String,Option<serde_json::Value>,i64)>("SELECT collection.id,collection.handle::text,collection.title,collection.description,collection.meta,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM commerce.collections AS collection INNER JOIN commerce.collection_publications AS publication ON publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.channel_id=$2 INNER JOIN commerce.stores AS store ON store.id=collection.store_id AND store.status='active' INNER JOIN commerce.channels AS channel ON channel.store_id=collection.store_id AND channel.id=$2 AND channel.status='active' LEFT JOIN commerce.collection_products AS member ON member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN commerce.products AS product ON product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN commerce.product_publications AS product_publication ON product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.channel_id=$2 WHERE collection.store_id=$1 AND collection.status='active' AND collection.handle=$3 GROUP BY collection.id")
+        let row=sqlx::query_as::<_,(Uuid,String,String,String,Option<serde_json::Value>,i64)>("SELECT collection.id,collection.handle::text,collection.title,collection.description,collection.meta,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM chaos_commerce.collections AS collection INNER JOIN chaos_commerce.collection_publications AS publication ON publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.channel_id=$2 INNER JOIN chaos_commerce.stores AS store ON store.id=collection.store_id AND store.status='active' INNER JOIN chaos_commerce.channels AS channel ON channel.store_id=collection.store_id AND channel.id=$2 AND channel.status='active' LEFT JOIN chaos_commerce.collection_products AS member ON member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN chaos_commerce.products AS product ON product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN chaos_commerce.product_publications AS product_publication ON product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.channel_id=$2 WHERE collection.store_id=$1 AND collection.status='active' AND collection.handle=$3 GROUP BY collection.id")
             .bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(handle).fetch_optional(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
         row.map(storefront_item).transpose()
@@ -351,7 +353,7 @@ async fn store_exists(
     _actor: &AdminActor,
     store: StoreId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM commerce.stores WHERE id=$1)")
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chaos_commerce.stores WHERE id=$1)")
         .bind(store.as_uuid())
         .fetch_one(&mut **tx)
         .await
@@ -364,7 +366,7 @@ async fn collection_exists(
     id: CollectionId,
 ) -> Result<bool, ApplicationError> {
     sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM commerce.collections WHERE store_id=$1 AND id=$2)",
+        "SELECT EXISTS(SELECT 1 FROM chaos_commerce.collections WHERE store_id=$1 AND id=$2)",
     )
     .bind(store.as_uuid())
     .bind(id.as_uuid())
@@ -379,7 +381,7 @@ async fn require_writable_collection(
     id: CollectionId,
 ) -> Result<(), ApplicationError> {
     let status: Option<String> = sqlx::query_scalar(
-        "SELECT status::text FROM commerce.collections WHERE store_id=$1 AND id=$2",
+        "SELECT status::text FROM chaos_commerce.collections WHERE store_id=$1 AND id=$2",
     )
     .bind(store.as_uuid())
     .bind(id.as_uuid())

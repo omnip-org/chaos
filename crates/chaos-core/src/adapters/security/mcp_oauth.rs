@@ -170,7 +170,7 @@ impl McpOAuthService {
             application_type,
         };
         sqlx::query(
-            "INSERT INTO identity.oauth_clients
+            "INSERT INTO chaos_identity.oauth_clients
              (client_id, client_name, redirect_uris, grant_types, response_types,
               token_endpoint_auth_method, application_type)
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -215,7 +215,7 @@ impl McpOAuthService {
         >(
             "SELECT client_id, client_name, redirect_uris, grant_types, response_types,
                     token_endpoint_auth_method, application_type
-             FROM identity.oauth_clients
+             FROM chaos_identity.oauth_clients
              WHERE client_id = $1",
         )
         .bind(client_id)
@@ -236,7 +236,7 @@ impl McpOAuthService {
     ) -> Result<AuthorizationPage, ApplicationError> {
         let transaction_id = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO identity.oauth_authorization_requests
+            "INSERT INTO chaos_identity.oauth_authorization_requests
              (id, client_id, redirect_uri, scope, state, code_challenge,
               code_challenge_method, resource, expires_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
@@ -282,7 +282,7 @@ impl McpOAuthService {
         >(
             "SELECT client_id, redirect_uri, scope, state, code_challenge,
                     code_challenge_method, resource, expires_at, used_at
-             FROM identity.oauth_authorization_requests
+             FROM chaos_identity.oauth_authorization_requests
              WHERE id = $1
              FOR UPDATE",
         )
@@ -312,7 +312,7 @@ impl McpOAuthService {
         let code = random_token(AUTHORIZATION_CODE_PREFIX);
         let code_digest = digest(&code);
         sqlx::query(
-            "UPDATE identity.oauth_authorization_requests
+            "UPDATE chaos_identity.oauth_authorization_requests
              SET used_at = CURRENT_TIMESTAMP
              WHERE id = $1",
         )
@@ -321,7 +321,7 @@ impl McpOAuthService {
         .await
         .map_err(database_error)?;
         sqlx::query(
-            "INSERT INTO identity.oauth_authorization_codes
+            "INSERT INTO chaos_identity.oauth_authorization_codes
              (code_digest, client_id, user_id, redirect_uri, scope, code_challenge,
               code_challenge_method, resource, expires_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
@@ -386,8 +386,8 @@ impl McpOAuthService {
             "SELECT code.client_id, code.user_id, code.redirect_uri, code.scope,
                     code.code_challenge, code.code_challenge_method, code.resource,
                     code.expires_at, code.consumed_at
-             FROM identity.oauth_authorization_codes AS code
-             INNER JOIN identity.users AS identity_user
+             FROM chaos_identity.oauth_authorization_codes AS code
+             INNER JOIN chaos_identity.users AS identity_user
                 ON identity_user.id = code.user_id AND identity_user.status = 'active'
              WHERE code.code_digest = $1
              FOR UPDATE",
@@ -419,7 +419,7 @@ impl McpOAuthService {
             return Err(ApplicationError::Unauthorized);
         }
         sqlx::query(
-            "UPDATE identity.oauth_authorization_codes
+            "UPDATE chaos_identity.oauth_authorization_codes
              SET consumed_at = CURRENT_TIMESTAMP
              WHERE code_digest = $1",
         )
@@ -453,8 +453,8 @@ impl McpOAuthService {
         >(
             "SELECT token.client_id, token.user_id, token.scope, token.resource,
                     token.expires_at, token.revoked_at
-             FROM identity.oauth_refresh_tokens AS token
-             INNER JOIN identity.users AS identity_user
+             FROM chaos_identity.oauth_refresh_tokens AS token
+             INNER JOIN chaos_identity.users AS identity_user
                 ON identity_user.id = token.user_id AND identity_user.status = 'active'
              WHERE token.token_digest = $1
              FOR UPDATE",
@@ -480,7 +480,7 @@ impl McpOAuthService {
             // token family may have been copied. Revoke the remaining family
             // before returning the generic invalid_grant response.
             sqlx::query(
-                "UPDATE identity.oauth_refresh_tokens
+                "UPDATE chaos_identity.oauth_refresh_tokens
                  SET revoked_at = CURRENT_TIMESTAMP
                  WHERE client_id = $1 AND user_id = $2 AND revoked_at IS NULL",
             )
@@ -490,7 +490,7 @@ impl McpOAuthService {
             .await
             .map_err(database_error)?;
             sqlx::query(
-                "UPDATE identity.oauth_access_tokens
+                "UPDATE chaos_identity.oauth_access_tokens
                  SET revoked_at = CURRENT_TIMESTAMP
                  WHERE client_id = $1 AND user_id = $2 AND revoked_at IS NULL",
             )
@@ -512,7 +512,7 @@ impl McpOAuthService {
         let tokens = issue_tokens(&mut transaction, client_id, user_id, &scope, resource).await?;
         let new_digest = digest(tokens.refresh_token.expose_secret());
         sqlx::query(
-            "UPDATE identity.oauth_refresh_tokens
+            "UPDATE chaos_identity.oauth_refresh_tokens
              SET revoked_at = CURRENT_TIMESTAMP, replaced_by_digest = $2
              WHERE token_digest = $1",
         )
@@ -534,8 +534,8 @@ impl McpOAuthService {
         }
         let row = sqlx::query_as::<_, (Uuid, String)>(
             "SELECT token.user_id, token.scope
-             FROM identity.oauth_access_tokens AS token
-             INNER JOIN identity.users AS identity_user
+             FROM chaos_identity.oauth_access_tokens AS token
+             INNER JOIN chaos_identity.users AS identity_user
                 ON identity_user.id = token.user_id AND identity_user.status = 'active'
              WHERE token.token_digest = $1
                AND token.resource = $2
@@ -570,7 +570,7 @@ async fn issue_tokens(
     let access_expires_at = OffsetDateTime::now_utc() + ACCESS_TOKEN_LIFETIME;
     let refresh_expires_at = OffsetDateTime::now_utc() + REFRESH_TOKEN_LIFETIME;
     sqlx::query(
-        "INSERT INTO identity.oauth_access_tokens
+        "INSERT INTO chaos_identity.oauth_access_tokens
          (token_digest, client_id, user_id, scope, resource, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
@@ -584,7 +584,7 @@ async fn issue_tokens(
     .await
     .map_err(database_error)?;
     sqlx::query(
-        "INSERT INTO identity.oauth_refresh_tokens
+        "INSERT INTO chaos_identity.oauth_refresh_tokens
          (token_digest, client_id, user_id, scope, resource, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6)",
     )

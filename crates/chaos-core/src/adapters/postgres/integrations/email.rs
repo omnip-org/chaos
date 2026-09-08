@@ -78,7 +78,7 @@ impl PostgresEmailRepository {
                     credential_secret_reference IS NOT NULL, \
                     webhook_secret_reference IS NOT NULL, configuration, \
                     created_at, updated_at \
-             FROM integration.provider_accounts \
+             FROM chaos_integration.provider_accounts \
              WHERE store_id = $1 AND capability = 'email' \
                AND ($2::uuid IS NULL OR id < $2) \
              ORDER BY id DESC LIMIT $3",
@@ -120,7 +120,7 @@ impl PostgresEmailRepository {
         let mut transaction = self.begin_human(actor).await?;
         let id = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO integration.provider_accounts \
+            "INSERT INTO chaos_integration.provider_accounts \
              (id, store_id, capability, provider, display_name, \
               credential_secret_reference, webhook_secret_reference, configuration, enabled) \
              VALUES ($1, $2, 'email', 'resend', $3, $4, $5, $6, $7)",
@@ -151,7 +151,7 @@ impl PostgresEmailRepository {
     ) -> Result<EmailProviderAccountDetail, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         let result = sqlx::query(
-            "UPDATE integration.provider_accounts SET display_name = $3, \
+            "UPDATE chaos_integration.provider_accounts SET display_name = $3, \
                     credential_secret_reference = $4, \
                     webhook_secret_reference = $5, configuration = configuration || $6, \
                     enabled = $7, updated_at = CURRENT_TIMESTAMP \
@@ -199,7 +199,7 @@ impl PostgresEmailRepository {
     ) -> Result<EmailBrandDetail, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         let result = sqlx::query(
-            "UPDATE integration.provider_accounts \
+            "UPDATE chaos_integration.provider_accounts \
              SET configuration = configuration || jsonb_build_object('brand', $2::jsonb), \
                  updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND capability = 'email' AND provider = 'resend'",
@@ -227,7 +227,7 @@ impl PostgresEmailRepository {
     ) -> Result<EmailBrandDetail, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         let result = sqlx::query(
-            "UPDATE integration.provider_accounts \
+            "UPDATE chaos_integration.provider_accounts \
              SET configuration = configuration - 'brand', updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND capability = 'email' AND provider = 'resend'",
         )
@@ -282,11 +282,11 @@ impl PostgresEmailRepository {
                     account.provider AS provider, \
                     account.credential_secret_reference AS credential_secret_reference, \
                     account.configuration AS account_configuration \
-             FROM commerce.orders AS order_row \
-             INNER JOIN commerce.channels AS channel \
+             FROM chaos_commerce.orders AS order_row \
+             INNER JOIN chaos_commerce.channels AS channel \
                ON channel.store_id = order_row.store_id \
               AND channel.id = order_row.channel_id \
-             INNER JOIN integration.provider_accounts AS account \
+             INNER JOIN chaos_integration.provider_accounts AS account \
                ON account.store_id = order_row.store_id \
               AND account.capability = 'email' \
               AND account.provider = 'resend' \
@@ -346,7 +346,7 @@ impl PostgresEmailRepository {
         let line_items = sqlx::query_as::<_, EmailOrderLineRow>(
             "SELECT product_title, variant_title, sku, quantity, \
                     unit_price_amount_minor, subtotal_amount_minor \
-             FROM commerce.order_lines \
+             FROM chaos_commerce.order_lines \
              WHERE store_id = $1 AND order_id = $2 \
              ORDER BY position",
         )
@@ -416,11 +416,11 @@ impl PostgresEmailRepository {
                     account.provider AS provider, \
                     account.credential_secret_reference AS credential_secret_reference, \
                     account.configuration AS account_configuration \
-             FROM commerce.orders AS order_row \
-             INNER JOIN commerce.channels AS channel \
+             FROM chaos_commerce.orders AS order_row \
+             INNER JOIN chaos_commerce.channels AS channel \
                ON channel.store_id = order_row.store_id \
               AND channel.id = order_row.channel_id \
-             INNER JOIN integration.provider_accounts AS account \
+             INNER JOIN chaos_integration.provider_accounts AS account \
                ON account.store_id = order_row.store_id \
               AND account.capability = 'email' \
               AND account.provider = 'resend' \
@@ -543,8 +543,8 @@ async fn load_email_brand(
 ) -> Result<Option<EmailBrandRow>, ApplicationError> {
     sqlx::query_as::<_, EmailBrandRow>(
         "SELECT store.name, account.configuration \
-         FROM commerce.stores AS store \
-         INNER JOIN integration.provider_accounts AS account \
+         FROM chaos_commerce.stores AS store \
+         INNER JOIN chaos_integration.provider_accounts AS account \
            ON account.store_id = store.id \
           AND account.capability = 'email' \
           AND account.provider = 'resend' \
@@ -689,7 +689,7 @@ async fn load_email_provider_account(
                 credential_secret_reference IS NOT NULL, \
                 webhook_secret_reference IS NOT NULL, configuration, \
                 created_at, updated_at \
-         FROM integration.provider_accounts \
+         FROM chaos_integration.provider_accounts \
          WHERE store_id = $1 AND id = $2 AND capability = 'email'",
     )
     .bind(store_id.as_uuid())

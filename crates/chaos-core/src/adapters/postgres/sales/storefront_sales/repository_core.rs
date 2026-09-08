@@ -123,7 +123,7 @@ async fn ensure_cart_owner(
     shopper_id: ShopperId,
 ) -> Result<(), ApplicationError> {
     let owned: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM commerce.carts \
+        "SELECT EXISTS (SELECT 1 FROM chaos_commerce.carts \
          WHERE store_id = $1 AND channel_id = $2 \
            AND id = $3 AND shopper_id = $4)",
     )

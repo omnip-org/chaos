@@ -43,7 +43,7 @@ impl PostgresCatalogConfigurationRepository {
         .map_err(database_error)?;
 
         let (status, current_revision) = sqlx::query_as::<_, (String, i64)>(
-            "SELECT status::text, revision FROM commerce.products \
+            "SELECT status::text, revision FROM chaos_commerce.products \
              WHERE store_id=$1 AND id=$2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -87,7 +87,7 @@ impl PostgresCatalogConfigurationRepository {
         }
 
         sqlx::query(
-            "UPDATE commerce.product_variants \
+            "UPDATE chaos_commerce.product_variants \
              SET status='archived', updated_at=$3 \
              WHERE store_id=$1 AND product_id=$2 AND status <> 'archived'",
         )
@@ -100,7 +100,7 @@ impl PostgresCatalogConfigurationRepository {
         for variant in &draft.variants {
             upsert_variant(&mut transaction, store_id, product_id, variant, changed_at).await?;
             sqlx::query(
-                "DELETE FROM commerce.variant_selected_options \
+                "DELETE FROM chaos_commerce.variant_selected_options \
                  WHERE store_id=$1 AND product_id=$2 AND variant_id=$3",
             )
             .bind(store_id.as_uuid())
@@ -117,7 +117,7 @@ impl PostgresCatalogConfigurationRepository {
                     .copied()
                     .ok_or_else(|| invalid_configuration("selected_option_value_ids"))?;
                 sqlx::query(
-                    "INSERT INTO commerce.variant_selected_options \
+                    "INSERT INTO chaos_commerce.variant_selected_options \
                      (store_id, product_id, variant_id, option_id, option_value_id) \
                      VALUES ($1,$2,$3,$4,$5)",
                 )
@@ -141,7 +141,7 @@ impl PostgresCatalogConfigurationRepository {
         .await?;
 
         let revision = sqlx::query_scalar::<_, i64>(
-            "UPDATE commerce.products \
+            "UPDATE chaos_commerce.products \
              SET revision=revision+1, updated_at=$3 \
              WHERE store_id=$1 AND id=$2 \
              RETURNING revision",
@@ -176,7 +176,7 @@ async fn archive_removed_media_links(
         .collect::<Vec<_>>();
     let mut removed_media_asset_ids = HashSet::new();
     let option_value_asset_ids = sqlx::query_scalar::<_, uuid::Uuid>(
-        "UPDATE commerce.product_option_value_media_assets \
+        "UPDATE chaos_commerce.product_option_value_media_assets \
          SET archived_at=$3 \
          WHERE store_id=$1 AND product_id=$2 AND archived_at IS NULL \
            AND NOT (option_value_id = ANY($4::uuid[])) \
@@ -192,7 +192,7 @@ async fn archive_removed_media_links(
     removed_media_asset_ids.extend(option_value_asset_ids);
 
     let variant_asset_ids = sqlx::query_scalar::<_, uuid::Uuid>(
-        "UPDATE commerce.product_variant_media_assets \
+        "UPDATE chaos_commerce.product_variant_media_assets \
          SET archived_at=$3 \
          WHERE store_id=$1 AND product_id=$2 AND archived_at IS NULL \
            AND NOT (product_variant_id = ANY($4::uuid[])) \
@@ -219,31 +219,31 @@ async fn archive_unreferenced_assets(
         return Ok(());
     }
     sqlx::query(
-        "UPDATE commerce.media_assets AS media \
+        "UPDATE chaos_commerce.media_assets AS media \
          SET status='archived', archived_at=$3, updated_at=$3 \
          WHERE media.store_id=$1 AND media.id=ANY($2::uuid[]) AND media.status<>'archived' \
            AND NOT EXISTS ( \
-             SELECT 1 FROM commerce.product_media_assets AS link \
+             SELECT 1 FROM chaos_commerce.product_media_assets AS link \
              WHERE link.store_id=media.store_id AND link.media_asset_id=media.id \
                AND link.archived_at IS NULL \
            ) \
            AND NOT EXISTS ( \
-             SELECT 1 FROM commerce.product_option_value_media_assets AS link \
+             SELECT 1 FROM chaos_commerce.product_option_value_media_assets AS link \
              WHERE link.store_id=media.store_id AND link.media_asset_id=media.id \
                AND link.archived_at IS NULL \
            ) \
            AND NOT EXISTS ( \
-             SELECT 1 FROM commerce.product_variant_media_assets AS link \
+             SELECT 1 FROM chaos_commerce.product_variant_media_assets AS link \
              WHERE link.store_id=media.store_id AND link.media_asset_id=media.id \
                AND link.archived_at IS NULL \
            ) \
            AND NOT EXISTS ( \
-             SELECT 1 FROM commerce.review_media_assets AS link \
+             SELECT 1 FROM chaos_commerce.review_media_assets AS link \
              WHERE link.store_id=media.store_id AND link.media_asset_id=media.id \
                AND link.archived_at IS NULL \
            ) \
            AND NOT EXISTS ( \
-             SELECT 1 FROM commerce.product_meta_media_assets AS link \
+             SELECT 1 FROM chaos_commerce.product_meta_media_assets AS link \
              WHERE link.store_id=media.store_id AND link.media_asset_id=media.id \
                AND link.archived_at IS NULL \
            )",
@@ -270,7 +270,7 @@ async fn validate_existing_ids(
         .collect::<Vec<_>>();
     if !option_ids.is_empty() {
         let rows = sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid)>(
-            "SELECT id, product_id FROM commerce.product_options \
+            "SELECT id, product_id FROM chaos_commerce.product_options \
              WHERE store_id=$1 AND id=ANY($2::uuid[])",
         )
         .bind(store_id.as_uuid())
@@ -288,7 +288,7 @@ async fn validate_existing_ids(
         .collect::<Vec<_>>();
     if !value_ids.is_empty() {
         let rows = sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid, uuid::Uuid)>(
-            "SELECT id, product_id, option_id FROM commerce.product_option_values \
+            "SELECT id, product_id, option_id FROM chaos_commerce.product_option_values \
              WHERE store_id=$1 AND id=ANY($2::uuid[])",
         )
         .bind(store_id.as_uuid())
@@ -328,7 +328,7 @@ async fn validate_existing_ids(
         .collect::<Vec<_>>();
     if !variant_ids.is_empty() {
         let rows = sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid)>(
-            "SELECT id, product_id FROM commerce.product_variants \
+            "SELECT id, product_id FROM chaos_commerce.product_variants \
              WHERE store_id=$1 AND id=ANY($2::uuid[])",
         )
         .bind(store_id.as_uuid())
@@ -368,7 +368,7 @@ async fn archive_options(
     changed_at: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "UPDATE commerce.product_options \
+        "UPDATE chaos_commerce.product_options \
          SET archived_at=$3, updated_at=$3 \
          WHERE store_id=$1 AND product_id=$2 AND archived_at IS NULL",
     )
@@ -388,7 +388,7 @@ async fn archive_option_values(
     changed_at: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "UPDATE commerce.product_option_values \
+        "UPDATE chaos_commerce.product_option_values \
          SET archived_at=$3, updated_at=$3 \
          WHERE store_id=$1 AND product_id=$2 AND archived_at IS NULL",
     )
@@ -409,15 +409,15 @@ async fn upsert_option(
     changed_at: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "INSERT INTO commerce.product_options \
+        "INSERT INTO chaos_commerce.product_options \
          (id, store_id, product_id, name, position, archived_at, updated_at) \
          VALUES ($1,$2,$3,$4,$5,NULL,$6) \
          ON CONFLICT (store_id, product_id, id) DO UPDATE SET \
              store_id=EXCLUDED.store_id, product_id=EXCLUDED.product_id, \
              name=EXCLUDED.name, position=EXCLUDED.position, archived_at=NULL, \
              updated_at=EXCLUDED.updated_at \
-         WHERE commerce.product_options.store_id=EXCLUDED.store_id \
-           AND commerce.product_options.product_id=EXCLUDED.product_id",
+         WHERE chaos_commerce.product_options.store_id=EXCLUDED.store_id \
+           AND chaos_commerce.product_options.product_id=EXCLUDED.product_id",
     )
     .bind(option.id.as_uuid())
     .bind(store_id.as_uuid())
@@ -441,16 +441,16 @@ async fn upsert_option_value(
     changed_at: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "INSERT INTO commerce.product_option_values \
+        "INSERT INTO chaos_commerce.product_option_values \
          (id, store_id, product_id, option_id, value, position, archived_at, updated_at) \
          VALUES ($1,$2,$3,$4,$5,$6,NULL,$7) \
          ON CONFLICT (store_id, product_id, option_id, id) DO UPDATE SET \
              store_id=EXCLUDED.store_id, product_id=EXCLUDED.product_id, \
              option_id=EXCLUDED.option_id, value=EXCLUDED.value, position=EXCLUDED.position, \
              archived_at=NULL, updated_at=EXCLUDED.updated_at \
-         WHERE commerce.product_option_values.store_id=EXCLUDED.store_id \
-           AND commerce.product_option_values.product_id=EXCLUDED.product_id \
-           AND commerce.product_option_values.option_id=EXCLUDED.option_id",
+         WHERE chaos_commerce.product_option_values.store_id=EXCLUDED.store_id \
+           AND chaos_commerce.product_option_values.product_id=EXCLUDED.product_id \
+           AND chaos_commerce.product_option_values.option_id=EXCLUDED.option_id",
     )
     .bind(value.id.as_uuid())
     .bind(store_id.as_uuid())
@@ -476,7 +476,7 @@ async fn upsert_variant(
     changed_at: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "INSERT INTO commerce.product_variants \
+        "INSERT INTO chaos_commerce.product_variants \
          (id, store_id, product_id, title, sku, status, track_inventory, meta, updated_at) \
          VALUES ($1,$2,$3,$4,$5,'active',$6,$7::jsonb,$8) \
          ON CONFLICT (store_id, product_id, id) DO UPDATE SET \

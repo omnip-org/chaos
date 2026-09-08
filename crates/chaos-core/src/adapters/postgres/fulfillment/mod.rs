@@ -76,7 +76,7 @@ impl PostgresFulfillmentRepository {
         let mut transaction = self.begin_admin(&actor).await?;
         let rows = sqlx::query_as::<_, FulfillmentProviderAccountRow>(
             "SELECT id, provider::text, display_name, created_at, updated_at \
-             FROM integration.provider_accounts \
+             FROM chaos_integration.provider_accounts \
              WHERE store_id = $1 AND capability = 'shipping' ORDER BY created_at, id",
         )
         .bind(store_id.as_uuid())
@@ -100,7 +100,7 @@ impl PostgresFulfillmentRepository {
     ) -> Result<FulfillmentDetail, ApplicationError> {
         let mut transaction = self.begin_admin(&actor).await?;
         let order_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM commerce.orders WHERE store_id = $1 AND id = $2)",
+            "SELECT EXISTS(SELECT 1 FROM chaos_commerce.orders WHERE store_id = $1 AND id = $2)",
         )
         .bind(store_id.as_uuid())
         .bind(order_id.as_uuid())
@@ -111,7 +111,7 @@ impl PostgresFulfillmentRepository {
             return Err(order_not_found(order_id));
         }
         let account_exists: Option<String> = sqlx::query_scalar(
-            "SELECT provider::text FROM integration.provider_accounts \
+            "SELECT provider::text FROM chaos_integration.provider_accounts \
              WHERE store_id = $1 AND id = $2 AND capability = 'shipping'",
         )
         .bind(store_id.as_uuid())
@@ -123,7 +123,7 @@ impl PostgresFulfillmentRepository {
         let fulfillment =
             Fulfillment::create(order_id, provider_account_id, tracking_number, tracking_url)?;
         sqlx::query(
-            "INSERT INTO commerce.order_fulfillments \
+            "INSERT INTO chaos_commerce.order_fulfillments \
              (id, store_id, order_id, provider_account_id, status, \
               tracking_number, tracking_url) \
              VALUES ($1, $2, $3, $4, 'pending', $5, $6)",
@@ -159,7 +159,7 @@ impl PostgresFulfillmentRepository {
         let transitioned = fulfillment.mark_shipped(tracking_number, tracking_url)?;
         let update_result = if transitioned {
             sqlx::query(
-                "UPDATE commerce.order_fulfillments \
+                "UPDATE chaos_commerce.order_fulfillments \
                     SET status = 'shipped', tracking_number = $3, tracking_url = $4, \
                         shipped_at = $5, updated_at = $5 \
                   WHERE store_id = $1 AND id = $2 AND status = 'pending'",
@@ -177,7 +177,7 @@ impl PostgresFulfillmentRepository {
             // be correcting the tracking number/url, so persist those fields directly rather
             // than silently discarding the update (status/shipped_at are left untouched).
             sqlx::query(
-                "UPDATE commerce.order_fulfillments \
+                "UPDATE chaos_commerce.order_fulfillments \
                     SET tracking_number = $3, tracking_url = $4, updated_at = $5 \
                   WHERE store_id = $1 AND id = $2 AND status = 'shipped'",
             )
@@ -228,7 +228,7 @@ impl PostgresFulfillmentRepository {
         let mut fulfillment = load_domain_fulfillment(&mut transaction, store_id, id).await?;
         let transitioned = fulfillment.mark_delivered()?;
         sqlx::query(
-            "UPDATE commerce.order_fulfillments \
+            "UPDATE chaos_commerce.order_fulfillments \
                 SET status = 'delivered', delivered_at = $3, updated_at = $3 \
               WHERE store_id = $1 AND id = $2 AND status = 'shipped'",
         )
@@ -270,7 +270,7 @@ impl PostgresFulfillmentRepository {
         let mut fulfillment = load_domain_fulfillment(&mut transaction, store_id, id).await?;
         fulfillment.cancel()?;
         sqlx::query(
-            "UPDATE commerce.order_fulfillments \
+            "UPDATE chaos_commerce.order_fulfillments \
                 SET status = 'cancelled', cancelled_at = $3, updated_at = $3 \
               WHERE store_id = $1 AND id = $2 AND status IN ('pending', 'shipped')",
         )
@@ -310,7 +310,7 @@ async fn recompute_order_shipping_projection(
     order_id: OrderId,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "SELECT 1 FROM commerce.orders \
+        "SELECT 1 FROM chaos_commerce.orders \
          WHERE store_id = $1 AND id = $2 FOR UPDATE",
     )
     .bind(store_id.as_uuid())
@@ -321,7 +321,7 @@ async fn recompute_order_shipping_projection(
     .ok_or_else(|| order_not_found(order_id))?;
 
     let statuses: Vec<FulfillmentStatus> = sqlx::query_scalar::<_, String>(
-        "SELECT status::text FROM commerce.order_fulfillments \
+        "SELECT status::text FROM chaos_commerce.order_fulfillments \
          WHERE store_id = $1 AND order_id = $2",
     )
     .bind(store_id.as_uuid())
@@ -356,11 +356,11 @@ async fn recompute_order_shipping_projection(
         FulfillmentStatus::Pending
     };
     sqlx::query(
-        "UPDATE commerce.orders \
-            SET fulfillment_status = $3::commerce.order_fulfillment_status, \
+        "UPDATE chaos_commerce.orders \
+            SET fulfillment_status = $3::chaos_commerce.order_fulfillment_status, \
                 updated_at = CURRENT_TIMESTAMP \
           WHERE store_id = $1 AND id = $2 \
-            AND fulfillment_status IS DISTINCT FROM $3::commerce.order_fulfillment_status",
+            AND fulfillment_status IS DISTINCT FROM $3::chaos_commerce.order_fulfillment_status",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
@@ -380,7 +380,7 @@ async fn load_domain_fulfillment(
         "SELECT id, order_id, provider_account_id, \
                 provider_reference_id AS provider_reference_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
-         FROM commerce.order_fulfillments WHERE store_id = $1 AND id = $2 FOR UPDATE",
+         FROM chaos_commerce.order_fulfillments WHERE store_id = $1 AND id = $2 FOR UPDATE",
     )
     .bind(store_id.as_uuid())
     .bind(id.as_uuid())
@@ -407,7 +407,7 @@ async fn load_fulfillment(
         "SELECT id, order_id, provider_account_id, \
                 provider_reference_id AS provider_reference_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
-         FROM commerce.order_fulfillments WHERE store_id = $1 AND id = $2",
+         FROM chaos_commerce.order_fulfillments WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
     .bind(id.as_uuid())

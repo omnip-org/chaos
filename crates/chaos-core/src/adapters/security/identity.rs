@@ -206,10 +206,10 @@ impl IdentityRepository for PostgresIdentityRepository {
             .map_err(database_error)?;
         let existing: Option<(Uuid, String)> = sqlx::query_as(
             "SELECT external_identity.user_id, identity_user.status::TEXT \
-             FROM identity.credentials AS external_identity \
-             INNER JOIN identity.users AS identity_user \
+             FROM chaos_identity.credentials AS external_identity \
+             INNER JOIN chaos_identity.users AS identity_user \
                 ON identity_user.id = external_identity.user_id \
-             WHERE external_identity.provider = $1::identity.identity_provider \
+             WHERE external_identity.provider = $1::chaos_identity.identity_provider \
                AND external_identity.subject = $2",
         )
         .bind(identity.provider.as_str())
@@ -226,16 +226,16 @@ impl IdentityRepository for PostgresIdentityRepository {
         }
 
         let user_id = UserId::new();
-        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO chaos_identity.users (id, email) VALUES ($1, $2)")
             .bind(user_id.as_uuid())
             .bind(identity.email.as_str())
             .execute(&mut *transaction)
             .await
             .map_err(identity_write_error)?;
         sqlx::query(
-            "INSERT INTO identity.credentials \
+            "INSERT INTO chaos_identity.credentials \
              (provider, subject, user_id, email) \
-             VALUES ($1::identity.identity_provider, $2, $3, $4)",
+             VALUES ($1::chaos_identity.identity_provider, $2, $3, $4)",
         )
         .bind(identity.provider.as_str())
         .bind(identity.subject.as_str())

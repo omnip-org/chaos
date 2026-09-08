@@ -68,7 +68,7 @@ impl PostgresPricingManagementRepository {
     ) -> Result<Option<Vec<PriceListReadItem>>, ApplicationError> {
         let mut transaction = self.begin_read(actor).await?;
         let store_exists: bool =
-            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1)")
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM chaos_commerce.stores WHERE id = $1)")
                 .bind(store_id.as_uuid())
                 .fetch_one(&mut *transaction)
                 .await
@@ -81,8 +81,8 @@ impl PostgresPricingManagementRepository {
                     price_list.currency::text, \
                     price_list.status::text, price_list.starts_at, price_list.ends_at, \
                     count(price.id), price_list.created_at, price_list.updated_at \
-             FROM commerce.price_lists AS price_list \
-             LEFT JOIN commerce.price_list_items AS price \
+             FROM chaos_commerce.price_lists AS price_list \
+             LEFT JOIN chaos_commerce.price_list_items AS price \
               ON price.store_id = price_list.store_id \
               AND price.price_list_id = price_list.id \
              WHERE price_list.store_id = $1 \
@@ -115,8 +115,8 @@ impl PostgresPricingManagementRepository {
                     price_list.currency::text, \
                     price_list.status::text, price_list.starts_at, price_list.ends_at, \
                     count(price.id), price_list.created_at, price_list.updated_at \
-             FROM commerce.price_lists AS price_list \
-             LEFT JOIN commerce.price_list_items AS price \
+             FROM chaos_commerce.price_lists AS price_list \
+             LEFT JOIN chaos_commerce.price_list_items AS price \
               ON price.store_id = price_list.store_id \
               AND price.price_list_id = price_list.id \
              WHERE price_list.store_id = $1 AND price_list.id = $2 \
@@ -131,7 +131,7 @@ impl PostgresPricingManagementRepository {
             return Ok(None);
         };
         let prices = sqlx::query_as::<_, (Uuid, i64)>(
-            "SELECT product_variant_id, amount_minor FROM commerce.price_list_items \
+            "SELECT product_variant_id, amount_minor FROM chaos_commerce.price_list_items \
              WHERE store_id = $1 AND price_list_id = $2 \
              ORDER BY product_variant_id ASC",
         )
@@ -174,7 +174,7 @@ impl PostgresPricingManagementTransaction {
         &mut self,
     ) -> Result<Option<PriceListMutationSnapshot>, ApplicationError> {
         let status = sqlx::query_scalar::<_, String>(
-            "SELECT status::text FROM commerce.price_lists \
+            "SELECT status::text FROM chaos_commerce.price_lists \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(self.store_id.as_uuid())
@@ -186,7 +186,7 @@ impl PostgresPricingManagementTransaction {
             return Ok(None);
         };
         let variant_ids = sqlx::query_scalar::<_, Uuid>(
-            "SELECT product_variant_id FROM commerce.price_list_items \
+            "SELECT product_variant_id FROM chaos_commerce.price_list_items \
              WHERE store_id = $1 AND price_list_id = $2",
         )
         .bind(self.store_id.as_uuid())
@@ -227,7 +227,7 @@ impl PostgresPricingManagementTransaction {
         &mut self,
         currency: CurrencyCode,
     ) -> Result<bool, ApplicationError> {
-        sqlx::query_scalar("SELECT currency = $2 FROM commerce.stores WHERE id = $1")
+        sqlx::query_scalar("SELECT currency = $2 FROM chaos_commerce.stores WHERE id = $1")
             .bind(self.store_id.as_uuid())
             .bind(currency.as_str())
             .fetch_one(&mut *self.transaction)
@@ -237,8 +237,8 @@ impl PostgresPricingManagementTransaction {
 
     pub(crate) async fn replace(&mut self, price_list: &PriceList) -> Result<(), ApplicationError> {
         let result = sqlx::query(
-            "UPDATE commerce.price_lists SET code = $3, name = $4, currency = $5, \
-                    status = $6::commerce.price_list_status, starts_at = $7, ends_at = $8, \
+            "UPDATE chaos_commerce.price_lists SET code = $3, name = $4, currency = $5, \
+                    status = $6::chaos_commerce.price_list_status, starts_at = $7, ends_at = $8, \
                     updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
@@ -259,7 +259,7 @@ impl PostgresPricingManagementTransaction {
             )));
         }
         sqlx::query(
-            "DELETE FROM commerce.price_list_items \
+            "DELETE FROM chaos_commerce.price_list_items \
              WHERE store_id = $1 AND price_list_id = $2",
         )
         .bind(self.store_id.as_uuid())
@@ -269,7 +269,7 @@ impl PostgresPricingManagementTransaction {
         .map_err(database_error)?;
         for price in price_list.prices() {
             sqlx::query(
-                "INSERT INTO commerce.price_list_items \
+                "INSERT INTO chaos_commerce.price_list_items \
                  (id, store_id, price_list_id, product_variant_id, amount_minor) \
                  VALUES ($1, $2, $3, $4, $5)",
             )
@@ -290,7 +290,7 @@ impl PostgresPricingManagementTransaction {
         status: PriceListStatus,
     ) -> Result<(), ApplicationError> {
         let result = sqlx::query(
-            "UPDATE commerce.price_lists SET status = $3::commerce.price_list_status, \
+            "UPDATE chaos_commerce.price_lists SET status = $3::chaos_commerce.price_list_status, \
                     updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
@@ -357,7 +357,7 @@ async fn variant_ids_with_status(
         .map(|id| id.as_uuid())
         .collect::<Vec<_>>();
     let rows = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM commerce.product_variants \
+        "SELECT id FROM chaos_commerce.product_variants \
          WHERE store_id = $1 AND id = ANY($2) \
            AND ($3::text IS NULL OR status::text = $3)",
     )
@@ -440,7 +440,7 @@ mod tests {
         let price_list_id = PriceListId::new();
         let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
-        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO chaos_identity.users (id, email) VALUES ($1, $2)")
             .bind(owner_id.as_uuid())
             .bind(format!("pricing-management-owner-{suffix}@example.com"))
             .execute(&owner_pool)
@@ -448,7 +448,7 @@ mod tests {
             .unwrap();
         for id in [store_id, other_store_id] {
             sqlx::query(
-                "INSERT INTO commerce.stores (id, name) \
+                "INSERT INTO chaos_commerce.stores (id, name) \
                  VALUES ($1, 'Pricing Store')",
             )
             .bind(id.as_uuid())
@@ -457,7 +457,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
+            "INSERT INTO chaos_commerce.store_memberships (store_id, user_id, role) \
              VALUES ($1, $2, 'owner')",
         )
         .bind(store_id.as_uuid())
@@ -466,7 +466,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.products \
+            "INSERT INTO chaos_commerce.products \
              (id, store_id, handle, title, status) \
              VALUES ($1, $2, 'managed-product', 'Managed Product', 'active')",
         )
@@ -476,7 +476,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.product_variants \
+            "INSERT INTO chaos_commerce.product_variants \
              (id, store_id, product_id, title, status) \
              VALUES ($1, $2, $3, 'Default', 'active')",
         )
@@ -487,7 +487,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.price_lists \
+            "INSERT INTO chaos_commerce.price_lists \
              (id, store_id, code, name, currency) \
              VALUES ($1, $2, 'retail', 'Retail', 'USD')",
         )
@@ -497,7 +497,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.price_list_items \
+            "INSERT INTO chaos_commerce.price_list_items \
              (id, store_id, price_list_id, product_variant_id, amount_minor) \
              VALUES ($1, $2, $3, $4, 2500)",
         )

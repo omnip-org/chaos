@@ -70,8 +70,8 @@ impl PostgresStripeRepository {
         let existing = sqlx::query_as::<_, (Uuid, String, String, Option<Value>)>(
             "SELECT sales_order.cart_id, sales_order.status::text, \
                     sales_order.payment_status::text, source_cart.payment_client_action \
-             FROM commerce.orders AS sales_order \
-             INNER JOIN commerce.carts AS source_cart \
+             FROM chaos_commerce.orders AS sales_order \
+             INNER JOIN chaos_commerce.carts AS source_cart \
                ON source_cart.store_id = sales_order.store_id AND source_cart.id = sales_order.cart_id \
              WHERE sales_order.store_id = $1 AND sales_order.channel_id = $2 \
                AND sales_order.shopper_id = $3 AND sales_order.id = $4 \
@@ -102,7 +102,7 @@ impl PostgresStripeRepository {
         }
         let action = payment_client_action_json(client_action);
         let rows = sqlx::query(
-            "UPDATE commerce.carts SET payment_client_action = $3, updated_at = $4 \
+            "UPDATE chaos_commerce.carts SET payment_client_action = $3, updated_at = $4 \
              WHERE store_id = $1 AND id = $2 AND status = 'locked'",
         )
         .bind(actor.store_id.as_uuid())
@@ -130,7 +130,7 @@ impl PostgresStripeRepository {
         let actor = &shopper.machine;
         let mut transaction = self.begin_shopper(shopper).await?;
         let row = sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT cart_id, status::text FROM commerce.orders \
+            "SELECT cart_id, status::text FROM chaos_commerce.orders \
              WHERE store_id = $1 AND channel_id = $2 AND shopper_id = $3 AND id = $4 \
              FOR UPDATE",
         )
@@ -149,8 +149,8 @@ impl PostgresStripeRepository {
         release_order_inventory(&mut transaction, actor.store_id.as_uuid(), order_id.as_uuid())
             .await?;
         sqlx::query(
-            "UPDATE commerce.orders SET status = 'cancelled'::commerce.order_status, \
-                    payment_status = 'failed'::commerce.order_payment_status, \
+            "UPDATE chaos_commerce.orders SET status = 'cancelled'::chaos_commerce.order_status, \
+                    payment_status = 'failed'::chaos_commerce.order_payment_status, \
                     payment_failure_code = $3, updated_at = $4 \
              WHERE store_id = $1 AND id = $2 AND status = 'pending'",
         )
@@ -162,7 +162,7 @@ impl PostgresStripeRepository {
         .await
         .map_err(database_error)?;
         sqlx::query(
-            "UPDATE commerce.carts SET status = 'abandoned'::commerce.cart_status, \
+            "UPDATE chaos_commerce.carts SET status = 'abandoned'::chaos_commerce.cart_status, \
                     payment_client_action = NULL, updated_at = $3 \
              WHERE store_id = $1 AND id = $2",
         )
@@ -187,7 +187,7 @@ impl PostgresStripeRepository {
         let row = sqlx::query_as::<_, (i64, String, String, Uuid)>(
             "SELECT total_amount_minor, currency::text, payment_status::text, \
                     payment_provider_account_id \
-             FROM commerce.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
+             FROM chaos_commerce.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
         .bind(order_id.as_uuid())
@@ -208,7 +208,7 @@ impl PostgresStripeRepository {
         // so a second concurrent request cannot double-spend it before the
         // first one confirms via webhook.
         let already_refunded: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(amount_minor), 0)::bigint FROM commerce.order_refunds \
+            "SELECT COALESCE(SUM(amount_minor), 0)::bigint FROM chaos_commerce.order_refunds \
              WHERE store_id = $1 AND order_id = $2 AND status IN ('pending', 'succeeded')",
         )
         .bind(store_id.as_uuid())
@@ -225,7 +225,7 @@ impl PostgresStripeRepository {
         )?;
         let id = refund.id();
         sqlx::query(
-            "INSERT INTO commerce.order_refunds \
+            "INSERT INTO chaos_commerce.order_refunds \
              (id, store_id, order_id, currency, status, amount_minor, \
               payment_provider_account_id) \
              VALUES ($1, $2, $3, $4, 'pending', $5, $6)",
@@ -358,10 +358,10 @@ impl PostgresStripeRepository {
                         sales_order.payment_provider_reference_id, \
                         sales_order.shopper_id, sales_order.channel_id, \
                         sales_order.order_number, sales_order.id, refund.id \
-                 FROM commerce.order_refunds AS refund \
-                 INNER JOIN commerce.orders AS sales_order \
+                 FROM chaos_commerce.order_refunds AS refund \
+                 INNER JOIN chaos_commerce.orders AS sales_order \
                    ON sales_order.store_id = refund.store_id AND sales_order.id = refund.order_id \
-                 INNER JOIN integration.provider_accounts AS account \
+                 INNER JOIN chaos_integration.provider_accounts AS account \
                    ON account.store_id = refund.store_id \
                   AND account.id = refund.payment_provider_account_id \
                   AND account.capability = 'payment' \
@@ -385,8 +385,8 @@ impl PostgresStripeRepository {
                         sales_order.payment_provider_reference_id, \
                         sales_order.shopper_id, sales_order.channel_id, \
                         sales_order.order_number, sales_order.id, NULL::uuid \
-                 FROM commerce.orders AS sales_order \
-                 INNER JOIN integration.provider_accounts AS account \
+                 FROM chaos_commerce.orders AS sales_order \
+                 INNER JOIN chaos_integration.provider_accounts AS account \
                    ON account.store_id = sales_order.store_id \
                   AND account.id = sales_order.payment_provider_account_id \
                   AND account.capability = 'payment' \
@@ -438,7 +438,7 @@ impl PostgresStripeRepository {
                         shipping_address_line1, shipping_address_line2, shipping_locality, \
                         shipping_administrative_area, shipping_postal_code, \
                         NULLIF(btrim(shipping_country_code::text), '') \
-                 FROM commerce.orders WHERE store_id = $1 AND id = $2",
+                 FROM chaos_commerce.orders WHERE store_id = $1 AND id = $2",
             )
             .bind(store_id)
             .bind(order_id)
@@ -473,7 +473,7 @@ impl PostgresStripeRepository {
                 sqlx::query_as::<_, (String, String, Option<String>, i32, i64, Option<String>)>(
                     "SELECT product_title, variant_title, sku, quantity, \
                         unit_price_amount_minor, image_url \
-                 FROM commerce.order_lines WHERE store_id = $1 AND order_id = $2 \
+                 FROM chaos_commerce.order_lines WHERE store_id = $1 AND order_id = $2 \
                  ORDER BY position",
                 )
                 .bind(store_id)
@@ -501,7 +501,7 @@ impl PostgresStripeRepository {
             // A Cart retry with a stored client action never reaches
             // this path, so editing the Store policy cannot invalidate it.
             let shipping_countries: Vec<String> = sqlx::query_scalar(
-                "SELECT country_code::text FROM commerce.store_shipping_countries \
+                "SELECT country_code::text FROM chaos_commerce.store_shipping_countries \
                  WHERE store_id = $1 AND enabled ORDER BY country_code",
             )
             .bind(store_id)
@@ -575,7 +575,7 @@ impl PostgresStripeRepository {
         let aggregate_id = outbox_aggregate_id(payload)?;
         let mut transaction = self.begin_context(None, store_id).await?;
         let rows = sqlx::query(
-            "UPDATE commerce.order_refunds \
+            "UPDATE chaos_commerce.order_refunds \
              SET payment_provider_reference_id = COALESCE(payment_provider_reference_id, $3), \
                  updated_at = CASE WHEN payment_provider_reference_id IS NULL THEN $4 ELSE updated_at END \
              WHERE store_id = $1 AND id = $2 \

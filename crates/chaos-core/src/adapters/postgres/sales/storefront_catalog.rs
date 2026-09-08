@@ -68,10 +68,10 @@ impl PostgresStorefrontCatalogRepository {
         >(
             "WITH selected_price_list AS ( \
                  SELECT price_list.id, price_list.currency::text \
-                 FROM commerce.price_lists AS price_list \
-                 INNER JOIN commerce.stores AS store \
+                 FROM chaos_commerce.price_lists AS price_list \
+                 INNER JOIN chaos_commerce.stores AS store \
                    ON store.id = price_list.store_id \
-                 INNER JOIN commerce.channels AS channel \
+                 INNER JOIN chaos_commerce.channels AS channel \
                    ON channel.store_id = store.id \
                   AND channel.id = $2 \
                  WHERE price_list.store_id = $1 \
@@ -89,9 +89,9 @@ impl PostgresStorefrontCatalogRepository {
                     variant.on_hand_quantity - variant.reserved_quantity, \
                     price.amount_minor, selected.currency, \
                     variant.meta \
-             FROM commerce.product_variants AS variant \
+             FROM chaos_commerce.product_variants AS variant \
              INNER JOIN selected_price_list AS selected ON true \
-             INNER JOIN commerce.price_list_items AS price \
+             INNER JOIN chaos_commerce.price_list_items AS price \
                ON price.store_id = variant.store_id \
               AND price.price_list_id = selected.id \
               AND price.product_variant_id = variant.id \
@@ -148,7 +148,7 @@ impl PostgresStorefrontCatalogRepository {
     ) -> Result<Vec<StorefrontProductOption>, ApplicationError> {
         let option_rows = sqlx::query_as::<_, (Uuid, String, i16)>(
             "SELECT id, name::text, position \
-             FROM commerce.product_options \
+             FROM chaos_commerce.product_options \
              WHERE store_id = $1 AND product_id = $2 \
                AND archived_at IS NULL \
              ORDER BY position ASC",
@@ -160,7 +160,7 @@ impl PostgresStorefrontCatalogRepository {
         .map_err(database_error)?;
         let value_rows = sqlx::query_as::<_, (Uuid, Uuid, String, i16)>(
             "SELECT id, option_id, value::text, position \
-             FROM commerce.product_option_values \
+             FROM chaos_commerce.product_option_values \
              WHERE store_id = $1 AND product_id = $2 \
                AND archived_at IS NULL \
              ORDER BY option_id ASC, position ASC",
@@ -230,21 +230,21 @@ impl PostgresStorefrontCatalogRepository {
         >(
             "SELECT media.id, 'product'::text, NULL::uuid, NULL::uuid, NULL::uuid, \
                     media.media_type,media.media_kind::text,link.alt_text,link.position,media.public_url \
-             FROM commerce.product_media_assets AS link \
-             INNER JOIN commerce.media_assets AS media \
+             FROM chaos_commerce.product_media_assets AS link \
+             INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id=link.store_id AND media.id=link.media_asset_id \
              WHERE link.store_id=$1 AND link.product_id=$2 \
                AND link.archived_at IS NULL AND media.status='ready' \
              UNION ALL \
              SELECT media.id, 'option_value'::text, link.option_id, link.option_value_id, NULL::uuid, \
                     media.media_type,media.media_kind::text,link.alt_text,link.position,media.public_url \
-             FROM commerce.product_option_value_media_assets AS link \
-             INNER JOIN commerce.media_assets AS media \
+             FROM chaos_commerce.product_option_value_media_assets AS link \
+             INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id=link.store_id AND media.id=link.media_asset_id \
-             INNER JOIN commerce.product_options AS option \
+             INNER JOIN chaos_commerce.product_options AS option \
                 ON option.store_id=link.store_id AND option.product_id=link.product_id \
                AND option.id=link.option_id AND option.archived_at IS NULL \
-             INNER JOIN commerce.product_option_values AS option_value \
+             INNER JOIN chaos_commerce.product_option_values AS option_value \
                 ON option_value.store_id=link.store_id AND option_value.product_id=link.product_id \
                AND option_value.option_id=link.option_id AND option_value.id=link.option_value_id \
                AND option_value.archived_at IS NULL \
@@ -253,10 +253,10 @@ impl PostgresStorefrontCatalogRepository {
              UNION ALL \
              SELECT media.id, 'variant'::text, NULL::uuid, NULL::uuid, link.product_variant_id, \
                     media.media_type,media.media_kind::text,link.alt_text,link.position,media.public_url \
-             FROM commerce.product_variant_media_assets AS link \
-             INNER JOIN commerce.media_assets AS media \
+             FROM chaos_commerce.product_variant_media_assets AS link \
+             INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id=link.store_id AND media.id=link.media_asset_id \
-             INNER JOIN commerce.product_variants AS variant \
+             INNER JOIN chaos_commerce.product_variants AS variant \
                 ON variant.store_id=link.store_id AND variant.product_id=link.product_id \
                AND variant.id=link.product_variant_id AND variant.status='active' \
              WHERE link.store_id=$1 AND link.product_id=$2 \
@@ -330,8 +330,8 @@ impl PostgresStorefrontCatalogRepository {
     ) -> Result<Option<serde_json::Value>, ApplicationError> {
         let rows = sqlx::query_as::<_, (String, Uuid, String, Option<String>)>(
             "SELECT link.meta_path, media.id, media.media_type, media.public_url \
-             FROM commerce.product_meta_media_assets AS link \
-             INNER JOIN commerce.media_assets AS media \
+             FROM chaos_commerce.product_meta_media_assets AS link \
+             INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id=link.store_id AND media.id=link.media_asset_id \
              WHERE link.store_id=$1 AND link.product_id=$2 \
                AND link.archived_at IS NULL AND media.status='ready' \
@@ -389,11 +389,11 @@ impl PostgresStorefrontCatalogRepository {
     ) -> Result<Vec<StorefrontProductCollection>, ApplicationError> {
         let rows = sqlx::query_as::<_, (Uuid, String, String)>(
             "SELECT collection.id, collection.handle::text, collection.title \
-             FROM commerce.collection_products AS member \
-             INNER JOIN commerce.collections AS collection \
+             FROM chaos_commerce.collection_products AS member \
+             INNER JOIN chaos_commerce.collections AS collection \
                ON collection.store_id = member.store_id \
               AND collection.id = member.collection_id \
-             INNER JOIN commerce.collection_publications AS publication \
+             INNER JOIN chaos_commerce.collection_publications AS publication \
                ON publication.store_id = collection.store_id \
               AND publication.collection_id = collection.id \
               AND publication.channel_id = $2 \
@@ -443,10 +443,10 @@ impl PostgresStorefrontCatalogRepository {
         >(
             "WITH selected_price_list AS ( \
                  SELECT price_list.id, price_list.currency::text \
-                 FROM commerce.price_lists AS price_list \
-                 INNER JOIN commerce.stores AS store \
+                 FROM chaos_commerce.price_lists AS price_list \
+                 INNER JOIN chaos_commerce.stores AS store \
                    ON store.id = price_list.store_id \
-                 INNER JOIN commerce.channels AS channel \
+                 INNER JOIN chaos_commerce.channels AS channel \
                    ON channel.store_id = store.id \
                   AND channel.id = $2 \
                  WHERE price_list.store_id = $1 \
@@ -463,9 +463,9 @@ impl PostgresStorefrontCatalogRepository {
                     variant.track_inventory, \
                     variant.on_hand_quantity - variant.reserved_quantity, \
                     price.amount_minor, selected.currency, variant.meta \
-             FROM commerce.product_variants AS variant \
+             FROM chaos_commerce.product_variants AS variant \
              INNER JOIN selected_price_list AS selected ON true \
-             INNER JOIN commerce.price_list_items AS price \
+             INNER JOIN chaos_commerce.price_list_items AS price \
                ON price.store_id = variant.store_id \
               AND price.price_list_id = selected.id \
               AND price.product_variant_id = variant.id \
@@ -531,7 +531,7 @@ impl PostgresStorefrontCatalogRepository {
         }
         let option_rows = sqlx::query_as::<_, (Uuid, Uuid, String, i16)>(
             "SELECT product_id, id, name::text, position \
-             FROM commerce.product_options \
+             FROM chaos_commerce.product_options \
              WHERE store_id = $1 AND product_id = ANY($2::uuid[]) \
                AND archived_at IS NULL \
              ORDER BY product_id, position ASC",
@@ -543,7 +543,7 @@ impl PostgresStorefrontCatalogRepository {
         .map_err(database_error)?;
         let value_rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, i16)>(
             "SELECT product_id, id, option_id, value::text, position \
-             FROM commerce.product_option_values \
+             FROM chaos_commerce.product_option_values \
              WHERE store_id = $1 AND product_id = ANY($2::uuid[]) \
                AND archived_at IS NULL \
              ORDER BY product_id, option_id ASC, position ASC",
@@ -628,21 +628,21 @@ impl PostgresStorefrontCatalogRepository {
         >(
             "SELECT link.product_id, media.id, 'product'::text, NULL::uuid, NULL::uuid, NULL::uuid, \
                     media.media_type, media.media_kind::text, link.alt_text, link.position, media.public_url \
-             FROM commerce.product_media_assets AS link \
-             INNER JOIN commerce.media_assets AS media \
+             FROM chaos_commerce.product_media_assets AS link \
+             INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id = link.store_id AND media.id = link.media_asset_id \
              WHERE link.store_id = $1 AND link.product_id = ANY($2::uuid[]) \
                AND link.archived_at IS NULL AND media.status = 'ready' \
              UNION ALL \
              SELECT link.product_id, media.id, 'option_value'::text, link.option_id, link.option_value_id, NULL::uuid, \
                     media.media_type, media.media_kind::text, link.alt_text, link.position, media.public_url \
-             FROM commerce.product_option_value_media_assets AS link \
-             INNER JOIN commerce.media_assets AS media \
+             FROM chaos_commerce.product_option_value_media_assets AS link \
+             INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id = link.store_id AND media.id = link.media_asset_id \
-             INNER JOIN commerce.product_options AS option \
+             INNER JOIN chaos_commerce.product_options AS option \
                 ON option.store_id=link.store_id AND option.product_id=link.product_id \
                AND option.id=link.option_id AND option.archived_at IS NULL \
-             INNER JOIN commerce.product_option_values AS option_value \
+             INNER JOIN chaos_commerce.product_option_values AS option_value \
                 ON option_value.store_id=link.store_id AND option_value.product_id=link.product_id \
                AND option_value.option_id=link.option_id AND option_value.id=link.option_value_id \
                AND option_value.archived_at IS NULL \
@@ -651,10 +651,10 @@ impl PostgresStorefrontCatalogRepository {
              UNION ALL \
              SELECT link.product_id, media.id, 'variant'::text, NULL::uuid, NULL::uuid, link.product_variant_id, \
                     media.media_type, media.media_kind::text, link.alt_text, link.position, media.public_url \
-             FROM commerce.product_variant_media_assets AS link \
-             INNER JOIN commerce.media_assets AS media \
+             FROM chaos_commerce.product_variant_media_assets AS link \
+             INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id = link.store_id AND media.id = link.media_asset_id \
-             INNER JOIN commerce.product_variants AS variant \
+             INNER JOIN chaos_commerce.product_variants AS variant \
                 ON variant.store_id=link.store_id AND variant.product_id=link.product_id \
                AND variant.id=link.product_variant_id AND variant.status='active' \
              WHERE link.store_id = $1 AND link.product_id = ANY($2::uuid[]) \
@@ -750,11 +750,11 @@ impl PostgresStorefrontCatalogRepository {
         }
         let rows = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
             "SELECT member.product_id, collection.id, collection.handle::text, collection.title \
-             FROM commerce.collection_products AS member \
-             INNER JOIN commerce.collections AS collection \
+             FROM chaos_commerce.collection_products AS member \
+             INNER JOIN chaos_commerce.collections AS collection \
                ON collection.store_id = member.store_id \
               AND collection.id = member.collection_id \
-             INNER JOIN commerce.collection_publications AS publication \
+             INNER JOIN chaos_commerce.collection_publications AS publication \
                ON publication.store_id = collection.store_id \
               AND publication.collection_id = collection.id \
               AND publication.channel_id = $2 \
@@ -794,8 +794,8 @@ impl PostgresStorefrontCatalogRepository {
         let product_ids: Vec<Uuid> = products.iter().map(|(id, _)| *id).collect();
         let rows = sqlx::query_as::<_, (Uuid, String, Uuid, String, Option<String>)>(
             "SELECT link.product_id, link.meta_path, media.id, media.media_type, media.public_url \
-             FROM commerce.product_meta_media_assets AS link \
-             INNER JOIN commerce.media_assets AS media \
+             FROM chaos_commerce.product_meta_media_assets AS link \
+             INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id = link.store_id AND media.id = link.media_asset_id \
              WHERE link.store_id = $1 AND link.product_id = ANY($2::uuid[]) \
                AND link.archived_at IS NULL AND media.status = 'ready' \
@@ -886,8 +886,8 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             >(
                 "WITH selected_collection AS ( \
                      SELECT collection.id \
-                     FROM commerce.collections AS collection \
-                     INNER JOIN commerce.collection_publications AS publication \
+                     FROM chaos_commerce.collections AS collection \
+                     INNER JOIN chaos_commerce.collection_publications AS publication \
                        ON publication.store_id = collection.store_id \
                       AND publication.collection_id = collection.id \
                       AND publication.channel_id = $2 \
@@ -897,24 +897,24 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                      LIMIT 1 \
                  ), collection_members AS ( \
                      SELECT member.product_id, member.position \
-                     FROM commerce.collection_products AS member \
+                     FROM chaos_commerce.collection_products AS member \
                      INNER JOIN selected_collection AS selected \
                        ON selected.id = member.collection_id \
                      WHERE member.store_id = $1 \
                  ) \
                 SELECT product.id, product.handle::text, product.title, product.description, \
                         product.meta \
-                 FROM commerce.products AS product \
-                 INNER JOIN commerce.stores AS store \
+                 FROM chaos_commerce.products AS product \
+                 INNER JOIN chaos_commerce.stores AS store \
                    ON store.id = product.store_id \
-                 INNER JOIN commerce.channels AS channel \
+                 INNER JOIN chaos_commerce.channels AS channel \
                    ON channel.store_id = product.store_id \
                   AND channel.id = $2 \
-                 INNER JOIN commerce.product_publications AS publication \
+                 INNER JOIN chaos_commerce.product_publications AS publication \
                    ON publication.store_id = product.store_id \
                   AND publication.product_id = product.id \
                   AND publication.channel_id = channel.id \
-                 LEFT JOIN commerce.product_documents AS search_document \
+                 LEFT JOIN chaos_commerce.product_documents AS search_document \
                    ON search_document.store_id = product.store_id \
                   AND search_document.product_id = product.id \
                  LEFT JOIN collection_members AS member \
@@ -1022,13 +1022,13 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         let row = sqlx::query_as::<_, (Uuid, String, String, String, Option<serde_json::Value>)>(
             "SELECT product.id, product.handle::text, product.title, product.description, \
                     product.meta \
-             FROM commerce.products AS product \
-             INNER JOIN commerce.stores AS store \
+             FROM chaos_commerce.products AS product \
+             INNER JOIN chaos_commerce.stores AS store \
                ON store.id = product.store_id \
-             INNER JOIN commerce.channels AS channel \
+             INNER JOIN chaos_commerce.channels AS channel \
                ON channel.store_id = product.store_id \
               AND channel.id = $2 \
-             INNER JOIN commerce.product_publications AS publication \
+             INNER JOIN chaos_commerce.product_publications AS publication \
                ON publication.store_id = product.store_id \
               AND publication.product_id = product.id \
               AND publication.channel_id = channel.id \
@@ -1079,12 +1079,12 @@ async fn variant_selected_options(
 ) -> Result<HashMap<Uuid, Vec<StorefrontSelectedOption>>, ApplicationError> {
     let rows: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
         "SELECT selection.variant_id, selection.option_id, selection.option_value_id \
-         FROM commerce.variant_selected_options AS selection \
-         INNER JOIN commerce.product_options AS option \
+         FROM chaos_commerce.variant_selected_options AS selection \
+         INNER JOIN chaos_commerce.product_options AS option \
            ON option.store_id = selection.store_id \
           AND option.product_id = selection.product_id \
           AND option.id = selection.option_id \
-         INNER JOIN commerce.product_option_values AS value \
+         INNER JOIN chaos_commerce.product_option_values AS value \
            ON value.store_id = selection.store_id \
           AND value.product_id = selection.product_id \
           AND value.option_id = selection.option_id \
@@ -1123,12 +1123,12 @@ async fn variant_selected_options_for_products(
     }
     let rows: Vec<(Uuid, Uuid, Uuid, Uuid)> = sqlx::query_as(
         "SELECT selection.product_id, selection.variant_id, selection.option_id, selection.option_value_id \
-         FROM commerce.variant_selected_options AS selection \
-         INNER JOIN commerce.product_options AS option \
+         FROM chaos_commerce.variant_selected_options AS selection \
+         INNER JOIN chaos_commerce.product_options AS option \
            ON option.store_id = selection.store_id \
           AND option.product_id = selection.product_id \
           AND option.id = selection.option_id \
-         INNER JOIN commerce.product_option_values AS value \
+         INNER JOIN chaos_commerce.product_option_values AS value \
            ON value.store_id = selection.store_id \
           AND value.product_id = selection.product_id \
           AND value.option_id = selection.option_id \
@@ -1202,7 +1202,7 @@ mod tests {
         let other_price_list_id = Uuid::now_v7();
         for id in [store_id, other_store_id] {
             sqlx::query(
-                "INSERT INTO commerce.stores \
+                "INSERT INTO chaos_commerce.stores \
                  (id, name, status) \
                  VALUES ($1, 'Storefront Test', 'active')",
             )
@@ -1216,7 +1216,7 @@ mod tests {
             (other_channel_id, other_store_id, "Other Web"),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.channels \
+                "INSERT INTO chaos_commerce.channels \
                  (id, store_id, name, origin) \
                  VALUES ($1, $2, $3, $4)",
             )
@@ -1255,10 +1255,10 @@ mod tests {
             ),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.products \
+                "INSERT INTO chaos_commerce.products \
                  (id, store_id, handle, title, description, status) \
                  VALUES ($1, $2, $3, 'Shirt', 'Safe description', \
-                         $4::commerce.product_status)",
+                         $4::chaos_commerce.product_status)",
             )
             .bind(product.as_uuid())
             .bind(store.as_uuid())
@@ -1268,7 +1268,7 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO commerce.product_variants \
+                "INSERT INTO chaos_commerce.product_variants \
                  (id, store_id, product_id, title, status) \
                  VALUES ($1, $2, $3, 'Default', 'active')",
             )
@@ -1285,7 +1285,7 @@ mod tests {
             (other_product_id, other_store_id, other_channel_id),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.product_publications \
+                "INSERT INTO chaos_commerce.product_publications \
                  (store_id, product_id, channel_id) \
                  VALUES ($1, $2, $3)",
             )
@@ -1301,7 +1301,7 @@ mod tests {
             (other_price_list_id, other_store_id, "other-retail"),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.price_lists \
+                "INSERT INTO chaos_commerce.price_lists \
                  (id, store_id, code, name, currency, status) \
                  VALUES ($1, $2, $3, 'Retail', 'USD', 'active')",
             )
@@ -1323,7 +1323,7 @@ mod tests {
             ),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.price_list_items \
+                "INSERT INTO chaos_commerce.price_list_items \
                  (id, store_id, price_list_id, \
                   product_variant_id, amount_minor) \
                  VALUES ($1, $2, $3, $4, $5)",
@@ -1373,14 +1373,14 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let rebuilt: i64 = sqlx::query_scalar("SELECT commerce.rebuild_store_products($1)")
+        let rebuilt: i64 = sqlx::query_scalar("SELECT chaos_commerce.rebuild_store_products($1)")
             .bind(store_id.as_uuid())
             .fetch_one(&owner_pool)
             .await
             .unwrap();
         assert_eq!(rebuilt, 2);
         let indexed: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM commerce.product_documents \
+            "SELECT count(*) FROM chaos_commerce.product_documents \
              WHERE store_id = $1",
         )
         .bind(store_id.as_uuid())

@@ -1,16 +1,16 @@
-CREATE SCHEMA commerce;
+CREATE SCHEMA chaos_commerce;
 
-CREATE TYPE commerce.store_role AS ENUM ('owner', 'member');
-CREATE TYPE commerce.store_status AS ENUM ('active', 'inactive');
-CREATE TYPE commerce.sales_channel_status AS ENUM ('active', 'archived');
+CREATE TYPE chaos_commerce.store_role AS ENUM ('owner', 'member');
+CREATE TYPE chaos_commerce.store_status AS ENUM ('active', 'inactive');
+CREATE TYPE chaos_commerce.sales_channel_status AS ENUM ('active', 'archived');
 
-CREATE TABLE commerce.stores (
+CREATE TABLE chaos_commerce.stores (
     id          UUID                     NOT NULL PRIMARY KEY,
     name        TEXT                     NOT NULL,
     region      CHAR(2)                  NOT NULL DEFAULT 'US',
     currency    CHAR(3)                  NOT NULL DEFAULT 'USD',
     meta        JSONB,
-    status      commerce.store_status    NOT NULL DEFAULT 'active',
+    status      chaos_commerce.store_status    NOT NULL DEFAULT 'active',
     created_at  TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -21,19 +21,19 @@ CREATE TABLE commerce.stores (
     CONSTRAINT stores_meta_is_object_check        CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
 );
 
-CREATE TABLE commerce.store_memberships (
+CREATE TABLE chaos_commerce.store_memberships (
     store_id   UUID                 NOT NULL,
     user_id    UUID                 NOT NULL,
-    role       commerce.store_role  NOT NULL,
+    role       chaos_commerce.store_role  NOT NULL,
     created_at TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT store_memberships_pkey               PRIMARY KEY (store_id, user_id),
-    CONSTRAINT store_memberships_store_id_fkey      FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT store_memberships_user_id_fkey       FOREIGN KEY (user_id) REFERENCES identity.users (id) ON DELETE CASCADE
+    CONSTRAINT store_memberships_store_id_fkey      FOREIGN KEY (store_id) REFERENCES chaos_commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT store_memberships_user_id_fkey       FOREIGN KEY (user_id) REFERENCES chaos_identity.users (id) ON DELETE CASCADE
 );
 
-CREATE TABLE commerce.store_shipping_countries (
+CREATE TABLE chaos_commerce.store_shipping_countries (
     store_id     UUID         NOT NULL,
     country_code CHAR(2)      NOT NULL,
     enabled      BOOLEAN      NOT NULL DEFAULT true,
@@ -41,44 +41,46 @@ CREATE TABLE commerce.store_shipping_countries (
     updated_at   TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT store_shipping_countries_pkey                PRIMARY KEY (store_id, country_code),
-    CONSTRAINT store_shipping_countries_store_id_fkey       FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT store_shipping_countries_store_id_fkey       FOREIGN KEY (store_id) REFERENCES chaos_commerce.stores (id) ON DELETE CASCADE,
     CONSTRAINT store_shipping_countries_country_code_check  CHECK (country_code ~ '^[A-Z]{2}$')
 );
 
-CREATE TABLE commerce.shoppers (
-    id           UUID          NOT NULL PRIMARY KEY,
-    store_id     UUID          NOT NULL,
+CREATE TABLE chaos_commerce.shoppers (
+    id           UUID                     NOT NULL PRIMARY KEY,
+    store_id     UUID                     NOT NULL,
+    email        chaos_extensions.citext,
     meta         JSONB,
     attribution  JSONB,
-    created_at   TIMESTAMPTZ   NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at   TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT shoppers_store_id_id_key              UNIQUE (store_id, id),
-    CONSTRAINT shoppers_store_id_fkey                FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT shoppers_store_id_fkey                FOREIGN KEY (store_id) REFERENCES chaos_commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT shoppers_email_length_check           CHECK (email IS NULL OR length(trim(email::text)) BETWEEN 3 AND 320),
     CONSTRAINT shoppers_meta_size_check              CHECK (meta IS NULL OR pg_column_size(meta) <= 32768),
     CONSTRAINT shoppers_meta_is_object_check         CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object'),
     CONSTRAINT shoppers_attribution_size_check       CHECK (attribution IS NULL OR pg_column_size(attribution) <= 32768),
     CONSTRAINT shoppers_attribution_is_object_check  CHECK (attribution IS NULL OR jsonb_typeof(attribution) = 'object')
 );
 
-CREATE TABLE commerce.channels (
+CREATE TABLE chaos_commerce.channels (
     id                UUID                           NOT NULL PRIMARY KEY,
     store_id          UUID                           NOT NULL,
     name              TEXT                           NOT NULL,
     origin            TEXT                           NOT NULL,
-    status            commerce.sales_channel_status  NOT NULL DEFAULT 'active',
+    status            chaos_commerce.sales_channel_status  NOT NULL DEFAULT 'active',
     created_at        TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at        TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT channels_store_id_id_key        UNIQUE (store_id, id),
     CONSTRAINT channels_origin_key             UNIQUE (origin),
-    CONSTRAINT channels_store_id_fkey          FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT channels_store_id_fkey          FOREIGN KEY (store_id) REFERENCES chaos_commerce.stores (id) ON DELETE CASCADE,
     CONSTRAINT channels_name_length_check      CHECK (length(trim(name)) BETWEEN 1 AND 120),
     CONSTRAINT channels_origin_length_check    CHECK (length(trim(origin)) BETWEEN 10 AND 2048),
     CONSTRAINT channels_origin_scheme_check    CHECK (origin ~ '^https?://')
 );
 
-CREATE TABLE commerce.channel_publishable_keys (
+CREATE TABLE chaos_commerce.channel_publishable_keys (
     id               UUID          NOT NULL PRIMARY KEY,
     store_id         UUID          NOT NULL,
     channel_id       UUID          NOT NULL,
@@ -88,20 +90,20 @@ CREATE TABLE commerce.channel_publishable_keys (
     created_at       TIMESTAMPTZ   NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at       TIMESTAMPTZ   NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT channel_publishable_keys_store_id_fkey         FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT channel_publishable_keys_store_id_channel_fkey FOREIGN KEY (store_id, channel_id) REFERENCES commerce.channels (store_id, id),
+    CONSTRAINT channel_publishable_keys_store_id_fkey         FOREIGN KEY (store_id) REFERENCES chaos_commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT channel_publishable_keys_store_id_channel_fkey FOREIGN KEY (store_id, channel_id) REFERENCES chaos_commerce.channels (store_id, id),
     CONSTRAINT channel_publishable_keys_public_key_format     CHECK (public_key ~ '^pk_[1-9A-HJ-NP-Za-km-z]{24}$'),
     CONSTRAINT channel_publishable_keys_name_length           CHECK (length(trim(name)) BETWEEN 1 AND 80)
 );
 
-CREATE INDEX stores_status_idx ON commerce.stores (status);
-CREATE INDEX store_memberships_user_idx ON commerce.store_memberships (user_id, store_id);
-CREATE INDEX channels_store_status_idx ON commerce.channels (store_id, status);
-CREATE INDEX channel_publishable_keys_store_created_idx ON commerce.channel_publishable_keys (store_id, created_at DESC, id DESC);
-CREATE INDEX channel_publishable_keys_channel_idx ON commerce.channel_publishable_keys (store_id, channel_id, id);
-CREATE INDEX store_shipping_countries_enabled_idx ON commerce.store_shipping_countries (store_id) WHERE enabled;
+CREATE INDEX stores_status_idx ON chaos_commerce.stores (status);
+CREATE INDEX store_memberships_user_idx ON chaos_commerce.store_memberships (user_id, store_id);
+CREATE INDEX channels_store_status_idx ON chaos_commerce.channels (store_id, status);
+CREATE INDEX channel_publishable_keys_store_created_idx ON chaos_commerce.channel_publishable_keys (store_id, created_at DESC, id DESC);
+CREATE INDEX channel_publishable_keys_channel_idx ON chaos_commerce.channel_publishable_keys (store_id, channel_id, id);
+CREATE INDEX store_shipping_countries_enabled_idx ON chaos_commerce.store_shipping_countries (store_id) WHERE enabled;
 
-CREATE FUNCTION commerce.authenticate_publishable_key (presented_public_key TEXT)
+CREATE FUNCTION chaos_commerce.authenticate_publishable_key (presented_public_key TEXT)
 RETURNS TABLE (
     publishable_key_id UUID,
     store_id           UUID,
@@ -117,10 +119,10 @@ AS $$
         publishable_key.store_id,
         channel.id               AS channel_id
     FROM
-        commerce.channel_publishable_keys AS publishable_key
-        INNER JOIN commerce.stores AS store
+        chaos_commerce.channel_publishable_keys AS publishable_key
+        INNER JOIN chaos_commerce.stores AS store
             ON store.id = publishable_key.store_id
-        INNER JOIN commerce.channels AS channel
+        INNER JOIN chaos_commerce.channels AS channel
             ON channel.store_id = publishable_key.store_id
             AND channel.id = publishable_key.channel_id
             AND channel.status = 'active'
@@ -130,7 +132,7 @@ AS $$
         AND store.status = 'active';
 $$;
 
-CREATE FUNCTION commerce.prevent_store_currency_change ()
+CREATE FUNCTION chaos_commerce.prevent_store_currency_change ()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -146,10 +148,10 @@ END;
 $$;
 
 CREATE TRIGGER stores_currency_immutable
-    BEFORE UPDATE OF currency ON commerce.stores
-    FOR EACH ROW EXECUTE FUNCTION commerce.prevent_store_currency_change();
+    BEFORE UPDATE OF currency ON chaos_commerce.stores
+    FOR EACH ROW EXECUTE FUNCTION chaos_commerce.prevent_store_currency_change();
 
-CREATE FUNCTION commerce.prevent_channel_identity_change ()
+CREATE FUNCTION chaos_commerce.prevent_channel_identity_change ()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -166,10 +168,10 @@ END;
 $$;
 
 CREATE TRIGGER channels_identity_immutable
-    BEFORE UPDATE OF id, store_id ON commerce.channels
-    FOR EACH ROW EXECUTE FUNCTION commerce.prevent_channel_identity_change();
+    BEFORE UPDATE OF id, store_id ON chaos_commerce.channels
+    FOR EACH ROW EXECUTE FUNCTION chaos_commerce.prevent_channel_identity_change();
 
-CREATE FUNCTION commerce.prevent_publishable_key_identity_change ()
+CREATE FUNCTION chaos_commerce.prevent_publishable_key_identity_change ()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -189,86 +191,86 @@ $$;
 
 CREATE TRIGGER channel_publishable_keys_identity_immutable
     BEFORE UPDATE OF id, store_id, channel_id, public_key
-    ON commerce.channel_publishable_keys
-    FOR EACH ROW EXECUTE FUNCTION commerce.prevent_publishable_key_identity_change();
+    ON chaos_commerce.channel_publishable_keys
+    FOR EACH ROW EXECUTE FUNCTION chaos_commerce.prevent_publishable_key_identity_change();
 
-ALTER TABLE commerce.stores ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.shoppers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.shoppers FORCE ROW LEVEL SECURITY;
-ALTER TABLE commerce.store_memberships ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.channels ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.channel_publishable_keys ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.store_shipping_countries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chaos_commerce.stores ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chaos_commerce.shoppers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chaos_commerce.shoppers FORCE ROW LEVEL SECURITY;
+ALTER TABLE chaos_commerce.store_memberships ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chaos_commerce.channels ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chaos_commerce.channel_publishable_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chaos_commerce.store_shipping_countries ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY store_isolation ON commerce.stores
+CREATE POLICY store_isolation ON chaos_commerce.stores
     USING (id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-CREATE POLICY store_isolation ON commerce.shoppers
+CREATE POLICY store_isolation ON chaos_commerce.shoppers
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-CREATE POLICY store_directory ON commerce.stores
+CREATE POLICY store_directory ON chaos_commerce.stores
     FOR SELECT
     USING (
         EXISTS (
             SELECT 1
-            FROM commerce.store_memberships AS membership
+            FROM chaos_commerce.store_memberships AS membership
             WHERE membership.store_id = stores.id
               AND membership.user_id = nullif(current_setting('app.user_id', true), '')::uuid
         )
     );
 
-CREATE POLICY store_isolation ON commerce.store_memberships
+CREATE POLICY store_isolation ON chaos_commerce.store_memberships
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-CREATE POLICY store_membership_directory ON commerce.store_memberships
+CREATE POLICY store_membership_directory ON chaos_commerce.store_memberships
     FOR SELECT
     USING (user_id = nullif(current_setting('app.user_id', true), '')::uuid);
 
-CREATE POLICY store_isolation ON commerce.channels
+CREATE POLICY store_isolation ON chaos_commerce.channels
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-CREATE POLICY store_isolation ON commerce.channel_publishable_keys
+CREATE POLICY store_isolation ON chaos_commerce.channel_publishable_keys
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-CREATE POLICY store_isolation ON commerce.store_shipping_countries
+CREATE POLICY store_isolation ON chaos_commerce.store_shipping_countries
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-REVOKE ALL ON FUNCTION commerce.authenticate_publishable_key (TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION commerce.authenticate_publishable_key (TEXT) TO chaos_runtime;
-REVOKE ALL ON FUNCTION commerce.prevent_store_currency_change () FROM PUBLIC;
-REVOKE ALL ON FUNCTION commerce.prevent_channel_identity_change () FROM PUBLIC;
-REVOKE ALL ON FUNCTION commerce.prevent_publishable_key_identity_change () FROM PUBLIC;
+REVOKE ALL ON FUNCTION chaos_commerce.authenticate_publishable_key (TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION chaos_commerce.authenticate_publishable_key (TEXT) TO chaos_runtime;
+REVOKE ALL ON FUNCTION chaos_commerce.prevent_store_currency_change () FROM PUBLIC;
+REVOKE ALL ON FUNCTION chaos_commerce.prevent_channel_identity_change () FROM PUBLIC;
+REVOKE ALL ON FUNCTION chaos_commerce.prevent_publishable_key_identity_change () FROM PUBLIC;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
-    ON commerce.stores,
-       commerce.shoppers,
-       commerce.store_memberships,
-       commerce.channels,
-       commerce.channel_publishable_keys,
-       commerce.store_shipping_countries
+    ON chaos_commerce.stores,
+       chaos_commerce.shoppers,
+       chaos_commerce.store_memberships,
+       chaos_commerce.channels,
+       chaos_commerce.channel_publishable_keys,
+       chaos_commerce.store_shipping_countries
     TO chaos_runtime;
 
-REVOKE UPDATE ON commerce.stores, commerce.channels, commerce.channel_publishable_keys FROM chaos_runtime;
-GRANT UPDATE (name, region, meta, status, updated_at) ON commerce.stores TO chaos_runtime;
-GRANT UPDATE (name, origin, status, updated_at) ON commerce.channels TO chaos_runtime;
-GRANT UPDATE (revoked_at, updated_at) ON commerce.channel_publishable_keys TO chaos_runtime;
+REVOKE UPDATE ON chaos_commerce.stores, chaos_commerce.channels, chaos_commerce.channel_publishable_keys FROM chaos_runtime;
+GRANT UPDATE (name, region, meta, status, updated_at) ON chaos_commerce.stores TO chaos_runtime;
+GRANT UPDATE (name, origin, status, updated_at) ON chaos_commerce.channels TO chaos_runtime;
+GRANT UPDATE (revoked_at, updated_at) ON chaos_commerce.channel_publishable_keys TO chaos_runtime;
 
-REVOKE DELETE, TRUNCATE ON commerce.stores,
-    commerce.shoppers,
-    commerce.channels,
-    commerce.channel_publishable_keys,
-    commerce.store_shipping_countries
+REVOKE DELETE, TRUNCATE ON chaos_commerce.stores,
+    chaos_commerce.shoppers,
+    chaos_commerce.channels,
+    chaos_commerce.channel_publishable_keys,
+    chaos_commerce.store_shipping_countries
     FROM chaos_runtime;
 
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA chaos_commerce TO chaos_runtime;
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA chaos_commerce GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA chaos_commerce GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
-GRANT USAGE ON SCHEMA commerce TO chaos_runtime;
+GRANT USAGE ON SCHEMA chaos_commerce TO chaos_runtime;

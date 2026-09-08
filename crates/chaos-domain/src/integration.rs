@@ -1,5 +1,5 @@
 /// A capability is the contract an external provider fulfils. Provider
-/// accounts are stored once in `integration.provider_accounts`; the
+/// accounts are stored once in `chaos_integration.provider_accounts`; the
 /// capability keeps payment, shipping, and email semantics separate in the
 /// application layer.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

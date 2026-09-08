@@ -16,7 +16,7 @@ async fn store_exists(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1)")
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM chaos_commerce.stores WHERE id = $1)")
         .bind(store_id.as_uuid())
         .fetch_one(&mut **transaction)
         .await

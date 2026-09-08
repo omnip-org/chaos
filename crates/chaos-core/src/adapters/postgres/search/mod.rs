@@ -18,7 +18,7 @@ impl PostgresSearchIndexer {
         now: OffsetDateTime,
     ) -> Result<u64, ApplicationError> {
         let processed: i64 =
-            sqlx::query_scalar("SELECT commerce.process_search_index_events($1, $2, $3)")
+            sqlx::query_scalar("SELECT chaos_commerce.process_search_index_events($1, $2, $3)")
                 .bind(i32::from(limit.clamp(1, 100)))
                 .bind(MAX_INTEGRATION_ATTEMPTS)
                 .bind(now)

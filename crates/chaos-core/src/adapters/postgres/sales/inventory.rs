@@ -9,7 +9,7 @@ pub(crate) async fn consume_order_inventory(
 ) -> Result<(), ApplicationError> {
     let lines = sqlx::query_as::<_, (Uuid, i64)>(
         "SELECT product_variant_id, quantity::bigint \
-         FROM commerce.order_lines \
+         FROM chaos_commerce.order_lines \
          WHERE store_id = $1 AND order_id = $2 AND track_inventory \
          ORDER BY product_variant_id",
     )
@@ -21,7 +21,7 @@ pub(crate) async fn consume_order_inventory(
 
     for (product_variant_id, quantity) in lines {
         sqlx::query_scalar::<_, i64>(
-            "UPDATE commerce.product_variants \
+            "UPDATE chaos_commerce.product_variants \
              SET on_hand_quantity = on_hand_quantity - $3, \
                  reserved_quantity = GREATEST(reserved_quantity - $3, 0), \
                  updated_at = CURRENT_TIMESTAMP \
@@ -49,12 +49,12 @@ pub(crate) async fn release_order_inventory(
     order_id: Uuid,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "UPDATE commerce.product_variants AS variant \
+        "UPDATE chaos_commerce.product_variants AS variant \
          SET reserved_quantity = variant.reserved_quantity - LEAST(variant.reserved_quantity, lines.quantity), \
              updated_at = CURRENT_TIMESTAMP \
          FROM ( \
              SELECT product_variant_id, SUM(quantity)::bigint AS quantity \
-             FROM commerce.order_lines \
+             FROM chaos_commerce.order_lines \
              WHERE store_id = $1 AND order_id = $2 AND track_inventory \
              GROUP BY product_variant_id \
          ) AS lines \

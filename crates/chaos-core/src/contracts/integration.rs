@@ -40,7 +40,7 @@ pub struct VerifiedWebhookEvent {
 
 #[async_trait]
 pub trait WebhookInbox: Send + Sync {
-    /// Appends the verified event to `integration.provider_webhooks` and,
+    /// Appends the verified event to `chaos_integration.provider_webhooks` and,
     /// in the same transaction, publishes `provider.webhook.received` onto
     /// `provider_webhooks_queue` for the drain worker to apply. Returns `true`
     /// when the row was newly written, `false` when
@@ -59,7 +59,7 @@ pub trait ProviderAccountReader: Send + Sync {
     ) -> Result<Option<(Uuid, String)>, ApplicationError>;
 }
 
-/// A message claimed off a PGMQ topic-routed queue (`integration.claim_topic_queue`).
+/// A message claimed off a PGMQ topic-routed queue (`chaos_integration.claim_topic_queue`).
 /// There is no backing row: the message body carries everything the
 /// consumer needs, and completion (`finish_topic`) only ever acts on the
 /// PGMQ message itself (delete, retry backoff, or archive).
@@ -69,7 +69,7 @@ pub struct TopicEventJob {
     pub attempts: u32,
     /// The routing key that delivered this message, read back from the PGMQ
     /// message header. Empty only for a message enqueued outside
-    /// `integration.publish_topic_event`. A consumer on a fan-in queue
+    /// `chaos_integration.publish_topic_event`. A consumer on a fan-in queue
     /// dispatches on this rather than a field it hopes the producer set.
     pub routing_key: String,
 }

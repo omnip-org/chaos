@@ -34,7 +34,7 @@ impl PostgresMaintenance {
             .map_err(database_error)?;
 
         let integration_deleted: i32 =
-            sqlx::query_scalar("SELECT integration.cleanup_terminal_rows($1)")
+            sqlx::query_scalar("SELECT chaos_integration.cleanup_terminal_rows($1)")
                 .bind(CLEANUP_BATCH_SIZE)
                 .fetch_one(&self.runtime_pool)
                 .await
@@ -49,10 +49,10 @@ async fn delete_expired_authorization_requests(
 ) -> Result<usize, ApplicationError> {
     delete_rows(
         transaction,
-        "DELETE FROM identity.oauth_authorization_requests AS request
+        "DELETE FROM chaos_identity.oauth_authorization_requests AS request
           WHERE request.id IN (
               SELECT candidate.id
-              FROM identity.oauth_authorization_requests AS candidate
+              FROM chaos_identity.oauth_authorization_requests AS candidate
               WHERE candidate.expires_at < CURRENT_TIMESTAMP - INTERVAL '1 hour'
                  OR (candidate.used_at IS NOT NULL
                      AND candidate.used_at < CURRENT_TIMESTAMP - INTERVAL '1 day')
@@ -69,10 +69,10 @@ async fn delete_expired_authorization_codes(
 ) -> Result<usize, ApplicationError> {
     delete_rows(
         transaction,
-        "DELETE FROM identity.oauth_authorization_codes AS code
+        "DELETE FROM chaos_identity.oauth_authorization_codes AS code
           WHERE code.code_digest IN (
               SELECT candidate.code_digest
-              FROM identity.oauth_authorization_codes AS candidate
+              FROM chaos_identity.oauth_authorization_codes AS candidate
               WHERE candidate.expires_at < CURRENT_TIMESTAMP - INTERVAL '1 hour'
                  OR (candidate.consumed_at IS NOT NULL
                      AND candidate.consumed_at < CURRENT_TIMESTAMP - INTERVAL '1 day')
@@ -89,10 +89,10 @@ async fn delete_expired_access_tokens(
 ) -> Result<usize, ApplicationError> {
     delete_rows(
         transaction,
-        "DELETE FROM identity.oauth_access_tokens AS token
+        "DELETE FROM chaos_identity.oauth_access_tokens AS token
           WHERE token.token_digest IN (
               SELECT candidate.token_digest
-              FROM identity.oauth_access_tokens AS candidate
+              FROM chaos_identity.oauth_access_tokens AS candidate
               WHERE candidate.expires_at < CURRENT_TIMESTAMP - INTERVAL '1 day'
                  OR (candidate.revoked_at IS NOT NULL
                      AND candidate.revoked_at < CURRENT_TIMESTAMP - INTERVAL '1 day')
@@ -109,10 +109,10 @@ async fn delete_expired_refresh_tokens(
 ) -> Result<usize, ApplicationError> {
     delete_rows(
         transaction,
-        "DELETE FROM identity.oauth_refresh_tokens AS token
+        "DELETE FROM chaos_identity.oauth_refresh_tokens AS token
           WHERE token.token_digest IN (
               SELECT candidate.token_digest
-              FROM identity.oauth_refresh_tokens AS candidate
+              FROM chaos_identity.oauth_refresh_tokens AS candidate
               WHERE candidate.expires_at < CURRENT_TIMESTAMP - INTERVAL '1 day'
                  OR (candidate.revoked_at IS NOT NULL
                      AND candidate.revoked_at < CURRENT_TIMESTAMP - INTERVAL '1 day')

@@ -25,8 +25,8 @@ impl ProviderAccountReader for PostgresIntegrationAccountRepository {
     ) -> Result<Option<(Uuid, String)>, ApplicationError> {
         sqlx::query_as::<_, (Uuid, Uuid, String)>(
             "SELECT provider_account_id, store_id, secret_reference \
-             FROM integration.resolve_webhook_secret_reference(\
-                 $1::integration.provider_capability, $2, $3)",
+             FROM chaos_integration.resolve_webhook_secret_reference(\
+                 $1::chaos_integration.provider_capability, $2, $3)",
         )
         .bind(capability)
         .bind(provider)

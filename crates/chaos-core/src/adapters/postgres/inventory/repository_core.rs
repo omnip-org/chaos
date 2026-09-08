@@ -46,7 +46,7 @@ impl PostgresInventoryRepository {
         require_store(&mut transaction, adjustment.store_id).await?;
         let (on_hand, reserved) = sqlx::query_as::<_, (i64, i64)>(
             "SELECT on_hand_quantity, reserved_quantity \
-             FROM commerce.product_variants \
+             FROM chaos_commerce.product_variants \
              WHERE store_id = $1 AND id = $2 AND track_inventory FOR UPDATE",
         )
         .bind(adjustment.store_id.as_uuid())
@@ -72,7 +72,7 @@ impl PostgresInventoryRepository {
             .adjust(adjustment.delta_quantity)
             .map_err(ApplicationError::from)?;
         let updated_at: OffsetDateTime = sqlx::query_scalar(
-            "UPDATE commerce.product_variants \
+            "UPDATE chaos_commerce.product_variants \
              SET on_hand_quantity = $3, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2 RETURNING updated_at",
         )
@@ -105,7 +105,7 @@ impl PostgresInventoryRepository {
         }
         let rows = sqlx::query_as::<_, VariantInventoryRow>(
             "SELECT id, on_hand_quantity, reserved_quantity, updated_at \
-             FROM commerce.product_variants \
+             FROM chaos_commerce.product_variants \
              WHERE store_id = $1 AND track_inventory \
                AND ($2::uuid IS NULL OR id > $2) \
              ORDER BY id ASC LIMIT $3",

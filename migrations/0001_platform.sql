@@ -1,9 +1,6 @@
-CREATE SCHEMA extensions;
-CREATE SCHEMA partman;
+CREATE SCHEMA IF NOT EXISTS chaos_extensions;
 
-CREATE EXTENSION citext WITH SCHEMA extensions;
-CREATE EXTENSION IF NOT EXISTS pg_partman WITH SCHEMA partman;
-CREATE EXTENSION IF NOT EXISTS pg_cron;
+CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA chaos_extensions;
 CREATE EXTENSION IF NOT EXISTS pgmq;
 
 DO $$
@@ -34,5 +31,5 @@ ALTER ROLE chaos_runtime
 ALTER ROLE chaos_identity
     NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOLOGIN NOINHERIT;
 
-GRANT USAGE ON SCHEMA extensions TO chaos_runtime;
-GRANT USAGE ON SCHEMA extensions TO chaos_identity;
+GRANT USAGE ON SCHEMA chaos_extensions TO chaos_runtime;
+GRANT USAGE ON SCHEMA chaos_extensions TO chaos_identity;

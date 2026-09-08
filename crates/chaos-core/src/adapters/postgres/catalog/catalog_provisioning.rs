@@ -45,7 +45,7 @@ pub(crate) struct PostgresCatalogProvisioningTransaction {
 impl PostgresCatalogProvisioningTransaction {
     pub(crate) async fn require_writable_store(&mut self) -> Result<(), ApplicationError> {
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1 AND status = 'active')",
+            "SELECT EXISTS (SELECT 1 FROM chaos_commerce.stores WHERE id = $1 AND status = 'active')",
         )
         .bind(self.store_id.as_uuid())
         .fetch_one(&mut *self.transaction)
@@ -66,9 +66,9 @@ impl PostgresCatalogProvisioningTransaction {
         product: &Product,
     ) -> Result<(), ApplicationError> {
         sqlx::query(
-            "INSERT INTO commerce.products \
+            "INSERT INTO chaos_commerce.products \
              (id, store_id, handle, title, description, status, meta) \
-             VALUES ($1, $2, $3, $4, $5, $6::commerce.product_status, $7::jsonb)",
+             VALUES ($1, $2, $3, $4, $5, $6::chaos_commerce.product_status, $7::jsonb)",
         )
         .bind(product.id().as_uuid())
         .bind(product.store_id().as_uuid())
@@ -83,7 +83,7 @@ impl PostgresCatalogProvisioningTransaction {
 
         for option in product.options() {
             sqlx::query(
-                "INSERT INTO commerce.product_options \
+                "INSERT INTO chaos_commerce.product_options \
                  (id, store_id, product_id, name, position) \
                  VALUES ($1, $2, $3, $4, $5)",
             )
@@ -101,7 +101,7 @@ impl PostgresCatalogProvisioningTransaction {
             .map_err(map_catalog_write_error)?;
             for value in option.values() {
                 sqlx::query(
-                    "INSERT INTO commerce.product_option_values \
+                    "INSERT INTO chaos_commerce.product_option_values \
                      (id, store_id, product_id, option_id, value, position) \
                      VALUES ($1, $2, $3, $4, $5, $6)",
                 )
@@ -123,10 +123,10 @@ impl PostgresCatalogProvisioningTransaction {
 
         for variant in product.variants() {
             sqlx::query(
-                "INSERT INTO commerce.product_variants \
+                "INSERT INTO chaos_commerce.product_variants \
                  (id, store_id, product_id, title, sku, status, \
                   track_inventory, meta) \
-                 VALUES ($1, $2, $3, $4, $5, $6::commerce.variant_status, $7, $8::jsonb)",
+                 VALUES ($1, $2, $3, $4, $5, $6::chaos_commerce.variant_status, $7, $8::jsonb)",
             )
             .bind(variant.id().as_uuid())
             .bind(product.store_id().as_uuid())
@@ -141,7 +141,7 @@ impl PostgresCatalogProvisioningTransaction {
             .map_err(map_catalog_write_error)?;
             for selection in variant.selected_options() {
                 sqlx::query(
-                    "INSERT INTO commerce.variant_selected_options \
+                    "INSERT INTO chaos_commerce.variant_selected_options \
                      (store_id, product_id, variant_id, option_id, \
                       option_value_id) \
                      VALUES ($1, $2, $3, $4, $5)",
@@ -233,7 +233,7 @@ mod tests {
         let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         for (user_id, label) in [(owner_user_id, "owner"), (member_user_id, "member")] {
-            sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+            sqlx::query("INSERT INTO chaos_identity.users (id, email) VALUES ($1, $2)")
                 .bind(user_id.as_uuid())
                 .bind(format!("catalog-{label}-{suffix}@example.com"))
                 .execute(&owner_pool)
@@ -241,7 +241,7 @@ mod tests {
                 .unwrap();
         }
         sqlx::query(
-            "INSERT INTO commerce.stores \
+            "INSERT INTO chaos_commerce.stores \
             (id, name, region, currency, status) \
              VALUES ($1, 'Catalog Store', 'US', 'USD', 'active')",
         )
@@ -251,9 +251,9 @@ mod tests {
         .unwrap();
         for (user_id, role) in [(owner_user_id, "owner"), (member_user_id, "member")] {
             sqlx::query(
-                "INSERT INTO commerce.store_memberships \
+                "INSERT INTO chaos_commerce.store_memberships \
                  (store_id, user_id, role) \
-                 VALUES ($1, $2, $3::commerce.store_role)",
+                 VALUES ($1, $2, $3::chaos_commerce.store_role)",
             )
             .bind(store_id.as_uuid())
             .bind(user_id.as_uuid())
@@ -341,11 +341,11 @@ mod tests {
 
         let counts: (i64, i64, i64, i64, i64) = sqlx::query_as(
             "SELECT \
-                (SELECT count(*) FROM commerce.products WHERE id = $1), \
-                (SELECT count(*) FROM commerce.product_options WHERE product_id = $1), \
-                (SELECT count(*) FROM commerce.product_option_values WHERE product_id = $1), \
-                (SELECT count(*) FROM commerce.product_variants WHERE product_id = $1), \
-                (SELECT count(*) FROM commerce.variant_selected_options WHERE product_id = $1)",
+                (SELECT count(*) FROM chaos_commerce.products WHERE id = $1), \
+                (SELECT count(*) FROM chaos_commerce.product_options WHERE product_id = $1), \
+                (SELECT count(*) FROM chaos_commerce.product_option_values WHERE product_id = $1), \
+                (SELECT count(*) FROM chaos_commerce.product_variants WHERE product_id = $1), \
+                (SELECT count(*) FROM chaos_commerce.variant_selected_options WHERE product_id = $1)",
         )
         .bind(output.product_id.as_uuid())
         .fetch_one(&owner_pool)
@@ -353,19 +353,19 @@ mod tests {
         .unwrap();
         assert_eq!(counts, (1, 2, 4, 1, 2));
         let status: String =
-            sqlx::query_scalar("SELECT status::text FROM commerce.products WHERE id = $1")
+            sqlx::query_scalar("SELECT status::text FROM chaos_commerce.products WHERE id = $1")
                 .bind(output.product_id.as_uuid())
                 .fetch_one(&owner_pool)
                 .await
                 .unwrap();
         assert_eq!(status, "draft");
 
-        sqlx::query("DELETE FROM commerce.stores WHERE id = $1")
+        sqlx::query("DELETE FROM chaos_commerce.stores WHERE id = $1")
             .bind(store_id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM identity.users WHERE id = ANY($1)")
+        sqlx::query("DELETE FROM chaos_identity.users WHERE id = ANY($1)")
             .bind(vec![owner_user_id.as_uuid(), member_user_id.as_uuid()])
             .execute(&owner_pool)
             .await

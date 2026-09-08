@@ -7,7 +7,7 @@ async fn reserve_inventory_for_cart(
 ) -> Result<(), ApplicationError> {
     for line in cart.lines().iter().filter(|line| line.track_inventory()) {
         let reserved: Option<Uuid> = sqlx::query_scalar(
-            "UPDATE commerce.product_variants \
+            "UPDATE chaos_commerce.product_variants \
              SET reserved_quantity = reserved_quantity + $3, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2 AND track_inventory \
                AND on_hand_quantity - reserved_quantity >= $3 \
@@ -35,7 +35,7 @@ impl PostgresStorefrontSalesRepository {
         require_channel(actor)?;
         let shopper_id = ShopperId::new();
         let mut transaction = self.begin(actor).await?;
-        sqlx::query("INSERT INTO commerce.shoppers (id, store_id, attribution) VALUES ($1, $2, $3)")
+        sqlx::query("INSERT INTO chaos_commerce.shoppers (id, store_id, attribution) VALUES ($1, $2, $3)")
             .bind(shopper_id.as_uuid())
             .bind(actor.store_id.as_uuid())
             .bind(attribution)
@@ -59,7 +59,7 @@ impl PostgresStorefrontSalesRepository {
         // unique index is the database guard; this read also makes repeated
         // requests return the canonical active Cart without minting another.
         if let Some(cart_id) = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM commerce.carts \
+            "SELECT id FROM chaos_commerce.carts \
              WHERE store_id = $1 AND channel_id = $2 AND shopper_id = $3 \
                AND status = 'active' \
              ORDER BY updated_at DESC, id DESC LIMIT 1 FOR UPDATE",
@@ -88,7 +88,7 @@ impl PostgresStorefrontSalesRepository {
             currency,
         );
         sqlx::query(
-            "INSERT INTO commerce.carts \
+            "INSERT INTO chaos_commerce.carts \
              (id, store_id, shopper_id, channel_id, price_list_id) \
              VALUES ($1, $2, $3, $4, $5) \
              ON CONFLICT (store_id, channel_id, shopper_id) \
@@ -103,7 +103,7 @@ impl PostgresStorefrontSalesRepository {
         .await
         .map_err(database_error)?;
         let canonical_id: Uuid = sqlx::query_scalar(
-            "SELECT id FROM commerce.carts \
+            "SELECT id FROM chaos_commerce.carts \
              WHERE store_id = $1 AND channel_id = $2 AND shopper_id = $3 \
                AND status = 'active' \
              ORDER BY updated_at DESC, id DESC LIMIT 1",
@@ -165,7 +165,7 @@ impl PostgresStorefrontSalesRepository {
         .await?
         .ok_or_else(|| variant_unavailable(product_variant_id))?;
         let previous_quantity: i64 = sqlx::query_scalar(
-            "SELECT quantity FROM commerce.cart_lines \
+            "SELECT quantity FROM chaos_commerce.cart_lines \
              WHERE store_id = $1 AND cart_id = $2 AND product_variant_id = $3",
         )
         .bind(actor.store_id.as_uuid())
@@ -178,7 +178,7 @@ impl PostgresStorefrontSalesRepository {
         if row.4 {
             let available: Option<i64> = sqlx::query_scalar(
                 "SELECT on_hand_quantity - reserved_quantity \
-                 FROM commerce.product_variants \
+                 FROM chaos_commerce.product_variants \
                  WHERE store_id = $1 AND id = $2 AND track_inventory",
             )
             .bind(actor.store_id.as_uuid())
@@ -257,7 +257,7 @@ impl PostgresStorefrontSalesRepository {
         // Serializes against concurrent line mutations and rejects a non-active Cart.
         lock_active_cart(&mut transaction, actor, cart_id).await?;
         sqlx::query(
-            "DELETE FROM commerce.cart_lines WHERE store_id = $1 \
+            "DELETE FROM chaos_commerce.cart_lines WHERE store_id = $1 \
              AND cart_id = $2 AND product_variant_id = $3",
         )
         .bind(actor.store_id.as_uuid())
@@ -344,7 +344,7 @@ impl PostgresStorefrontSalesRepository {
             return Err(cart_line_unavailable());
         }
         let existing_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM commerce.cart_lines WHERE store_id = $1 AND cart_id = $2",
+            "SELECT count(*) FROM chaos_commerce.cart_lines WHERE store_id = $1 AND cart_id = $2",
         )
         .bind(actor.store_id.as_uuid())
         .bind(cart_id.as_uuid())
@@ -369,7 +369,7 @@ impl PostgresStorefrontSalesRepository {
         let request_fingerprint = checkout_request_fingerprint(actor, &request);
 
         let payment_provider_account_id: Uuid = sqlx::query_scalar(
-            "SELECT id FROM integration.provider_accounts \
+            "SELECT id FROM chaos_integration.provider_accounts \
              WHERE store_id = $1 \
                AND capability = 'payment' \
                AND provider = $2 \
@@ -390,7 +390,7 @@ impl PostgresStorefrontSalesRepository {
         // Cart here (one checkout per Cart); a reused key from another Cart
         // trips `carts_checkout_idempotency_key_key`.
         let cart_locked = sqlx::query(
-            "UPDATE commerce.carts SET status = 'locked'::commerce.cart_status, \
+            "UPDATE chaos_commerce.carts SET status = 'locked'::chaos_commerce.cart_status, \
                     updated_at = $3, attribution = $4, \
                     checkout_idempotency_key = $5, checkout_request_fingerprint = $6 \
              WHERE store_id = $1 AND id = $2 AND status = 'active'",
@@ -418,7 +418,7 @@ impl PostgresStorefrontSalesRepository {
         let mut attempt = 0;
         let order_created = loop {
             let inserted = sqlx::query(
-                "INSERT INTO commerce.orders \
+                "INSERT INTO chaos_commerce.orders \
                  (id, store_id, order_number, channel_id, cart_id, shopper_id, \
                   currency, payment_provider_account_id, contact_email, \
                  subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
@@ -530,7 +530,7 @@ impl PostgresStorefrontSalesRepository {
         let mut transaction = self.begin(actor).await?;
         let order_id: Option<Uuid> = sqlx::query_scalar(
             "SELECT order_row.id \
-             FROM commerce.orders AS order_row \
+             FROM chaos_commerce.orders AS order_row \
              WHERE order_row.store_id = $1 \
                AND order_row.order_number = $2 \
                AND order_row.contact_email = $3 \
@@ -579,8 +579,8 @@ async fn existing_checkout_draft(
                 cart.checkout_idempotency_key, sales_order.payment_status::text, \
                 sales_order.currency::text, sales_order.subtotal_amount_minor, \
                 cart.checkout_request_fingerprint \
-         FROM commerce.orders AS sales_order \
-         INNER JOIN commerce.carts AS cart \
+         FROM chaos_commerce.orders AS sales_order \
+         INNER JOIN chaos_commerce.carts AS cart \
            ON cart.store_id = sales_order.store_id AND cart.id = sales_order.cart_id \
          WHERE sales_order.store_id = $1 AND sales_order.channel_id = $2 \
            AND sales_order.shopper_id = $3 AND sales_order.cart_id = $4",
@@ -640,7 +640,7 @@ async fn insert_order_lines(
             })
             .map(|asset| asset.url.as_str());
         sqlx::query(
-            "INSERT INTO commerce.order_lines \
+            "INSERT INTO chaos_commerce.order_lines \
              (store_id, order_id, position, product_id, product_variant_id, product_title, \
               variant_title, sku, track_inventory, quantity, \
               unit_price_amount_minor, subtotal_amount_minor, image_url, created_at) \

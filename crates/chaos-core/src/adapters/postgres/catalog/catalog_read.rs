@@ -59,17 +59,17 @@ impl PostgresCatalogReadRepository {
         >(
             "SELECT product.id, product.handle::text, product.title, product.status::text, \
                     count(variant.id), product.created_at, product.updated_at, product.revision \
-             FROM commerce.products AS product \
-             LEFT JOIN commerce.product_variants AS variant \
+             FROM chaos_commerce.products AS product \
+             LEFT JOIN chaos_commerce.product_variants AS variant \
               ON variant.store_id = product.store_id \
               AND variant.product_id = product.id \
               AND variant.status = 'active' \
-             LEFT JOIN commerce.product_documents AS document \
+             LEFT JOIN chaos_commerce.product_documents AS document \
               ON document.store_id = product.store_id \
               AND document.product_id = product.id \
              WHERE product.store_id = $1 \
                AND ($2::uuid IS NULL OR product.id > $2) \
-               AND ($3::text IS NULL OR product.status = $3::commerce.product_status) \
+               AND ($3::text IS NULL OR product.status = $3::chaos_commerce.product_status) \
                AND ($4::text IS NULL OR document.document @@ websearch_to_tsquery('simple', $4)) \
              GROUP BY product.id \
              ORDER BY product.id ASC \
@@ -129,7 +129,7 @@ impl PostgresCatalogReadRepository {
         >(
             "SELECT id, handle::text, title, description, status::text, meta, \
                     created_at, updated_at, revision \
-             FROM commerce.products \
+             FROM chaos_commerce.products \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
@@ -154,7 +154,7 @@ impl PostgresCatalogReadRepository {
 
         let option_rows = sqlx::query_as::<_, (Uuid, String, i16, Option<OffsetDateTime>)>(
             "SELECT id, name::text, position, archived_at \
-             FROM commerce.product_options \
+             FROM chaos_commerce.product_options \
              WHERE store_id = $1 AND product_id = $2 \
              ORDER BY position ASC, id ASC",
         )
@@ -165,7 +165,7 @@ impl PostgresCatalogReadRepository {
         .map_err(database_error)?;
         let value_rows = sqlx::query_as::<_, (Uuid, Uuid, String, i16, Option<OffsetDateTime>)>(
             "SELECT id, option_id, value::text, position, archived_at \
-             FROM commerce.product_option_values \
+             FROM chaos_commerce.product_option_values \
              WHERE store_id = $1 AND product_id = $2 \
              ORDER BY option_id ASC, position ASC, id ASC",
         )
@@ -189,7 +189,7 @@ impl PostgresCatalogReadRepository {
         >(
             "SELECT id, title, sku::text, status::text, track_inventory, \
                     meta, created_at, updated_at \
-             FROM commerce.product_variants \
+             FROM chaos_commerce.product_variants \
              WHERE store_id = $1 AND product_id = $2 \
              ORDER BY id ASC",
         )
@@ -201,12 +201,12 @@ impl PostgresCatalogReadRepository {
         let selection_rows = sqlx::query_as::<_, (Uuid, Uuid, String, Uuid, String)>(
             "SELECT selection.variant_id, selection.option_id, option.name::text, \
                     selection.option_value_id, value.value::text \
-             FROM commerce.variant_selected_options AS selection \
-             INNER JOIN commerce.product_options AS option \
+             FROM chaos_commerce.variant_selected_options AS selection \
+             INNER JOIN chaos_commerce.product_options AS option \
               ON option.store_id = selection.store_id \
               AND option.product_id = selection.product_id \
               AND option.id = selection.option_id \
-             INNER JOIN commerce.product_option_values AS value \
+             INNER JOIN chaos_commerce.product_option_values AS value \
               ON value.store_id = selection.store_id \
               AND value.product_id = selection.product_id \
               AND value.option_id = selection.option_id \
@@ -301,7 +301,7 @@ impl PostgresCatalogReadRepository {
         let mut transaction = self.begin(actor).await?;
         let rows = sqlx::query_scalar::<_, Uuid>(
             "SELECT channel_id \
-             FROM commerce.product_publications \
+             FROM chaos_commerce.product_publications \
              WHERE store_id = $1 AND product_id = $2 \
              ORDER BY channel_id ASC",
         )
@@ -327,7 +327,7 @@ impl PostgresCatalogReadRepository {
     ) -> Result<Option<i64>, ApplicationError> {
         let mut transaction = self.begin(actor).await?;
         let revision = sqlx::query_scalar::<_, i64>(
-            "SELECT revision FROM commerce.products \
+            "SELECT revision FROM chaos_commerce.products \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
@@ -365,7 +365,7 @@ async fn store_exists(
     transaction: &mut Transaction<'_, Postgres>,
     store_id: StoreId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1)")
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM chaos_commerce.stores WHERE id = $1)")
         .bind(store_id.as_uuid())
         .fetch_one(&mut **transaction)
         .await
@@ -438,7 +438,7 @@ mod tests {
         let variant_id = ProductVariantId::new();
         let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
-        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO chaos_identity.users (id, email) VALUES ($1, $2)")
             .bind(user_id.as_uuid())
             .bind(format!("catalog-read-owner-{suffix}@example.com"))
             .execute(&owner_pool)
@@ -446,7 +446,7 @@ mod tests {
             .unwrap();
         for id in [store_id, other_store_id] {
             sqlx::query(
-                "INSERT INTO commerce.stores (id, name) \
+                "INSERT INTO chaos_commerce.stores (id, name) \
                  VALUES ($1, 'Catalog Read Store')",
             )
             .bind(id.as_uuid())
@@ -455,7 +455,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
+            "INSERT INTO chaos_commerce.store_memberships (store_id, user_id, role) \
              VALUES ($1, $2, 'owner')",
         )
         .bind(store_id.as_uuid())
@@ -468,7 +468,7 @@ mod tests {
             (product_ids[1], "second-shirt", "Second Shirt"),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.products \
+                "INSERT INTO chaos_commerce.products \
                  (id, store_id, handle, title, description) \
                  VALUES ($1, $2, $3, $4, 'Product description')",
             )
@@ -481,7 +481,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO commerce.product_options \
+            "INSERT INTO chaos_commerce.product_options \
              (id, store_id, product_id, name, position) \
              VALUES ($1, $2, $3, 'Color', 0)",
         )
@@ -492,7 +492,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.product_option_values \
+            "INSERT INTO chaos_commerce.product_option_values \
              (id, store_id, product_id, option_id, value, position) \
              VALUES ($1, $2, $3, $4, 'Blue', 0)",
         )
@@ -504,7 +504,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.product_variants \
+            "INSERT INTO chaos_commerce.product_variants \
              (id, store_id, product_id, title, sku, status) \
              VALUES ($1, $2, $3, 'Blue', 'READ-BLUE', 'active')",
         )
@@ -515,7 +515,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.variant_selected_options \
+            "INSERT INTO chaos_commerce.variant_selected_options \
              (store_id, product_id, variant_id, option_id, option_value_id) \
              VALUES ($1, $2, $3, $4, $5)",
         )
@@ -592,12 +592,12 @@ mod tests {
             })
         ));
 
-        sqlx::query("DELETE FROM commerce.stores WHERE id = ANY($1)")
+        sqlx::query("DELETE FROM chaos_commerce.stores WHERE id = ANY($1)")
             .bind(vec![store_id.as_uuid(), other_store_id.as_uuid()])
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM identity.users WHERE id = $1")
+        sqlx::query("DELETE FROM chaos_identity.users WHERE id = $1")
             .bind(user_id.as_uuid())
             .execute(&owner_pool)
             .await

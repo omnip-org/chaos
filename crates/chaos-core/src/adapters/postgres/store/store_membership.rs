@@ -52,7 +52,7 @@ impl StoreMembershipRepository for PostgresStoreMembershipRepository {
         let mut transaction = self.begin(actor).await?;
         let rows = sqlx::query_as::<_, MembershipRow>(
             "SELECT user_id, role::text, created_at, updated_at \
-             FROM commerce.store_memberships WHERE store_id = $1 \
+             FROM chaos_commerce.store_memberships WHERE store_id = $1 \
              ORDER BY created_at, user_id",
         )
         .bind(actor.store_id().as_uuid())
@@ -72,10 +72,10 @@ impl StoreMembershipRepository for PostgresStoreMembershipRepository {
         require_selected_store(actor, store_id)?;
         let mut transaction = self.begin(actor).await?;
         let row = sqlx::query_as::<_, MembershipRow>(
-            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
+            "INSERT INTO chaos_commerce.store_memberships (store_id, user_id, role) \
              VALUES ($1, $2, 'member') \
              ON CONFLICT (store_id, user_id) DO UPDATE SET updated_at = \
-                 commerce.store_memberships.updated_at \
+                 chaos_commerce.store_memberships.updated_at \
              RETURNING user_id, role::text, created_at, updated_at",
         )
         .bind(actor.store_id().as_uuid())
@@ -102,7 +102,7 @@ impl StoreMembershipRepository for PostgresStoreMembershipRepository {
             protect_last_owner(&mut transaction, actor.store_id(), user_id).await?;
         }
         let row = sqlx::query_as::<_, MembershipRow>(
-            "UPDATE commerce.store_memberships SET role = $3::commerce.store_role, \
+            "UPDATE chaos_commerce.store_memberships SET role = $3::chaos_commerce.store_role, \
                     updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND user_id = $2 \
              RETURNING user_id, role::text, created_at, updated_at",
@@ -126,12 +126,14 @@ impl StoreMembershipRepository for PostgresStoreMembershipRepository {
         if actor.role() == StoreRole::Owner {
             protect_last_owner(&mut transaction, actor.store_id(), actor.user_id()).await?;
         }
-        sqlx::query("DELETE FROM commerce.store_memberships WHERE store_id = $1 AND user_id = $2")
-            .bind(actor.store_id().as_uuid())
-            .bind(actor.user_id().as_uuid())
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
+        sqlx::query(
+            "DELETE FROM chaos_commerce.store_memberships WHERE store_id = $1 AND user_id = $2",
+        )
+        .bind(actor.store_id().as_uuid())
+        .bind(actor.user_id().as_uuid())
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
         transaction.commit().await.map_err(database_error)?;
         Ok(())
     }
@@ -142,7 +144,7 @@ async fn lock_memberships(
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "SELECT user_id FROM commerce.store_memberships \
+        "SELECT user_id FROM chaos_commerce.store_memberships \
          WHERE store_id = $1 ORDER BY user_id FOR UPDATE",
     )
     .bind(store_id.as_uuid())
@@ -158,7 +160,7 @@ async fn protect_last_owner(
     user_id: UserId,
 ) -> Result<(), ApplicationError> {
     let target_is_owner: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM commerce.store_memberships \
+        "SELECT EXISTS (SELECT 1 FROM chaos_commerce.store_memberships \
          WHERE store_id = $1 AND user_id = $2 AND role = 'owner')",
     )
     .bind(store_id.as_uuid())
@@ -168,7 +170,7 @@ async fn protect_last_owner(
     .map_err(database_error)?;
     if target_is_owner {
         let owner_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM commerce.store_memberships \
+            "SELECT count(*) FROM chaos_commerce.store_memberships \
              WHERE store_id = $1 AND role = 'owner'",
         )
         .bind(store_id.as_uuid())
@@ -266,7 +268,7 @@ mod tests {
         let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         for (user_id, label) in [(owner_id, "owner"), (member_id, "member")] {
-            sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+            sqlx::query("INSERT INTO chaos_identity.users (id, email) VALUES ($1, $2)")
                 .bind(user_id.as_uuid())
                 .bind(format!("membership-{label}-{suffix}@example.com"))
                 .execute(&owner_pool)
@@ -274,7 +276,7 @@ mod tests {
                 .unwrap();
         }
         sqlx::query(
-            "INSERT INTO commerce.stores (id, name, status) \
+            "INSERT INTO chaos_commerce.stores (id, name, status) \
              VALUES ($1, 'Membership Store', 'active')",
         )
         .bind(store_id.as_uuid())
@@ -282,7 +284,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
+            "INSERT INTO chaos_commerce.store_memberships (store_id, user_id, role) \
              VALUES ($1, $2, 'owner')",
         )
         .bind(store_id.as_uuid())
@@ -335,12 +337,12 @@ mod tests {
             })
         ));
 
-        sqlx::query("DELETE FROM commerce.stores WHERE id = $1")
+        sqlx::query("DELETE FROM chaos_commerce.stores WHERE id = $1")
             .bind(store_id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM identity.users WHERE id = ANY($1)")
+        sqlx::query("DELETE FROM chaos_identity.users WHERE id = ANY($1)")
             .bind(vec![owner_id.as_uuid(), member_id.as_uuid()])
             .execute(&owner_pool)
             .await

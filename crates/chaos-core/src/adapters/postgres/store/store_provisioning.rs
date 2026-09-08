@@ -40,7 +40,7 @@ impl PostgresStoreProvisioningTransaction {
             .await
             .map_err(database_error)?;
         sqlx::query(
-            "INSERT INTO commerce.stores \
+            "INSERT INTO chaos_commerce.stores \
              (id, name, region, currency, meta, status) \
              VALUES ($1, $2, $3, $4, $5, 'active')",
         )
@@ -55,7 +55,7 @@ impl PostgresStoreProvisioningTransaction {
         // A new Store can otherwise ship nowhere: seed its home region as the
         // first enabled shipping destination. Owners add more from there.
         sqlx::query(
-            "INSERT INTO commerce.store_shipping_countries (store_id, country_code) \
+            "INSERT INTO chaos_commerce.store_shipping_countries (store_id, country_code) \
              VALUES ($1, $2)",
         )
         .bind(store.id().as_uuid())
@@ -66,7 +66,7 @@ impl PostgresStoreProvisioningTransaction {
         // Every Store can mark Orders shipped/delivered from day one, without
         // any carrier integration or credential setup.
         sqlx::query(
-            "INSERT INTO integration.provider_accounts \
+            "INSERT INTO chaos_integration.provider_accounts \
              (id, store_id, capability, provider, display_name) \
              VALUES ($1, $2, 'shipping', 'manual', 'Manual fulfillment')",
         )
@@ -83,8 +83,8 @@ impl PostgresStoreProvisioningTransaction {
         membership: &StoreMembership,
     ) -> Result<(), ApplicationError> {
         sqlx::query(
-            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
-             VALUES ($1, $2, $3::commerce.store_role)",
+            "INSERT INTO chaos_commerce.store_memberships (store_id, user_id, role) \
+             VALUES ($1, $2, $3::chaos_commerce.store_role)",
         )
         .bind(membership.store_id().as_uuid())
         .bind(membership.user_id().as_uuid())
@@ -100,9 +100,9 @@ impl PostgresStoreProvisioningTransaction {
         channel: &SalesChannel,
     ) -> Result<(), ApplicationError> {
         sqlx::query(
-            "INSERT INTO commerce.channels \
+            "INSERT INTO chaos_commerce.channels \
              (id, store_id, name, origin, status) \
-             VALUES ($1, $2, $3, $4, $5::commerce.sales_channel_status)",
+             VALUES ($1, $2, $3, $4, $5::chaos_commerce.sales_channel_status)",
         )
         .bind(channel.id().as_uuid())
         .bind(channel.store_id().as_uuid())
@@ -160,7 +160,7 @@ mod tests {
         let owner_user_id = UserId::new();
         let unique_suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
-        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO chaos_identity.users (id, email) VALUES ($1, $2)")
             .bind(owner_user_id.as_uuid())
             .bind(format!("store-owner-{unique_suffix}@example.com"))
             .execute(&owner_pool)
@@ -185,8 +185,8 @@ mod tests {
             "SELECT store.status::text, store.region::text, \
                     store.currency::text, \
                     channel.origin \
-             FROM commerce.stores AS store \
-             INNER JOIN commerce.channels AS channel \
+             FROM chaos_commerce.stores AS store \
+             INNER JOIN chaos_commerce.channels AS channel \
                  ON channel.store_id = store.id \
              WHERE store.id = $1",
         )
@@ -205,7 +205,7 @@ mod tests {
         );
 
         let membership_role: String = sqlx::query_scalar(
-            "SELECT role::text FROM commerce.store_memberships \
+            "SELECT role::text FROM chaos_commerce.store_memberships \
              WHERE store_id = $1 AND user_id = $2",
         )
         .bind(output.store_id.as_uuid())
@@ -215,12 +215,12 @@ mod tests {
         .unwrap();
         assert_eq!(membership_role, "owner");
 
-        sqlx::query("DELETE FROM commerce.stores WHERE id = $1")
+        sqlx::query("DELETE FROM chaos_commerce.stores WHERE id = $1")
             .bind(output.store_id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM identity.users WHERE id = $1")
+        sqlx::query("DELETE FROM chaos_identity.users WHERE id = $1")
             .bind(owner_user_id.as_uuid())
             .execute(&owner_pool)
             .await

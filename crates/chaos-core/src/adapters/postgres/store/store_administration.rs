@@ -65,7 +65,7 @@ impl PostgresStoreAdministrationRepository {
         let row = sqlx::query_as::<_, StoreRow>(
             "SELECT id, name, region::text, currency::text, meta, \
                     status::text, created_at, updated_at \
-             FROM commerce.stores WHERE id = $1",
+             FROM chaos_commerce.stores WHERE id = $1",
         )
         .bind(store_id.as_uuid())
         .fetch_optional(&mut *transaction)
@@ -85,7 +85,7 @@ impl PostgresStoreAdministrationRepository {
     ) -> Result<StoreId, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         let result = sqlx::query(
-            "UPDATE commerce.stores SET name = $2, region = $3, \
+            "UPDATE chaos_commerce.stores SET name = $2, region = $3, \
                     meta = $4, updated_at = CURRENT_TIMESTAMP \
              WHERE id = $1",
         )
@@ -114,7 +114,7 @@ impl PostgresStoreAdministrationRepository {
         }
         let rows = sqlx::query_as::<_, ShippingCountryRow>(
             "SELECT country_code::text, enabled, created_at, updated_at \
-             FROM commerce.store_shipping_countries \
+             FROM chaos_commerce.store_shipping_countries \
              WHERE store_id = $1 ORDER BY country_code",
         )
         .bind(store_id.as_uuid())
@@ -137,7 +137,7 @@ impl PostgresStoreAdministrationRepository {
     ) -> Result<ShippingCountryAdminItem, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM commerce.stores \
+            "SELECT id FROM chaos_commerce.stores \
              WHERE id = $1 AND status = 'active' FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -146,7 +146,7 @@ impl PostgresStoreAdministrationRepository {
         .map_err(database_error)?
         .ok_or_else(|| store_not_found(store_id))?;
         let row = sqlx::query_as::<_, ShippingCountryRow>(
-            "INSERT INTO commerce.store_shipping_countries \
+            "INSERT INTO chaos_commerce.store_shipping_countries \
              (store_id, country_code, enabled) VALUES ($1, $2, $3) \
              ON CONFLICT (store_id, country_code) DO UPDATE SET \
                  enabled = EXCLUDED.enabled, updated_at = CURRENT_TIMESTAMP \
@@ -169,15 +169,17 @@ impl PostgresStoreAdministrationRepository {
         status: StoreStatus,
     ) -> Result<StoreId, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
-        sqlx::query_scalar::<_, Uuid>("SELECT id FROM commerce.stores WHERE id = $1 FOR UPDATE")
-            .bind(store_id.as_uuid())
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(database_error)?
-            .ok_or_else(|| store_not_found(store_id))?;
+        sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM chaos_commerce.stores WHERE id = $1 FOR UPDATE",
+        )
+        .bind(store_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| store_not_found(store_id))?;
         if status == StoreStatus::Active {
             let active_channel_exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM commerce.channels \
+                "SELECT EXISTS (SELECT 1 FROM chaos_commerce.channels \
                  WHERE store_id = $1 \
                    AND status = 'active')",
             )
@@ -188,7 +190,7 @@ impl PostgresStoreAdministrationRepository {
             Store::validate_activation(active_channel_exists)?;
         }
         sqlx::query(
-            "UPDATE commerce.stores SET status = $2::commerce.store_status, \
+            "UPDATE chaos_commerce.stores SET status = $2::chaos_commerce.store_status, \
                     updated_at = CURRENT_TIMESTAMP \
              WHERE id = $1",
         )
@@ -214,7 +216,7 @@ impl PostgresStoreAdministrationRepository {
         }
         let rows = sqlx::query_as::<_, ChannelRow>(
             "SELECT id, name, origin, status::text, \
-                    created_at, updated_at FROM commerce.channels \
+                    created_at, updated_at FROM chaos_commerce.channels \
              WHERE store_id = $1 \
                AND ($2::uuid IS NULL OR id > $2) ORDER BY id ASC LIMIT $3",
         )
@@ -240,7 +242,7 @@ impl PostgresStoreAdministrationRepository {
         let mut transaction = self.begin(&actor).await?;
         let row = sqlx::query_as::<_, ChannelRow>(
             "SELECT id, name, origin, status::text, \
-                    created_at, updated_at FROM commerce.channels \
+                    created_at, updated_at FROM chaos_commerce.channels \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
@@ -260,7 +262,7 @@ impl PostgresStoreAdministrationRepository {
         let mut transaction = self.begin(&actor).await?;
         require_writable_store(&mut transaction, channel.store_id()).await?;
         sqlx::query(
-            "INSERT INTO commerce.channels \
+            "INSERT INTO chaos_commerce.channels \
              (id, store_id, name, origin, status) \
              VALUES ($1, $2, $3, $4, 'active')",
         )
@@ -283,7 +285,7 @@ impl PostgresStoreAdministrationRepository {
     ) -> Result<SalesChannelId, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         let result = sqlx::query(
-            "UPDATE commerce.channels SET name = $3, origin = $4, \
+            "UPDATE chaos_commerce.channels SET name = $3, origin = $4, \
                     updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
@@ -310,7 +312,7 @@ impl PostgresStoreAdministrationRepository {
     ) -> Result<SalesChannelId, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         let current_status = sqlx::query_scalar::<_, String>(
-            "SELECT status::text FROM commerce.channels \
+            "SELECT status::text FROM chaos_commerce.channels \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -321,7 +323,7 @@ impl PostgresStoreAdministrationRepository {
         .ok_or_else(|| channel_not_found(channel_id))?;
         if status == SalesChannelStatus::Archived && current_status == "active" {
             let active_channel_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM commerce.channels \
+                "SELECT COUNT(*) FROM chaos_commerce.channels \
                  WHERE store_id = $1 AND status = 'active'",
             )
             .bind(store_id.as_uuid())
@@ -338,8 +340,8 @@ impl PostgresStoreAdministrationRepository {
             }
         }
         sqlx::query(
-            "UPDATE commerce.channels \
-             SET status = $3::commerce.sales_channel_status, updated_at = CURRENT_TIMESTAMP \
+            "UPDATE chaos_commerce.channels \
+             SET status = $3::chaos_commerce.sales_channel_status, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
@@ -357,7 +359,7 @@ async fn store_exists(
     transaction: &mut Transaction<'_, Postgres>,
     store_id: StoreId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1)")
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM chaos_commerce.stores WHERE id = $1)")
         .bind(store_id.as_uuid())
         .fetch_one(&mut **transaction)
         .await
@@ -369,7 +371,7 @@ async fn require_writable_store(
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
     let writable: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM commerce.stores \
+        "SELECT EXISTS (SELECT 1 FROM chaos_commerce.stores \
                              WHERE id = $1 AND status = 'active')",
     )
     .bind(store_id.as_uuid())
@@ -501,7 +503,7 @@ mod tests {
         let initial_channel_id = SalesChannelId::new();
         let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
-        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO chaos_identity.users (id, email) VALUES ($1, $2)")
             .bind(owner_id.as_uuid())
             .bind(format!("store-admin-owner-{suffix}@example.com"))
             .execute(&owner_pool)
@@ -509,7 +511,7 @@ mod tests {
             .unwrap();
         for id in [store_id, other_store_id] {
             sqlx::query(
-                "INSERT INTO commerce.stores (id, name) \
+                "INSERT INTO chaos_commerce.stores (id, name) \
                  VALUES ($1, 'Admin Store')",
             )
             .bind(id.as_uuid())
@@ -518,7 +520,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
+            "INSERT INTO chaos_commerce.store_memberships (store_id, user_id, role) \
              VALUES ($1, $2, 'owner')",
         )
         .bind(store_id.as_uuid())
@@ -527,7 +529,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.store_shipping_countries (store_id, country_code) \
+            "INSERT INTO chaos_commerce.store_shipping_countries (store_id, country_code) \
              VALUES ($1, 'US')",
         )
         .bind(store_id.as_uuid())
@@ -535,7 +537,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.channels \
+            "INSERT INTO chaos_commerce.channels \
              (id, store_id, name, origin) \
              VALUES ($1, $2, 'Online Store', $3)",
         )
