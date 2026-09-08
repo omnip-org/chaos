@@ -302,7 +302,7 @@ impl PostgresCapiEventStore {
         let row: ProviderAccountRow = sqlx::query_as(
             "INSERT INTO chaos_integration.provider_accounts \
                 (id, store_id, capability, provider, credential_secret_reference, configuration, enabled, created_at, updated_at) \
-             VALUES (uuidv7(), $1, 'analytics', $2, $3, $4, $5, $6, $6) \
+             VALUES ($1, $2, 'analytics', $3, $4, $5, $6, $7, $7) \
              ON CONFLICT (store_id, capability, provider) DO UPDATE SET \
                 credential_secret_reference = EXCLUDED.credential_secret_reference, \
                 configuration = EXCLUDED.configuration, \
@@ -310,6 +310,7 @@ impl PostgresCapiEventStore {
                 updated_at = EXCLUDED.updated_at \
              RETURNING id, provider, credential_secret_reference IS NOT NULL, configuration, enabled, created_at, updated_at",
         )
+        .bind(Uuid::now_v7())
         .bind(store.as_uuid())
         .bind(configuration.provider)
         .bind(configuration.credential_secret_reference)

@@ -3,22 +3,17 @@ use sqlx::{PgPool, Postgres, Transaction};
 
 const CLEANUP_BATCH_SIZE: i32 = 500;
 
-/// Bounded retention work that must run with the same least-privilege pools as
-/// the data it removes. Identity cleanup uses `chaos_identity`; the integration
-/// cleanup routine is a narrowly granted SECURITY DEFINER function because the
-/// runtime role must not receive cross-Store delete access.
+/// Bounded retention work that runs with the same least-privilege pool as the
+/// data it removes. Currently only expired OAuth identity records
+/// (`chaos_identity`).
 #[derive(Clone)]
 pub struct PostgresMaintenance {
-    runtime_pool: PgPool,
     identity_pool: PgPool,
 }
 
 impl PostgresMaintenance {
-    pub fn new(runtime_pool: PgPool, identity_pool: PgPool) -> Self {
-        Self {
-            runtime_pool,
-            identity_pool,
-        }
+    pub fn new(identity_pool: PgPool) -> Self {
+        Self { identity_pool }
     }
 
     pub async fn cleanup_expired(&self) -> Result<usize, ApplicationError> {
@@ -32,14 +27,6 @@ impl PostgresMaintenance {
             .commit()
             .await
             .map_err(database_error)?;
-
-        let integration_deleted: i32 =
-            sqlx::query_scalar("SELECT chaos_integration.cleanup_terminal_rows($1)")
-                .bind(CLEANUP_BATCH_SIZE)
-                .fetch_one(&self.runtime_pool)
-                .await
-                .map_err(database_error)?;
-        deleted += usize::try_from(integration_deleted).unwrap_or_default();
         Ok(deleted)
     }
 }

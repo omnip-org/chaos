@@ -88,10 +88,7 @@ impl WorkerRuntime {
             provider_webhook_worker,
             capi_worker,
             search_indexer: Arc::new(PostgresSearchIndexer::new(infrastructure.runtime_pool())),
-            maintenance: Arc::new(PostgresMaintenance::new(
-                infrastructure.runtime_pool(),
-                infrastructure.identity_pool(),
-            )),
+            maintenance: Arc::new(PostgresMaintenance::new(infrastructure.identity_pool())),
             clock: Arc::new(SystemClock),
         })
     }
