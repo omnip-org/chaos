@@ -36,11 +36,10 @@ $COMPOSE config --quiet
 
 echo "Deploying image: ${CHAOS_IMAGE}"
 
-docker volume create chaos-postgres-data >/dev/null
 docker volume create chaos-redis-data >/dev/null
 
 $COMPOSE pull migrate api-blue api-green worker
-$COMPOSE up -d --wait postgres redis
+$COMPOSE up -d --wait redis
 $COMPOSE run --rm migrate
 
 write_upstream() {
