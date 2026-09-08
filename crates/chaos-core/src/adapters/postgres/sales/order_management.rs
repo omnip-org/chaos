@@ -49,10 +49,10 @@ impl PostgresOrderManagementRepository {
     ) -> Result<OrderPage, ApplicationError> {
         let mut transaction = self.begin_for_admin(&actor).await?;
         let ids = sqlx::query_scalar::<_, Uuid>(
-            "SELECT o.id FROM commerce.orders o \
+            "SELECT o.id FROM chaos_commerce.orders o \
              WHERE o.store_id = $1 \
                AND ($2::uuid IS NULL OR o.id < $2) \
-               AND ($3::text IS NULL OR o.status = $3::commerce.order_status) \
+               AND ($3::text IS NULL OR o.status = $3::chaos_commerce.order_status) \
                AND ($4::text IS NULL OR o.contact_email = lower($4)) \
                AND ($5::text IS NULL OR o.order_number = upper($5)) \
              ORDER BY o.id DESC LIMIT $6",
@@ -107,7 +107,7 @@ impl PostgresOrderManagementRepository {
         }
         let mut transaction = self.begin_for_admin(&actor).await?;
         let row = sqlx::query_scalar::<_, String>(
-            "SELECT status::text FROM commerce.orders \
+            "SELECT status::text FROM chaos_commerce.orders \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -132,7 +132,7 @@ impl PostgresOrderManagementRepository {
             OrderStatus::Pending => return Err(invalid_target()),
         };
         sqlx::query(
-            "UPDATE commerce.orders SET status = $3::commerce.order_status, updated_at = $4 \
+            "UPDATE chaos_commerce.orders SET status = $3::chaos_commerce.order_status, updated_at = $4 \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
@@ -146,9 +146,9 @@ impl PostgresOrderManagementRepository {
         // handoff. The handoff is Cart-owned operational state, not an Order
         // field, so every terminal Order path must clear it explicitly.
         sqlx::query(
-            "UPDATE commerce.carts AS cart SET status = $3::commerce.cart_status, \
+            "UPDATE chaos_commerce.carts AS cart SET status = $3::chaos_commerce.cart_status, \
                     payment_client_action = NULL, updated_at = $4 \
-             FROM commerce.orders AS sales_order \
+             FROM chaos_commerce.orders AS sales_order \
              WHERE sales_order.store_id = $1 AND sales_order.id = $2 \
                AND cart.store_id = sales_order.store_id AND cart.id = sales_order.cart_id",
         )

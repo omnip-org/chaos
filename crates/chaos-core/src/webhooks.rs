@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Drains `provider_webhooks_queue`. Every job is a pointer
-/// (`{webhook_id, store_id}`) into `integration.provider_webhook_audit`;
+/// (`{webhook_id, store_id}`) into `chaos_integration.provider_webhook_audit`;
 /// the worker loads that row and applies the event through the capability that
 /// owns it. Failures ride PGMQ's own retry/backoff/archive, and
 /// `process_webhook_job` is written to be idempotent so a redelivery is safe.

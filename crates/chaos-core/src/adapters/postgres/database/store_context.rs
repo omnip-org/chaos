@@ -40,7 +40,7 @@ mod tests {
         let provider_account_a = Uuid::now_v7();
         let provider_account_b = Uuid::now_v7();
 
-        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO chaos_identity.users (id, email) VALUES ($1, $2)")
             .bind(user_id)
             .bind(format!("rls-api-keys-{}@example.com", user_id.simple()))
             .execute(&pool)
@@ -49,7 +49,7 @@ mod tests {
 
         for (store_id, name) in [(store_a, "store-a"), (store_b, "store-b")] {
             sqlx::query(
-                "INSERT INTO commerce.stores (id, name, currency, status) \
+                "INSERT INTO chaos_commerce.stores (id, name, currency, status) \
                  VALUES ($1, $2, 'USD', 'active')",
             )
             .bind(store_id)
@@ -58,7 +58,7 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
+                "INSERT INTO chaos_commerce.store_memberships (store_id, user_id, role) \
                  VALUES ($1, $2, 'owner')",
             )
             .bind(store_id)
@@ -71,7 +71,7 @@ mod tests {
             [(channel_a, store_a, "web-a"), (channel_b, store_b, "web-b")]
         {
             sqlx::query(
-                "INSERT INTO commerce.channels \
+                "INSERT INTO chaos_commerce.channels \
                  (id, store_id, name, origin) \
                  VALUES ($1, $2, $3, $4)",
             )
@@ -88,7 +88,7 @@ mod tests {
             (product_b, store_b, "product-b"),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.products (id, store_id, handle, title) \
+                "INSERT INTO chaos_commerce.products (id, store_id, handle, title) \
                  VALUES ($1, $2, $3, $3)",
             )
             .bind(product_id)
@@ -103,7 +103,7 @@ mod tests {
             (key_b, store_b, channel_b, "pk_23456789ABCDEFGHJKLMNPQR"),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.channel_publishable_keys \
+                "INSERT INTO chaos_commerce.channel_publishable_keys \
                  (id, store_id, channel_id, public_key, name) \
                  VALUES ($1, $2, $3, $4, 'RLS test key')",
             )
@@ -116,7 +116,7 @@ mod tests {
             .unwrap();
         }
         for (shopper_id, store_id) in [(shopper_a, store_a), (shopper_b, store_b)] {
-            sqlx::query("INSERT INTO commerce.shoppers (id, store_id) VALUES ($1, $2)")
+            sqlx::query("INSERT INTO chaos_commerce.shoppers (id, store_id) VALUES ($1, $2)")
                 .bind(shopper_id)
                 .bind(store_id)
                 .execute(&pool)
@@ -125,7 +125,7 @@ mod tests {
         }
         for (id, store_id) in [(provider_account_a, store_a), (provider_account_b, store_b)] {
             sqlx::query(
-                "INSERT INTO integration.provider_accounts \
+                "INSERT INTO chaos_integration.provider_accounts \
                  (id, store_id, capability, provider) \
                  VALUES ($1, $2, 'payment', 'stripe')",
             )
@@ -145,32 +145,33 @@ mod tests {
             .await
             .unwrap();
         let visible_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.stores ORDER BY id")
+            sqlx::query_scalar("SELECT id FROM chaos_commerce.stores ORDER BY id")
                 .fetch_all(&mut *transaction)
                 .await
                 .unwrap();
-        let visible_key_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.channel_publishable_keys ORDER BY id")
-                .fetch_all(&mut *transaction)
-                .await
-                .unwrap();
+        let visible_key_ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM chaos_commerce.channel_publishable_keys ORDER BY id",
+        )
+        .fetch_all(&mut *transaction)
+        .await
+        .unwrap();
         let visible_channel_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.channels ORDER BY id")
+            sqlx::query_scalar("SELECT id FROM chaos_commerce.channels ORDER BY id")
                 .fetch_all(&mut *transaction)
                 .await
                 .unwrap();
         let visible_product_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.products ORDER BY id")
+            sqlx::query_scalar("SELECT id FROM chaos_commerce.products ORDER BY id")
                 .fetch_all(&mut *transaction)
                 .await
                 .unwrap();
         let visible_shopper_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.shoppers ORDER BY id")
+            sqlx::query_scalar("SELECT id FROM chaos_commerce.shoppers ORDER BY id")
                 .fetch_all(&mut *transaction)
                 .await
                 .unwrap();
         let visible_provider_account_ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM integration.provider_accounts WHERE capability = 'payment' ORDER BY id",
+            "SELECT id FROM chaos_integration.provider_accounts WHERE capability = 'payment' ORDER BY id",
         )
         .fetch_all(&mut *transaction)
         .await
@@ -184,17 +185,17 @@ mod tests {
         assert_eq!(visible_shopper_ids, vec![shopper_a]);
         assert_eq!(visible_provider_account_ids, vec![provider_account_a]);
 
-        sqlx::query("DELETE FROM integration.provider_accounts WHERE store_id = ANY($1)")
+        sqlx::query("DELETE FROM chaos_integration.provider_accounts WHERE store_id = ANY($1)")
             .bind(vec![store_a, store_b])
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM commerce.stores WHERE id = ANY($1)")
+        sqlx::query("DELETE FROM chaos_commerce.stores WHERE id = ANY($1)")
             .bind(vec![store_a, store_b])
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM identity.users WHERE id = $1")
+        sqlx::query("DELETE FROM chaos_identity.users WHERE id = $1")
             .bind(user_id)
             .execute(&pool)
             .await
@@ -218,7 +219,7 @@ mod tests {
         let option_value_a = Uuid::now_v7();
         let variant_b = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO commerce.stores (id, name) \
+            "INSERT INTO chaos_commerce.stores (id, name) \
              VALUES ($1, 'Catalog Test')",
         )
         .bind(store_id)
@@ -227,7 +228,7 @@ mod tests {
         .unwrap();
         for (product_id, handle) in [(product_a, "product-a"), (product_b, "product-b")] {
             sqlx::query(
-                "INSERT INTO commerce.products (id, store_id, handle, title) \
+                "INSERT INTO chaos_commerce.products (id, store_id, handle, title) \
                  VALUES ($1, $2, $3, $3)",
             )
             .bind(product_id)
@@ -238,7 +239,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO commerce.product_options \
+            "INSERT INTO chaos_commerce.product_options \
              (id, store_id, product_id, name, position) \
              VALUES ($1, $2, $3, 'Color', 0)",
         )
@@ -249,7 +250,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.product_option_values \
+            "INSERT INTO chaos_commerce.product_option_values \
              (id, store_id, product_id, option_id, value, position) \
              VALUES ($1, $2, $3, $4, 'Blue', 0)",
         )
@@ -261,7 +262,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.product_variants \
+            "INSERT INTO chaos_commerce.product_variants \
              (id, store_id, product_id, title) \
              VALUES ($1, $2, $3, 'Default')",
         )
@@ -273,7 +274,7 @@ mod tests {
         .unwrap();
 
         let cross_product = sqlx::query(
-            "INSERT INTO commerce.variant_selected_options \
+            "INSERT INTO chaos_commerce.variant_selected_options \
              (store_id, product_id, variant_id, \
               option_id, option_value_id) \
              VALUES ($1, $2, $3, $4, $5)",
@@ -287,7 +288,7 @@ mod tests {
         .await;
         assert!(cross_product.is_err());
 
-        sqlx::query("DELETE FROM commerce.stores WHERE id = $1")
+        sqlx::query("DELETE FROM chaos_commerce.stores WHERE id = $1")
             .bind(store_id)
             .execute(&pool)
             .await

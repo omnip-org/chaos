@@ -59,12 +59,12 @@ impl PostgresCatalogManagementTransaction {
     ) -> Result<Option<ProductLifecycleSnapshot>, ApplicationError> {
         let row = sqlx::query_as::<_, (String, i64, i64)>(
             "SELECT product.status::text, (\
-                 SELECT count(*) FROM commerce.product_variants AS variant \
+                 SELECT count(*) FROM chaos_commerce.product_variants AS variant \
                  WHERE variant.store_id = product.store_id \
                    AND variant.product_id = product.id \
                    AND variant.status = 'active'\
              ), product.revision \
-             FROM commerce.products AS product \
+             FROM chaos_commerce.products AS product \
              WHERE product.store_id = $1 AND product.id = $2 \
              FOR UPDATE",
         )
@@ -98,7 +98,7 @@ impl PostgresCatalogManagementTransaction {
         self.ensure_media_references_preserved(content.metadata())
             .await?;
         let result = sqlx::query(
-            "UPDATE commerce.products \
+            "UPDATE chaos_commerce.products \
              SET handle = $3, title = $4, description = $5, meta = $6::jsonb, \
                  revision = revision + 1, \
                  updated_at = CURRENT_TIMESTAMP \
@@ -122,7 +122,7 @@ impl PostgresCatalogManagementTransaction {
     ) -> Result<(), ApplicationError> {
         let links = sqlx::query_as::<_, (String, uuid::Uuid, String)>(
             "SELECT meta_path, media_asset_id, alt_text \
-             FROM commerce.product_meta_media_assets \
+             FROM chaos_commerce.product_meta_media_assets \
              WHERE store_id=$1 AND product_id=$2 AND archived_at IS NULL",
         )
         .bind(self.store_id.as_uuid())
@@ -164,7 +164,7 @@ impl PostgresCatalogManagementTransaction {
         content: &ProductVariantContent,
     ) -> Result<bool, ApplicationError> {
         let result = sqlx::query(
-            "UPDATE commerce.product_variants \
+            "UPDATE chaos_commerce.product_variants \
              SET title = $4, sku = $5, track_inventory = $6, \
                  meta = $7::jsonb, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND product_id = $2 AND id = $3",
@@ -181,7 +181,7 @@ impl PostgresCatalogManagementTransaction {
         .map_err(map_catalog_write_error)?;
         if result.rows_affected() == 1 {
             sqlx::query(
-                "UPDATE commerce.products \
+                "UPDATE chaos_commerce.products \
                  SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP \
                  WHERE store_id=$1 AND id=$2",
             )
@@ -201,8 +201,8 @@ impl PostgresCatalogManagementTransaction {
         status: ProductStatus,
     ) -> Result<(), ApplicationError> {
         let result = sqlx::query(
-            "UPDATE commerce.products \
-             SET status = $3::commerce.product_status, revision = revision + 1, \
+            "UPDATE chaos_commerce.products \
+             SET status = $3::chaos_commerce.product_status, revision = revision + 1, \
                  updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
@@ -227,7 +227,7 @@ impl PostgresCatalogManagementTransaction {
     ) -> Result<bool, ApplicationError> {
         sqlx::query_scalar(
             "SELECT EXISTS (\
-                SELECT 1 FROM commerce.channels \
+                SELECT 1 FROM chaos_commerce.channels \
                 WHERE store_id = $1 AND id = $2 \
                   AND status = 'active'\
              )",
@@ -244,7 +244,7 @@ impl PostgresCatalogManagementTransaction {
         channel_id: SalesChannelId,
     ) -> Result<(), ApplicationError> {
         let inserted = sqlx::query(
-            "INSERT INTO commerce.product_publications \
+            "INSERT INTO chaos_commerce.product_publications \
              (store_id, product_id, channel_id) \
              VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
         )
@@ -256,7 +256,7 @@ impl PostgresCatalogManagementTransaction {
         .map_err(database_error)?;
         if inserted.rows_affected() == 1 {
             sqlx::query(
-                "UPDATE commerce.products \
+                "UPDATE chaos_commerce.products \
                  SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP \
                  WHERE store_id=$1 AND id=$2",
             )
@@ -274,7 +274,7 @@ impl PostgresCatalogManagementTransaction {
         channel_id: SalesChannelId,
     ) -> Result<(), ApplicationError> {
         let deleted = sqlx::query(
-            "DELETE FROM commerce.product_publications \
+            "DELETE FROM chaos_commerce.product_publications \
              WHERE store_id = $1 \
                AND product_id = $2 AND channel_id = $3",
         )
@@ -286,7 +286,7 @@ impl PostgresCatalogManagementTransaction {
         .map_err(database_error)?;
         if deleted.rows_affected() == 1 {
             sqlx::query(
-                "UPDATE commerce.products \
+                "UPDATE chaos_commerce.products \
                  SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP \
                  WHERE store_id=$1 AND id=$2",
             )
@@ -304,7 +304,7 @@ impl PostgresCatalogManagementTransaction {
     ) -> Result<Option<ProductContentSnapshot>, ApplicationError> {
         sqlx::query_as::<_, ProductContentSnapshot>(
             "SELECT handle::text AS handle, title, description, meta, revision \
-             FROM commerce.products \
+             FROM chaos_commerce.products \
              WHERE store_id=$1 AND id=$2 \
              FOR UPDATE",
         )
@@ -322,8 +322,8 @@ impl PostgresCatalogManagementTransaction {
         sqlx::query_as::<_, ProductVariantContentSnapshot>(
             "SELECT variant.title, variant.sku::text AS sku, variant.track_inventory, variant.meta, \
                     product.revision \
-             FROM commerce.product_variants AS variant \
-             INNER JOIN commerce.products AS product \
+             FROM chaos_commerce.product_variants AS variant \
+             INNER JOIN chaos_commerce.products AS product \
               ON product.store_id=variant.store_id AND product.id=variant.product_id \
              WHERE variant.store_id=$1 AND variant.product_id=$2 AND variant.id=$3 \
              FOR UPDATE OF variant, product",
@@ -338,7 +338,7 @@ impl PostgresCatalogManagementTransaction {
 
     pub(crate) async fn product_revision(&mut self) -> Result<i64, ApplicationError> {
         sqlx::query_scalar::<_, i64>(
-            "SELECT revision FROM commerce.products WHERE store_id=$1 AND id=$2",
+            "SELECT revision FROM chaos_commerce.products WHERE store_id=$1 AND id=$2",
         )
         .bind(self.store_id.as_uuid())
         .bind(self.product_id.as_uuid())
@@ -443,7 +443,7 @@ mod tests {
         let other_channel_id = SalesChannelId::new();
         let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
-        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO chaos_identity.users (id, email) VALUES ($1, $2)")
             .bind(owner_id.as_uuid())
             .bind(format!("catalog-manage-owner-{suffix}@example.com"))
             .execute(&owner_pool)
@@ -451,7 +451,7 @@ mod tests {
             .unwrap();
         for id in [store_id, other_store_id] {
             sqlx::query(
-                "INSERT INTO commerce.stores (id, name) \
+                "INSERT INTO chaos_commerce.stores (id, name) \
                  VALUES ($1, 'Managed Store')",
             )
             .bind(id.as_uuid())
@@ -460,7 +460,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
+            "INSERT INTO chaos_commerce.store_memberships (store_id, user_id, role) \
              VALUES ($1, $2, 'owner')",
         )
         .bind(store_id.as_uuid())
@@ -473,7 +473,7 @@ mod tests {
             (other_channel_id, other_store_id, "Other Web"),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.channels \
+                "INSERT INTO chaos_commerce.channels \
                  (id, store_id, name, origin) \
                  VALUES ($1, $2, $3, $4)",
             )
@@ -493,7 +493,7 @@ mod tests {
             (empty_product_id, "empty-product"),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.products \
+                "INSERT INTO chaos_commerce.products \
                  (id, store_id, handle, title) \
                  VALUES ($1, $2, $3, 'Managed Product')",
             )
@@ -505,7 +505,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO commerce.product_variants \
+            "INSERT INTO chaos_commerce.product_variants \
              (id, store_id, product_id, title, sku, status) \
              VALUES ($1, $2, $3, 'Default', 'MANAGED-SKU', 'active')",
         )
@@ -608,7 +608,7 @@ mod tests {
         assert!(replayed_variant.revision > updated_variant.revision);
         let stored_variant: (String, String, bool, serde_json::Value) = sqlx::query_as(
             "SELECT title, sku::text, track_inventory, meta \
-             FROM commerce.product_variants WHERE id = $1",
+             FROM chaos_commerce.product_variants WHERE id = $1",
         )
         .bind(variant_id.as_uuid())
         .fetch_one(&owner_pool)
@@ -671,8 +671,8 @@ mod tests {
         let stored: (String, String, String, i64) = sqlx::query_as(
             "SELECT product.handle::text, product.title, product.status::text, \
                     count(publication.product_id) \
-             FROM commerce.products AS product \
-             LEFT JOIN commerce.product_publications AS publication \
+             FROM chaos_commerce.products AS product \
+             LEFT JOIN chaos_commerce.product_publications AS publication \
               ON publication.store_id = product.store_id \
               AND publication.product_id = product.id \
              WHERE product.id = $1 GROUP BY product.id",
@@ -702,7 +702,7 @@ mod tests {
             .await
             .unwrap();
         let publications: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM commerce.product_publications WHERE product_id = $1",
+            "SELECT count(*) FROM chaos_commerce.product_publications WHERE product_id = $1",
         )
         .bind(product_id.as_uuid())
         .fetch_one(&owner_pool)
@@ -710,12 +710,12 @@ mod tests {
         .unwrap();
         assert_eq!(publications, 0);
 
-        sqlx::query("DELETE FROM commerce.stores WHERE id = ANY($1)")
+        sqlx::query("DELETE FROM chaos_commerce.stores WHERE id = ANY($1)")
             .bind(vec![store_id.as_uuid(), other_store_id.as_uuid()])
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM identity.users WHERE id = $1")
+        sqlx::query("DELETE FROM chaos_identity.users WHERE id = $1")
             .bind(owner_id.as_uuid())
             .execute(&owner_pool)
             .await
@@ -751,14 +751,14 @@ mod tests {
         let variant_id = ProductVariantId::new();
         let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
-        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO chaos_identity.users (id, email) VALUES ($1, $2)")
             .bind(owner_id.as_uuid())
             .bind(format!("catalog-manage-machine-owner-{suffix}@example.com"))
             .execute(&owner_pool)
             .await
             .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.stores (id, name) \
+            "INSERT INTO chaos_commerce.stores (id, name) \
              VALUES ($1, 'Managed Store')",
         )
         .bind(store_id.as_uuid())
@@ -766,7 +766,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.products \
+            "INSERT INTO chaos_commerce.products \
              (id, store_id, handle, title) \
              VALUES ($1, $2, 'machine-managed-product', 'Machine Managed Product')",
         )
@@ -776,7 +776,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.product_variants \
+            "INSERT INTO chaos_commerce.product_variants \
              (id, store_id, product_id, title, sku) \
              VALUES ($1, $2, $3, 'Default', 'MACHINE-MANAGED-SKU')",
         )
@@ -808,12 +808,12 @@ mod tests {
             Err(ApplicationError::Forbidden)
         ));
 
-        sqlx::query("DELETE FROM commerce.stores WHERE id = $1")
+        sqlx::query("DELETE FROM chaos_commerce.stores WHERE id = $1")
             .bind(store_id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM identity.users WHERE id = $1")
+        sqlx::query("DELETE FROM chaos_identity.users WHERE id = $1")
             .bind(owner_id.as_uuid())
             .execute(&owner_pool)
             .await

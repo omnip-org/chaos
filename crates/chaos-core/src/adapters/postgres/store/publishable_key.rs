@@ -53,7 +53,7 @@ impl PostgresPublishableKeyRepository {
         )
         .await?;
         sqlx::query(
-            "INSERT INTO commerce.channel_publishable_keys \
+            "INSERT INTO chaos_commerce.channel_publishable_keys \
              (id, store_id, channel_id, public_key, name) \
              VALUES ($1, $2, $3, $4, $5)",
         )
@@ -93,7 +93,7 @@ impl PostgresPublishableKeyRepository {
         >(
             "SELECT key.id, key.channel_id, key.name, key.public_key, \
                         key.created_at, key.revoked_at \
-             FROM commerce.channel_publishable_keys AS key \
+             FROM chaos_commerce.channel_publishable_keys AS key \
              WHERE key.store_id = $1 \
                AND ($2::uuid IS NULL OR key.id > $2) \
              ORDER BY key.id ASC \
@@ -133,7 +133,7 @@ impl PostgresPublishableKeyRepository {
         set_context(&mut transaction, &actor).await?;
         require_store(&mut transaction, store_id).await?;
         let result = sqlx::query(
-            "UPDATE commerce.channel_publishable_keys \
+            "UPDATE chaos_commerce.channel_publishable_keys \
              SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP), \
                  updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
@@ -162,7 +162,7 @@ impl PostgresPublishableKeyRepository {
         }
         let row = sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
             "SELECT publishable_key_id, store_id, channel_id \
-             FROM commerce.authenticate_publishable_key($1)",
+             FROM chaos_commerce.authenticate_publishable_key($1)",
         )
         .bind(presented_key)
         .fetch_optional(&self.pool)
@@ -200,7 +200,7 @@ async fn require_store(
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
     let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1 AND status = 'active')",
+        "SELECT EXISTS (SELECT 1 FROM chaos_commerce.stores WHERE id = $1 AND status = 'active')",
     )
     .bind(store_id.as_uuid())
     .fetch_one(&mut **transaction)
@@ -219,7 +219,7 @@ async fn require_active_sales_channel(
 ) -> Result<(), ApplicationError> {
     let active_channel_id: Option<Uuid> = sqlx::query_scalar(
         "SELECT id \
-         FROM commerce.channels \
+         FROM chaos_commerce.channels \
          WHERE store_id = $1 AND id = $2 AND status = 'active' \
          FOR UPDATE",
     )
@@ -328,14 +328,14 @@ mod tests {
         let channel_id = SalesChannelId::new();
         let unique_suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
-        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO chaos_identity.users (id, email) VALUES ($1, $2)")
             .bind(user_id.as_uuid())
             .bind(format!("api-key-{unique_suffix}@example.com"))
             .execute(&owner_pool)
             .await
             .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.stores \
+            "INSERT INTO chaos_commerce.stores \
              (id, name, status) \
              VALUES ($1, 'API Test', 'active')",
         )
@@ -344,7 +344,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.channels \
+            "INSERT INTO chaos_commerce.channels \
              (id, store_id, name, origin) \
              VALUES ($1, $2, 'Web', $3)",
         )
@@ -355,7 +355,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.store_memberships \
+            "INSERT INTO chaos_commerce.store_memberships \
              (store_id, user_id, role) VALUES ($1, $2, 'owner')",
         )
         .bind(store_id.as_uuid())
@@ -374,7 +374,7 @@ mod tests {
         let authentication = PublishableKeyAuthentication::new(repository);
         let archived_channel_id = SalesChannelId::new();
         sqlx::query(
-            "INSERT INTO commerce.channels \
+            "INSERT INTO chaos_commerce.channels \
              (id, store_id, name, origin, status) \
              VALUES ($1, $2, 'Archived', $3, 'archived')",
         )
@@ -412,7 +412,7 @@ mod tests {
         let publishable_key_id = issued.publishable_key.id();
         let public_key = issued.public_key;
         let stored_public_key: String = sqlx::query_scalar(
-            "SELECT public_key FROM commerce.channel_publishable_keys WHERE id = $1",
+            "SELECT public_key FROM chaos_commerce.channel_publishable_keys WHERE id = $1",
         )
         .bind(publishable_key_id.as_uuid())
         .fetch_one(&owner_pool)
@@ -445,12 +445,12 @@ mod tests {
         let page = management.list(actor, store_id, None, 20).await.unwrap();
         assert!(page.items[0].revoked_at.is_some());
 
-        sqlx::query("DELETE FROM commerce.stores WHERE id = $1")
+        sqlx::query("DELETE FROM chaos_commerce.stores WHERE id = $1")
             .bind(store_id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM identity.users WHERE id = $1")
+        sqlx::query("DELETE FROM chaos_identity.users WHERE id = $1")
             .bind(user_id.as_uuid())
             .execute(&owner_pool)
             .await

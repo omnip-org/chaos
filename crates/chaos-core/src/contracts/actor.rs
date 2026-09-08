@@ -34,7 +34,7 @@ impl AdminActor {
     /// User id for RLS/audit `app.user_id`, when the caller is a signed-in
     /// human. A Publishable Key has no human behind it at request time, so
     /// this is `None` for `Machine` — callers that need a real
-    /// `identity.users` row for a mutation must reject `Machine` first via
+    /// `chaos_identity.users` row for a mutation must reject `Machine` first via
     /// [`Self::require_human`].
     pub const fn audit_user_id(&self) -> Option<UserId> {
         match self {

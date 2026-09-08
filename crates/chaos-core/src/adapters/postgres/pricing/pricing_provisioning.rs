@@ -43,7 +43,7 @@ impl PostgresPricingProvisioningRepository {
 impl PostgresPricingProvisioningTransaction {
     pub(crate) async fn require_writable_store(&mut self) -> Result<(), ApplicationError> {
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1 AND status = 'active')",
+            "SELECT EXISTS (SELECT 1 FROM chaos_commerce.stores WHERE id = $1 AND status = 'active')",
         )
         .bind(self.store_id.as_uuid())
         .fetch_one(&mut *self.transaction)
@@ -64,7 +64,7 @@ impl PostgresPricingProvisioningTransaction {
         currency: CurrencyCode,
     ) -> Result<(), ApplicationError> {
         let matches_store: bool =
-            sqlx::query_scalar("SELECT currency = $2 FROM commerce.stores WHERE id = $1")
+            sqlx::query_scalar("SELECT currency = $2 FROM chaos_commerce.stores WHERE id = $1")
                 .bind(self.store_id.as_uuid())
                 .bind(currency.as_str())
                 .fetch_one(&mut *self.transaction)
@@ -91,7 +91,7 @@ impl PostgresPricingProvisioningTransaction {
             .map(|id| id.as_uuid())
             .collect::<Vec<_>>();
         let rows = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM commerce.product_variants \
+            "SELECT id FROM chaos_commerce.product_variants \
              WHERE store_id = $1 \
                AND id = ANY($2) AND status = 'active'",
         )
@@ -112,7 +112,7 @@ impl PostgresPricingProvisioningTransaction {
             .map(|id| id.as_uuid())
             .collect::<Vec<_>>();
         let rows = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM commerce.product_variants \
+            "SELECT id FROM chaos_commerce.product_variants \
              WHERE store_id = $1 AND id = ANY($2)",
         )
         .bind(self.store_id.as_uuid())
@@ -128,9 +128,9 @@ impl PostgresPricingProvisioningTransaction {
         price_list: &PriceList,
     ) -> Result<(), ApplicationError> {
         sqlx::query(
-            "INSERT INTO commerce.price_lists \
+            "INSERT INTO chaos_commerce.price_lists \
              (id, store_id, code, name, currency, status, starts_at, ends_at) \
-             VALUES ($1, $2, $3, $4, $5, $6::commerce.price_list_status, $7, $8)",
+             VALUES ($1, $2, $3, $4, $5, $6::chaos_commerce.price_list_status, $7, $8)",
         )
         .bind(price_list.id().as_uuid())
         .bind(price_list.store_id().as_uuid())
@@ -145,7 +145,7 @@ impl PostgresPricingProvisioningTransaction {
         .map_err(map_pricing_write_error)?;
         for price in price_list.prices() {
             sqlx::query(
-                "INSERT INTO commerce.price_list_items \
+                "INSERT INTO chaos_commerce.price_list_items \
                  (id, store_id, price_list_id, product_variant_id, \
                   amount_minor) \
                  VALUES ($1, $2, $3, $4, $5)",
@@ -227,7 +227,7 @@ mod tests {
         let other_variant_id = ProductVariantId::new();
         let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
-        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO chaos_identity.users (id, email) VALUES ($1, $2)")
             .bind(owner_id.as_uuid())
             .bind(format!("pricing-owner-{suffix}@example.com"))
             .execute(&owner_pool)
@@ -235,7 +235,7 @@ mod tests {
             .unwrap();
         for id in [store_id, other_store_id] {
             sqlx::query(
-                "INSERT INTO commerce.stores (id, name, status) \
+                "INSERT INTO chaos_commerce.stores (id, name, status) \
                  VALUES ($1, 'Pricing Store', 'active')",
             )
             .bind(id.as_uuid())
@@ -244,7 +244,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
+            "INSERT INTO chaos_commerce.store_memberships (store_id, user_id, role) \
              VALUES ($1, $2, 'owner')",
         )
         .bind(store_id.as_uuid())
@@ -269,7 +269,7 @@ mod tests {
             ),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.products \
+                "INSERT INTO chaos_commerce.products \
                  (id, store_id, handle, title, status) \
                  VALUES ($1, $2, $3, 'Priced Product', 'active')",
             )
@@ -280,7 +280,7 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO commerce.product_variants \
+                "INSERT INTO chaos_commerce.product_variants \
                  (id, store_id, product_id, title, sku, status) \
                  VALUES ($1, $2, $3, 'Default', $4, 'active')",
             )
@@ -332,8 +332,8 @@ mod tests {
 
         let stored: (String, String, i64) = sqlx::query_as(
             "SELECT price_list.status::text, price_list.currency::text, price.amount_minor \
-             FROM commerce.price_lists AS price_list \
-             INNER JOIN commerce.price_list_items AS price \
+             FROM chaos_commerce.price_lists AS price_list \
+             INNER JOIN chaos_commerce.price_list_items AS price \
               ON price.store_id = price_list.store_id \
               AND price.price_list_id = price_list.id \
              WHERE price_list.id = $1",
@@ -350,18 +350,18 @@ mod tests {
             .execute(&mut *isolated)
             .await
             .unwrap();
-        let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM commerce.price_lists")
+        let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM chaos_commerce.price_lists")
             .fetch_one(&mut *isolated)
             .await
             .unwrap();
         assert_eq!(visible, 0);
 
-        sqlx::query("DELETE FROM commerce.stores WHERE id = ANY($1)")
+        sqlx::query("DELETE FROM chaos_commerce.stores WHERE id = ANY($1)")
             .bind(vec![store_id.as_uuid(), other_store_id.as_uuid()])
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM identity.users WHERE id = $1")
+        sqlx::query("DELETE FROM chaos_identity.users WHERE id = $1")
             .bind(owner_id.as_uuid())
             .execute(&owner_pool)
             .await

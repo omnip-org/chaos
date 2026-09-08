@@ -39,7 +39,7 @@ impl IntegrationQueue for PostgresIntegrationQueue {
     ) -> Result<Vec<TopicEventJob>, ApplicationError> {
         sqlx::query_as::<_, (i64, Value, i32, String)>(
             "SELECT msg_id, payload, attempts, routing_key \
-             FROM integration.claim_topic_queue($1, $2)",
+             FROM chaos_integration.claim_topic_queue($1, $2)",
         )
         .bind(queue_name)
         .bind(i32::from(limit.clamp(1, 100)))
@@ -67,7 +67,7 @@ impl IntegrationQueue for PostgresIntegrationQueue {
         result: Result<(), String>,
     ) -> Result<(), ApplicationError> {
         let succeeded = result.is_ok();
-        sqlx::query("SELECT integration.finish_topic_event($1, $2, $3, $4, $5)")
+        sqlx::query("SELECT chaos_integration.finish_topic_event($1, $2, $3, $4, $5)")
             .bind(queue_name)
             .bind(msg_id)
             .bind(i32::try_from(attempts).unwrap_or(i32::MAX))
@@ -77,5 +77,58 @@ impl IntegrationQueue for PostgresIntegrationQueue {
             .await
             .map_err(database_error)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use sqlx::postgres::PgPoolOptions;
+    use uuid::Uuid;
+
+    use super::PostgresIntegrationQueue;
+    use crate::contracts::IntegrationQueue;
+
+    /// `order.payment.completed` is the only routing key bound to two queues, so
+    /// it exercises the fan-out loop in `chaos_integration.publish_topic_event` that
+    /// replaced pgmq's own `send_topic` / `bind_topic` (unavailable before pgmq
+    /// 1.11).
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
+    async fn publish_fans_a_topic_out_to_every_bound_queue() {
+        let database_url =
+            std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .unwrap();
+
+        let marker = Uuid::now_v7();
+        let delivered: i32 = sqlx::query_scalar(
+            "SELECT chaos_integration.publish_topic_event('order.payment.completed', $1)",
+        )
+        .bind(json!({ "store_id": marker, "order_id": marker }))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(delivered, 2, "expected fan-out to both bound queues");
+
+        let queue = PostgresIntegrationQueue::new(pool);
+        for queue_name in ["analytics_capi_queue", "notification_email_queue"] {
+            let jobs = queue.claim_topic(queue_name, 100).await.unwrap();
+            let mine = jobs
+                .into_iter()
+                .find(|job| {
+                    job.payload.get("order_id").and_then(|value| value.as_str())
+                        == Some(marker.to_string().as_str())
+                })
+                .unwrap_or_else(|| panic!("{queue_name} did not receive the published event"));
+            assert_eq!(mine.routing_key, "order.payment.completed");
+            queue
+                .finish_topic(queue_name, mine.msg_id, mine.attempts, Ok(()))
+                .await
+                .unwrap();
+        }
     }
 }

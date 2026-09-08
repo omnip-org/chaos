@@ -180,7 +180,7 @@ impl PostgresMediaAssetRepository {
             "SELECT id, store_id, object_key, file_name, media_type, media_kind::text AS media_kind, \
                     byte_size, sha256_digest, status::text AS status, public_url, \
                     created_at, updated_at \
-             FROM commerce.media_assets \
+             FROM chaos_commerce.media_assets \
              WHERE store_id=$1 \
                AND ($2::uuid IS NULL OR id > $2) \
                AND ($3::text IS NULL OR status::text = $3) \
@@ -212,7 +212,7 @@ impl PostgresMediaAssetRepository {
     ) -> Result<Option<Vec<ProductMediaAssetItem>>, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM commerce.products WHERE store_id=$1 AND id=$2)",
+            "SELECT EXISTS(SELECT 1 FROM chaos_commerce.products WHERE store_id=$1 AND id=$2)",
         )
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
@@ -300,7 +300,7 @@ impl PostgresMediaAssetRepository {
     ) -> Result<Option<Vec<ReviewMediaAssetItem>>, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM commerce.reviews WHERE store_id=$1 AND id=$2)",
+            "SELECT EXISTS(SELECT 1 FROM chaos_commerce.reviews WHERE store_id=$1 AND id=$2)",
         )
         .bind(store_id.as_uuid())
         .bind(review_id.as_uuid())
@@ -316,8 +316,8 @@ impl PostgresMediaAssetRepository {
                     media.sha256_digest, media.status::text, media.public_url, \
                     media.created_at, media.updated_at, link.alt_text, link.position, \
                     link.archived_at AS link_archived_at, media.object_key \
-             FROM commerce.review_media_assets AS link \
-             INNER JOIN commerce.media_assets AS media \
+             FROM chaos_commerce.review_media_assets AS link \
+             INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id=link.store_id AND media.id=link.media_asset_id \
              WHERE link.store_id=$1 AND link.review_id=$2 \
              ORDER BY link.position, media.id",
@@ -342,7 +342,7 @@ impl PostgresMediaAssetRepository {
     ) -> Result<Option<Vec<ProductMetaMediaAssetItem>>, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM commerce.products WHERE store_id=$1 AND id=$2)",
+            "SELECT EXISTS(SELECT 1 FROM chaos_commerce.products WHERE store_id=$1 AND id=$2)",
         )
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
@@ -358,8 +358,8 @@ impl PostgresMediaAssetRepository {
                     media.sha256_digest, media.status::text, media.public_url, \
                     media.created_at, media.updated_at, link.alt_text, \
                     link.archived_at AS link_archived_at, media.object_key \
-             FROM commerce.product_meta_media_assets AS link \
-             INNER JOIN commerce.media_assets AS media \
+             FROM chaos_commerce.product_meta_media_assets AS link \
+             INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id=link.store_id AND media.id=link.media_asset_id \
              WHERE link.store_id=$1 AND link.product_id=$2 \
              ORDER BY link.meta_path, media.id",
@@ -393,7 +393,7 @@ impl PostgresMediaAssetRepository {
         .await?;
         ensure_ready_asset(&mut tx, record.store_id, record.media_asset_id, None).await?;
         sqlx::query(
-            "INSERT INTO commerce.product_media_assets \
+            "INSERT INTO chaos_commerce.product_media_assets \
              (store_id, product_id, media_asset_id, alt_text, position) \
              VALUES ($1,$2,$3,$4,$5) \
              ON CONFLICT (store_id, product_id, media_asset_id) DO UPDATE \
@@ -452,7 +452,7 @@ impl PostgresMediaAssetRepository {
         .await?;
         ensure_ready_asset(&mut tx, record.store_id, record.media_asset_id, None).await?;
         sqlx::query(
-            "INSERT INTO commerce.product_option_value_media_assets \
+            "INSERT INTO chaos_commerce.product_option_value_media_assets \
              (store_id, product_id, option_id, option_value_id, media_asset_id, alt_text, position) \
              VALUES ($1,$2,$3,$4,$5,$6,$7) \
              ON CONFLICT (store_id, product_id, option_id, option_value_id, media_asset_id) DO UPDATE \
@@ -514,7 +514,7 @@ impl PostgresMediaAssetRepository {
         .await?;
         ensure_ready_asset(&mut tx, record.store_id, record.media_asset_id, None).await?;
         sqlx::query(
-            "INSERT INTO commerce.product_variant_media_assets \
+            "INSERT INTO chaos_commerce.product_variant_media_assets \
              (store_id, product_id, product_variant_id, media_asset_id, alt_text, position) \
              VALUES ($1,$2,$3,$4,$5,$6) \
              ON CONFLICT (store_id, product_id, product_variant_id, media_asset_id) DO UPDATE \
@@ -722,7 +722,7 @@ impl PostgresMediaAssetRepository {
     ) -> Result<(i64, Vec<ProductMediaAssetItem>), ApplicationError> {
         let mut tx = self.begin(&actor).await?;
         let (status, current_revision) = sqlx::query_as::<_, (String, i64)>(
-            "SELECT status::text, revision FROM commerce.products \
+            "SELECT status::text, revision FROM chaos_commerce.products \
              WHERE store_id=$1 AND id=$2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -875,7 +875,7 @@ impl PostgresMediaAssetRepository {
         )
         .await?;
         sqlx::query(
-            "INSERT INTO commerce.review_media_assets \
+            "INSERT INTO chaos_commerce.review_media_assets \
              (store_id, review_id, media_asset_id, alt_text, position) \
              VALUES ($1,$2,$3,$4,$5) \
              ON CONFLICT (store_id, review_id, media_asset_id) DO UPDATE \
@@ -917,7 +917,7 @@ impl PostgresMediaAssetRepository {
         .await?;
         let segments = parse_json_pointer(&record.meta_path)?;
         let (metadata,) = sqlx::query_as::<_, (Option<Value>,)>(
-            "SELECT meta FROM commerce.products \
+            "SELECT meta FROM chaos_commerce.products \
              WHERE store_id=$1 AND id=$2 FOR UPDATE",
         )
         .bind(record.store_id.as_uuid())
@@ -935,7 +935,7 @@ impl PostgresMediaAssetRepository {
         .await?;
 
         let previous_asset_id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT media_asset_id FROM commerce.product_meta_media_assets \
+            "SELECT media_asset_id FROM chaos_commerce.product_meta_media_assets \
              WHERE store_id=$1 AND product_id=$2 AND meta_path=$3 AND archived_at IS NULL \
              FOR UPDATE",
         )
@@ -954,7 +954,7 @@ impl PostgresMediaAssetRepository {
             &record.alt_text,
         )?;
         let revision = sqlx::query_scalar::<_, i64>(
-            "UPDATE commerce.products SET meta=$3::jsonb, revision=revision+1, updated_at=$4 \
+            "UPDATE chaos_commerce.products SET meta=$3::jsonb, revision=revision+1, updated_at=$4 \
              WHERE store_id=$1 AND id=$2 RETURNING revision",
         )
         .bind(record.store_id.as_uuid())
@@ -967,7 +967,7 @@ impl PostgresMediaAssetRepository {
 
         if previous_asset_id.is_some_and(|id| id != record.media_asset_id.as_uuid()) {
             sqlx::query(
-                "UPDATE commerce.product_meta_media_assets SET archived_at=$4 \
+                "UPDATE chaos_commerce.product_meta_media_assets SET archived_at=$4 \
                  WHERE store_id=$1 AND product_id=$2 AND meta_path=$3 AND archived_at IS NULL",
             )
             .bind(record.store_id.as_uuid())
@@ -979,7 +979,7 @@ impl PostgresMediaAssetRepository {
             .map_err(database_error)?;
         }
         sqlx::query(
-            "INSERT INTO commerce.product_meta_media_assets \
+            "INSERT INTO chaos_commerce.product_meta_media_assets \
              (store_id, product_id, media_asset_id, meta_path, alt_text) \
              VALUES ($1,$2,$3,$4,$5) \
              ON CONFLICT (store_id, product_id, meta_path, media_asset_id) DO UPDATE \
@@ -1025,7 +1025,7 @@ impl PostgresMediaAssetRepository {
     ) -> Result<MediaAssetItem, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
         let changed = sqlx::query(
-            "UPDATE commerce.media_assets \
+            "UPDATE chaos_commerce.media_assets \
              SET status='ready', public_url=$3, ready_at=$4, updated_at=$4 \
              WHERE store_id=$1 AND id=$2 AND status='pending'",
         )
@@ -1062,19 +1062,19 @@ impl PostgresMediaAssetRepository {
         if row.status != "archived" {
             let in_use: bool = sqlx::query_scalar(
                 "SELECT EXISTS ( \
-                    SELECT 1 FROM commerce.product_media_assets \
+                    SELECT 1 FROM chaos_commerce.product_media_assets \
                     WHERE store_id=$1 AND media_asset_id=$2 AND archived_at IS NULL \
                     UNION ALL \
-                    SELECT 1 FROM commerce.product_option_value_media_assets \
+                    SELECT 1 FROM chaos_commerce.product_option_value_media_assets \
                     WHERE store_id=$1 AND media_asset_id=$2 AND archived_at IS NULL \
                     UNION ALL \
-                    SELECT 1 FROM commerce.product_variant_media_assets \
+                    SELECT 1 FROM chaos_commerce.product_variant_media_assets \
                     WHERE store_id=$1 AND media_asset_id=$2 AND archived_at IS NULL \
                     UNION ALL \
-                    SELECT 1 FROM commerce.review_media_assets \
+                    SELECT 1 FROM chaos_commerce.review_media_assets \
                     WHERE store_id=$1 AND media_asset_id=$2 AND archived_at IS NULL \
                     UNION ALL \
-                    SELECT 1 FROM commerce.product_meta_media_assets \
+                    SELECT 1 FROM chaos_commerce.product_meta_media_assets \
                     WHERE store_id=$1 AND media_asset_id=$2 AND archived_at IS NULL \
                 )",
             )
@@ -1090,7 +1090,7 @@ impl PostgresMediaAssetRepository {
                 });
             }
             sqlx::query(
-                "UPDATE commerce.media_assets SET status='archived', archived_at=$3, updated_at=$3 \
+                "UPDATE chaos_commerce.media_assets SET status='archived', archived_at=$3, updated_at=$3 \
                  WHERE store_id=$1 AND id=$2 AND status<>'archived'",
             )
             .bind(mutation.store_id.as_uuid())
@@ -1133,7 +1133,7 @@ impl PostgresMediaAssetRepository {
             });
         }
         sqlx::query(
-            "UPDATE commerce.media_assets \
+            "UPDATE chaos_commerce.media_assets \
              SET status='ready', archived_at=NULL, updated_at=$3 \
              WHERE store_id=$1 AND id=$2",
         )
@@ -1176,7 +1176,7 @@ impl PostgresMediaAssetRepository {
         .await?
         .ok_or_else(|| not_found(mutation.media_asset_id))?;
         sqlx::query(
-            "UPDATE commerce.product_media_assets \
+            "UPDATE chaos_commerce.product_media_assets \
              SET archived_at=COALESCE(archived_at,$4) \
              WHERE store_id=$1 AND product_id=$2 AND media_asset_id=$3",
         )
@@ -1250,7 +1250,7 @@ impl PostgresMediaAssetRepository {
         .await?
         .ok_or_else(|| not_found(mutation.media_asset_id))?;
         sqlx::query(
-            "UPDATE commerce.product_option_value_media_assets \
+            "UPDATE chaos_commerce.product_option_value_media_assets \
              SET archived_at=COALESCE(archived_at,$5) \
              WHERE store_id=$1 AND product_id=$2 AND option_id=$3 AND option_value_id=$4 \
                AND media_asset_id=$6",
@@ -1327,7 +1327,7 @@ impl PostgresMediaAssetRepository {
         .await?
         .ok_or_else(|| not_found(mutation.media_asset_id))?;
         sqlx::query(
-            "UPDATE commerce.product_variant_media_assets \
+            "UPDATE chaos_commerce.product_variant_media_assets \
              SET archived_at=COALESCE(archived_at,$4) \
              WHERE store_id=$1 AND product_id=$2 AND product_variant_id=$3 \
                AND media_asset_id=$5",
@@ -1386,7 +1386,7 @@ impl PostgresMediaAssetRepository {
         .await?
         .ok_or_else(|| not_found(mutation.media_asset_id))?;
         sqlx::query(
-            "UPDATE commerce.review_media_assets \
+            "UPDATE chaos_commerce.review_media_assets \
              SET archived_at=COALESCE(archived_at,$3) \
              WHERE store_id=$1 AND review_id=$2 AND media_asset_id=$4",
         )
@@ -1424,7 +1424,7 @@ impl PostgresMediaAssetRepository {
         let mut tx = self.begin(&actor).await?;
         let segments = parse_json_pointer(&mutation.meta_path)?;
         let (metadata, current_revision) = sqlx::query_as::<_, (Option<Value>, i64)>(
-            "SELECT meta, revision FROM commerce.products \
+            "SELECT meta, revision FROM chaos_commerce.products \
              WHERE store_id=$1 AND id=$2 FOR UPDATE",
         )
         .bind(mutation.store_id.as_uuid())
@@ -1453,7 +1453,7 @@ impl PostgresMediaAssetRepository {
         .await?
         .ok_or_else(|| not_found(mutation.media_asset_id))?;
         let archived_link = sqlx::query(
-            "UPDATE commerce.product_meta_media_assets \
+            "UPDATE chaos_commerce.product_meta_media_assets \
              SET archived_at=COALESCE(archived_at,$5) \
              WHERE store_id=$1 AND product_id=$2 AND meta_path=$3 AND media_asset_id=$4 \
                AND archived_at IS NULL",
@@ -1475,7 +1475,7 @@ impl PostgresMediaAssetRepository {
             && clear_media_reference(&mut metadata, &segments)
         {
             sqlx::query_scalar::<_, i64>(
-                "UPDATE commerce.products SET meta=$3::jsonb, revision=revision+1, updated_at=$4 \
+                "UPDATE chaos_commerce.products SET meta=$3::jsonb, revision=revision+1, updated_at=$4 \
                  WHERE store_id=$1 AND id=$2 RETURNING revision",
             )
             .bind(mutation.store_id.as_uuid())
@@ -1532,8 +1532,8 @@ async fn product_media_rows(
                 media.byte_size, media.sha256_digest, media.status::text, \
                 media.public_url, media.created_at, media.updated_at, link.alt_text, \
                 link.position, link.archived_at AS link_archived_at, media.object_key \
-         FROM commerce.product_media_assets AS link \
-         INNER JOIN commerce.media_assets AS media \
+         FROM chaos_commerce.product_media_assets AS link \
+         INNER JOIN chaos_commerce.media_assets AS media \
             ON media.store_id=link.store_id AND media.id=link.media_asset_id \
          WHERE link.store_id=$1 AND link.product_id=$2 \
          UNION ALL \
@@ -1544,8 +1544,8 @@ async fn product_media_rows(
                 media.status::text, media.public_url, media.created_at, media.updated_at, \
                 link.alt_text, link.position, link.archived_at AS link_archived_at, \
                 media.object_key \
-         FROM commerce.product_option_value_media_assets AS link \
-         INNER JOIN commerce.media_assets AS media \
+         FROM chaos_commerce.product_option_value_media_assets AS link \
+         INNER JOIN chaos_commerce.media_assets AS media \
             ON media.store_id=link.store_id AND media.id=link.media_asset_id \
          WHERE link.store_id=$1 AND link.product_id=$2 \
          UNION ALL \
@@ -1556,8 +1556,8 @@ async fn product_media_rows(
                 media.byte_size, media.sha256_digest, media.status::text, \
                 media.public_url, media.created_at, media.updated_at, link.alt_text, \
                 link.position, link.archived_at AS link_archived_at, media.object_key \
-         FROM commerce.product_variant_media_assets AS link \
-         INNER JOIN commerce.media_assets AS media \
+         FROM chaos_commerce.product_variant_media_assets AS link \
+         INNER JOIN chaos_commerce.media_assets AS media \
             ON media.store_id=link.store_id AND media.id=link.media_asset_id \
          WHERE link.store_id=$1 AND link.product_id=$2 \
          ORDER BY position, scope, asset_id",
@@ -1596,7 +1596,7 @@ async fn insert_product_link(
     item: &crate::catalog::ProductMediaItemInput,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "INSERT INTO commerce.product_media_assets \
+        "INSERT INTO chaos_commerce.product_media_assets \
          (store_id, product_id, media_asset_id, alt_text, position) \
          VALUES ($1,$2,$3,$4,$5) \
          ON CONFLICT (store_id, product_id, media_asset_id) DO UPDATE \
@@ -1622,7 +1622,7 @@ async fn insert_option_value_link(
     item: &crate::catalog::ProductMediaItemInput,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "INSERT INTO commerce.product_option_value_media_assets \
+        "INSERT INTO chaos_commerce.product_option_value_media_assets \
          (store_id, product_id, option_id, option_value_id, media_asset_id, alt_text, position) \
          VALUES ($1,$2,$3,$4,$5,$6,$7) \
          ON CONFLICT (store_id, product_id, option_id, option_value_id, media_asset_id) DO UPDATE \
@@ -1649,7 +1649,7 @@ async fn insert_variant_link(
     item: &crate::catalog::ProductMediaItemInput,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "INSERT INTO commerce.product_variant_media_assets \
+        "INSERT INTO chaos_commerce.product_variant_media_assets \
          (store_id, product_id, product_variant_id, media_asset_id, alt_text, position) \
          VALUES ($1,$2,$3,$4,$5,$6) \
          ON CONFLICT (store_id, product_id, product_variant_id, media_asset_id) DO UPDATE \
@@ -1673,7 +1673,7 @@ async fn active_product_media_asset_ids(
     product_id: ProductId,
 ) -> Result<Vec<MediaAssetId>, ApplicationError> {
     sqlx::query_scalar::<_, Uuid>(
-        "SELECT media_asset_id FROM commerce.product_media_assets \
+        "SELECT media_asset_id FROM chaos_commerce.product_media_assets \
          WHERE store_id=$1 AND product_id=$2 AND archived_at IS NULL FOR UPDATE",
     )
     .bind(store_id.as_uuid())
@@ -1692,7 +1692,7 @@ async fn active_option_value_media_asset_ids(
     option_value_id: ProductOptionValueId,
 ) -> Result<Vec<MediaAssetId>, ApplicationError> {
     sqlx::query_scalar::<_, Uuid>(
-        "SELECT media_asset_id FROM commerce.product_option_value_media_assets \
+        "SELECT media_asset_id FROM chaos_commerce.product_option_value_media_assets \
          WHERE store_id=$1 AND product_id=$2 AND option_id=$3 AND option_value_id=$4 \
            AND archived_at IS NULL FOR UPDATE",
     )
@@ -1713,7 +1713,7 @@ async fn active_variant_media_asset_ids(
     product_variant_id: ProductVariantId,
 ) -> Result<Vec<MediaAssetId>, ApplicationError> {
     sqlx::query_scalar::<_, Uuid>(
-        "SELECT media_asset_id FROM commerce.product_variant_media_assets \
+        "SELECT media_asset_id FROM chaos_commerce.product_variant_media_assets \
          WHERE store_id=$1 AND product_id=$2 AND product_variant_id=$3 \
            AND archived_at IS NULL FOR UPDATE",
     )
@@ -1733,7 +1733,7 @@ async fn archive_product_links(
     changed_at: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "UPDATE commerce.product_media_assets SET archived_at=$3 \
+        "UPDATE chaos_commerce.product_media_assets SET archived_at=$3 \
          WHERE store_id=$1 AND product_id=$2 AND archived_at IS NULL",
     )
     .bind(store_id.as_uuid())
@@ -1754,7 +1754,7 @@ async fn archive_option_value_links(
     changed_at: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "UPDATE commerce.product_option_value_media_assets SET archived_at=$5 \
+        "UPDATE chaos_commerce.product_option_value_media_assets SET archived_at=$5 \
          WHERE store_id=$1 AND product_id=$2 AND option_id=$3 AND option_value_id=$4 \
            AND archived_at IS NULL",
     )
@@ -1777,7 +1777,7 @@ async fn archive_variant_links(
     changed_at: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "UPDATE commerce.product_variant_media_assets SET archived_at=$4 \
+        "UPDATE chaos_commerce.product_variant_media_assets SET archived_at=$4 \
          WHERE store_id=$1 AND product_id=$2 AND product_variant_id=$3 \
            AND archived_at IS NULL",
     )
@@ -1797,10 +1797,10 @@ async fn insert_asset(
 ) -> Result<(), ApplicationError> {
     let digest = decode_digest(record.descriptor.sha256_hex())?;
     sqlx::query(
-        "INSERT INTO commerce.media_assets \
+        "INSERT INTO chaos_commerce.media_assets \
          (id, store_id, object_key, file_name, media_type, media_kind, byte_size, \
           sha256_digest, status, created_at, updated_at) \
-         VALUES ($1,$2,$3,$4,$5,$6::commerce.media_kind,$7,$8::bytea,'pending',$9,$9)",
+         VALUES ($1,$2,$3,$4,$5,$6::chaos_commerce.media_kind,$7,$8::bytea,'pending',$9,$9)",
     )
     .bind(record.id.as_uuid())
     .bind(record.store_id.as_uuid())
@@ -1823,7 +1823,7 @@ async fn ensure_product(
     product_id: ProductId,
 ) -> Result<(), ApplicationError> {
     let status = sqlx::query_scalar::<_, String>(
-        "SELECT status::text FROM commerce.products \
+        "SELECT status::text FROM chaos_commerce.products \
          WHERE store_id=$1 AND id=$2 FOR UPDATE",
     )
     .bind(store_id.as_uuid())
@@ -1847,7 +1847,7 @@ async fn ensure_product_revision(
         return Ok(());
     };
     let current_revision = sqlx::query_scalar::<_, i64>(
-        "SELECT revision FROM commerce.products WHERE store_id=$1 AND id=$2",
+        "SELECT revision FROM chaos_commerce.products WHERE store_id=$1 AND id=$2",
     )
     .bind(store_id.as_uuid())
     .bind(product_id.as_uuid())
@@ -1874,8 +1874,8 @@ async fn ensure_product_option_value(
 ) -> Result<bool, ApplicationError> {
     let valid: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 \
-         FROM commerce.product_option_values AS value \
-         INNER JOIN commerce.product_options AS option \
+         FROM chaos_commerce.product_option_values AS value \
+         INNER JOIN chaos_commerce.product_options AS option \
           ON option.store_id=value.store_id \
           AND option.product_id=value.product_id \
           AND option.id=value.option_id \
@@ -1908,7 +1908,7 @@ async fn ensure_product_variant(
     error_on_missing: bool,
 ) -> Result<bool, ApplicationError> {
     let valid: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM commerce.product_variants \
+        "SELECT EXISTS(SELECT 1 FROM chaos_commerce.product_variants \
          WHERE store_id=$1 AND product_id=$2 AND id=$3 AND status='active')",
     )
     .bind(store_id.as_uuid())
@@ -1934,7 +1934,7 @@ async fn lock_product(
     product_id: ProductId,
 ) -> Result<(), ApplicationError> {
     let exists =
-        sqlx::query("SELECT 1 FROM commerce.products WHERE store_id=$1 AND id=$2 FOR UPDATE")
+        sqlx::query("SELECT 1 FROM chaos_commerce.products WHERE store_id=$1 AND id=$2 FOR UPDATE")
             .bind(store_id.as_uuid())
             .bind(product_id.as_uuid())
             .fetch_optional(&mut **tx)
@@ -1954,7 +1954,7 @@ async fn touch_product(
     changed_at: OffsetDateTime,
 ) -> Result<i64, ApplicationError> {
     sqlx::query_scalar::<_, i64>(
-        "UPDATE commerce.products \
+        "UPDATE chaos_commerce.products \
          SET revision=revision+1, updated_at=$3 \
          WHERE store_id=$1 AND id=$2 \
          RETURNING revision",
@@ -1974,7 +1974,7 @@ async fn lock_review(
     review_id: ReviewId,
 ) -> Result<(), ApplicationError> {
     let exists =
-        sqlx::query("SELECT 1 FROM commerce.reviews WHERE store_id=$1 AND id=$2 FOR UPDATE")
+        sqlx::query("SELECT 1 FROM chaos_commerce.reviews WHERE store_id=$1 AND id=$2 FOR UPDATE")
             .bind(store_id.as_uuid())
             .bind(review_id.as_uuid())
             .fetch_optional(&mut **tx)
@@ -1993,7 +1993,7 @@ async fn ensure_review_can_receive_media(
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
     let row = sqlx::query_as::<_, (String, bool)>(
-        "SELECT status::text, is_staff_reply FROM commerce.reviews \
+        "SELECT status::text, is_staff_reply FROM chaos_commerce.reviews \
          WHERE store_id=$1 AND id=$2 FOR UPDATE",
     )
     .bind(store_id.as_uuid())
@@ -2049,35 +2049,35 @@ async fn archive_unreferenced_asset(
     changed_at: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "UPDATE commerce.media_assets AS media \
+        "UPDATE chaos_commerce.media_assets AS media \
          SET status='archived', archived_at=$3, updated_at=$3 \
          WHERE media.store_id=$1 AND media.id=$2 AND media.status<>'archived' \
            AND NOT EXISTS ( \
-             SELECT 1 FROM commerce.product_media_assets AS product_link \
+             SELECT 1 FROM chaos_commerce.product_media_assets AS product_link \
              WHERE product_link.store_id=media.store_id \
                AND product_link.media_asset_id=media.id \
                AND product_link.archived_at IS NULL \
            ) \
            AND NOT EXISTS ( \
-             SELECT 1 FROM commerce.product_option_value_media_assets AS option_value_link \
+             SELECT 1 FROM chaos_commerce.product_option_value_media_assets AS option_value_link \
              WHERE option_value_link.store_id=media.store_id \
                AND option_value_link.media_asset_id=media.id \
                AND option_value_link.archived_at IS NULL \
            ) \
            AND NOT EXISTS ( \
-             SELECT 1 FROM commerce.product_variant_media_assets AS variant_link \
+             SELECT 1 FROM chaos_commerce.product_variant_media_assets AS variant_link \
              WHERE variant_link.store_id=media.store_id \
                AND variant_link.media_asset_id=media.id \
                AND variant_link.archived_at IS NULL \
            ) \
            AND NOT EXISTS ( \
-             SELECT 1 FROM commerce.review_media_assets AS review_link \
+             SELECT 1 FROM chaos_commerce.review_media_assets AS review_link \
              WHERE review_link.store_id=media.store_id \
                AND review_link.media_asset_id=media.id \
                AND review_link.archived_at IS NULL \
            ) \
            AND NOT EXISTS ( \
-             SELECT 1 FROM commerce.product_meta_media_assets AS meta_link \
+             SELECT 1 FROM chaos_commerce.product_meta_media_assets AS meta_link \
              WHERE meta_link.store_id=media.store_id \
                AND meta_link.media_asset_id=media.id \
                AND meta_link.archived_at IS NULL \
@@ -2100,7 +2100,7 @@ async fn load_asset(
     sqlx::query_as::<_, MediaRow>(
         "SELECT id, store_id, object_key, file_name, media_type, media_kind::text, \
                 byte_size, sha256_digest, status::text, public_url, created_at, updated_at \
-         FROM commerce.media_assets WHERE store_id=$1 AND id=$2",
+         FROM chaos_commerce.media_assets WHERE store_id=$1 AND id=$2",
     )
     .bind(store_id.as_uuid())
     .bind(media_asset_id.as_uuid())
@@ -2117,7 +2117,7 @@ async fn load_asset_for_update(
     sqlx::query_as::<_, MediaRow>(
         "SELECT id, store_id, object_key, file_name, media_type, media_kind::text, \
                 byte_size, sha256_digest, status::text, public_url, created_at, updated_at \
-         FROM commerce.media_assets WHERE store_id=$1 AND id=$2 FOR UPDATE",
+         FROM chaos_commerce.media_assets WHERE store_id=$1 AND id=$2 FOR UPDATE",
     )
     .bind(store_id.as_uuid())
     .bind(media_asset_id.as_uuid())
@@ -2184,8 +2184,8 @@ async fn load_review(
                 media.sha256_digest, media.status::text, media.public_url, \
                 media.created_at, media.updated_at, link.alt_text, link.position, \
                 link.archived_at AS link_archived_at, media.object_key \
-         FROM commerce.review_media_assets AS link \
-         INNER JOIN commerce.media_assets AS media \
+         FROM chaos_commerce.review_media_assets AS link \
+         INNER JOIN chaos_commerce.media_assets AS media \
             ON media.store_id=link.store_id AND media.id=link.media_asset_id \
          WHERE link.store_id=$1 AND link.review_id=$2 AND link.media_asset_id=$3",
     )
@@ -2210,8 +2210,8 @@ async fn load_product_meta(
                 media.sha256_digest, media.status::text, media.public_url, \
                 media.created_at, media.updated_at, link.alt_text, \
                 link.archived_at AS link_archived_at, media.object_key \
-         FROM commerce.product_meta_media_assets AS link \
-         INNER JOIN commerce.media_assets AS media \
+         FROM chaos_commerce.product_meta_media_assets AS link \
+         INNER JOIN chaos_commerce.media_assets AS media \
             ON media.store_id=link.store_id AND media.id=link.media_asset_id \
          WHERE link.store_id=$1 AND link.product_id=$2 AND link.meta_path=$3 \
            AND link.media_asset_id=$4",

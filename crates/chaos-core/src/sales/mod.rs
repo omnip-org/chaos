@@ -20,7 +20,7 @@ pub struct CreateCartInput {
 }
 
 /// Request-side context captured when a shopper session is first issued and
-/// stored on `commerce.shoppers.attribution`, so later attribution and support
+/// stored on `chaos_commerce.shoppers.attribution`, so later attribution and support
 /// lookups can see where the visitor came from. All fields are best-effort:
 /// the browser controls most of them and any of them can be absent.
 #[derive(Default)]
@@ -253,7 +253,7 @@ fn sanitized_attribution_string(value: Option<String>) -> Option<String> {
 }
 
 /// Shape the acquisition snapshot into `{ "first_seen": .., "last_seen": .. }`
-/// for `commerce.shoppers.attribution`. Both are identical at create; there is
+/// for `chaos_commerce.shoppers.attribution`. Both are identical at create; there is
 /// no per-visit refresh, so `last_seen` only diverges if a future touch path
 /// writes it.
 fn shopper_session_attribution(context: ShopperSessionContext) -> Option<Value> {

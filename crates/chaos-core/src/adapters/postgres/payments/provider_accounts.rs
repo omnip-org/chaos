@@ -13,7 +13,7 @@ impl PostgresStripeRepository {
             "SELECT id, display_name, \
                     credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
              created_at, updated_at \
-             FROM integration.provider_accounts \
+             FROM chaos_integration.provider_accounts \
              WHERE store_id = $1 AND capability = 'payment' AND provider = 'stripe' \
                AND ($2::uuid IS NULL OR id < $2) \
              ORDER BY id DESC LIMIT $3",
@@ -55,7 +55,7 @@ impl PostgresStripeRepository {
     ) -> Result<StripeAccountDetail, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         sqlx::query(
-            "INSERT INTO integration.provider_accounts \
+            "INSERT INTO chaos_integration.provider_accounts \
              (id, store_id, capability, provider, display_name, \
               credential_secret_reference, webhook_secret_reference) \
              VALUES ($1,$2,'payment',$3,$4,$5,$6)",
@@ -85,7 +85,7 @@ impl PostgresStripeRepository {
     ) -> Result<StripeAccountDetail, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         let result = sqlx::query(
-            "UPDATE integration.provider_accounts SET display_name = $3, \
+            "UPDATE chaos_integration.provider_accounts SET display_name = $3, \
                     credential_secret_reference = $4, \
                     webhook_secret_reference = $5, \
                     updated_at = CURRENT_TIMESTAMP \

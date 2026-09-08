@@ -11,10 +11,10 @@ async fn select_price_list(
 ) -> Result<Option<(Uuid, CurrencyCode)>, ApplicationError> {
     let row = sqlx::query_as::<_, (Uuid, String)>(
         "SELECT price_list.id, price_list.currency::text \
-         FROM commerce.price_lists AS price_list \
-         INNER JOIN commerce.stores AS store \
+         FROM chaos_commerce.price_lists AS price_list \
+         INNER JOIN chaos_commerce.stores AS store \
            ON store.id = price_list.store_id \
-         INNER JOIN commerce.channels AS channel \
+         INNER JOIN chaos_commerce.channels AS channel \
            ON channel.store_id = store.id AND channel.id = $1 \
          WHERE price_list.store_id = $2 \
            AND store.status = 'active' AND channel.status = 'active' \
@@ -43,15 +43,15 @@ async fn resolve_variant(
     sqlx::query_as(
         "SELECT product.id, product.title, variant.title, variant.sku::text, \
                 variant.track_inventory, price.amount_minor \
-         FROM commerce.product_variants AS variant \
-         INNER JOIN commerce.products AS product \
+         FROM chaos_commerce.product_variants AS variant \
+         INNER JOIN chaos_commerce.products AS product \
            ON product.store_id = variant.store_id AND product.id = variant.product_id \
-         INNER JOIN commerce.product_publications AS publication \
+         INNER JOIN chaos_commerce.product_publications AS publication \
            ON publication.store_id = product.store_id AND publication.product_id = product.id \
           AND publication.channel_id = $1 \
-         INNER JOIN commerce.price_lists AS price_list \
+         INNER JOIN chaos_commerce.price_lists AS price_list \
            ON price_list.store_id = variant.store_id AND price_list.id = $2 \
-         INNER JOIN commerce.price_list_items AS price \
+         INNER JOIN chaos_commerce.price_list_items AS price \
            ON price.store_id = variant.store_id AND price.price_list_id = price_list.id \
           AND price.product_variant_id = variant.id \
          WHERE variant.store_id = $3 AND variant.id = $4 \
@@ -76,7 +76,7 @@ async fn insert_or_replace_line(
     line: &CartLine,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "INSERT INTO commerce.cart_lines \
+        "INSERT INTO chaos_commerce.cart_lines \
          (store_id, cart_id, product_variant_id, quantity) \
          VALUES ($1, $2, $3, $4) \
          ON CONFLICT (store_id, cart_id, product_variant_id) \
@@ -99,7 +99,7 @@ async fn bump_cart(
     cart_id: CartId,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "UPDATE commerce.carts SET updated_at = CURRENT_TIMESTAMP \
+        "UPDATE chaos_commerce.carts SET updated_at = CURRENT_TIMESTAMP \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(actor.store_id.as_uuid())
@@ -130,8 +130,8 @@ async fn lock_cart(
     let row = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
         "SELECT cart.channel_id, cart.price_list_id, price_list.currency::text, \
                 cart.status::text \
-         FROM commerce.carts AS cart \
-         INNER JOIN commerce.price_lists AS price_list \
+         FROM chaos_commerce.carts AS cart \
+         INNER JOIN chaos_commerce.price_lists AS price_list \
            ON price_list.store_id = cart.store_id AND price_list.id = cart.price_list_id \
          WHERE cart.store_id = $1 \
            AND cart.channel_id = $2 AND cart.id = $3 FOR UPDATE OF cart",
@@ -154,8 +154,8 @@ async fn load_cart(
     let row = sqlx::query_as::<_, CartHeaderRow>(
         "SELECT cart.id, cart.shopper_id, cart.price_list_id, price_list.currency::text, \
                 cart.status::text, cart.created_at, cart.updated_at \
-         FROM commerce.carts AS cart \
-         INNER JOIN commerce.price_lists AS price_list \
+         FROM chaos_commerce.carts AS cart \
+         INNER JOIN chaos_commerce.price_lists AS price_list \
            ON price_list.store_id = cart.store_id AND price_list.id = cart.price_list_id \
          WHERE cart.store_id = $1 \
            AND cart.channel_id = $2 AND cart.id = $3",
@@ -223,21 +223,21 @@ async fn load_cart_media(
     let rows = sqlx::query_as::<_, CartMediaRow>(
         "SELECT link.product_id, media.id, 'product'::text, NULL::uuid, NULL::uuid, NULL::uuid, \
                 media.media_type, media.media_kind::text, link.alt_text, link.position, media.public_url \
-         FROM commerce.product_media_assets AS link \
-         INNER JOIN commerce.media_assets AS media \
+         FROM chaos_commerce.product_media_assets AS link \
+         INNER JOIN chaos_commerce.media_assets AS media \
             ON media.store_id=link.store_id AND media.id=link.media_asset_id \
          WHERE link.store_id = $1 AND link.product_id = ANY($2) \
            AND link.archived_at IS NULL AND media.status = 'ready' \
          UNION ALL \
          SELECT link.product_id, media.id, 'option_value'::text, link.option_id, link.option_value_id, NULL::uuid, \
                 media.media_type, media.media_kind::text, link.alt_text, link.position, media.public_url \
-         FROM commerce.product_option_value_media_assets AS link \
-         INNER JOIN commerce.media_assets AS media \
+         FROM chaos_commerce.product_option_value_media_assets AS link \
+         INNER JOIN chaos_commerce.media_assets AS media \
             ON media.store_id=link.store_id AND media.id=link.media_asset_id \
-         INNER JOIN commerce.product_options AS option \
+         INNER JOIN chaos_commerce.product_options AS option \
             ON option.store_id=link.store_id AND option.product_id=link.product_id \
            AND option.id=link.option_id AND option.archived_at IS NULL \
-         INNER JOIN commerce.product_option_values AS option_value \
+         INNER JOIN chaos_commerce.product_option_values AS option_value \
             ON option_value.store_id=link.store_id AND option_value.product_id=link.product_id \
            AND option_value.option_id=link.option_id AND option_value.id=link.option_value_id \
            AND option_value.archived_at IS NULL \
@@ -246,10 +246,10 @@ async fn load_cart_media(
          UNION ALL \
          SELECT link.product_id, media.id, 'variant'::text, NULL::uuid, NULL::uuid, link.product_variant_id, \
                 media.media_type, media.media_kind::text, link.alt_text, link.position, media.public_url \
-         FROM commerce.product_variant_media_assets AS link \
-         INNER JOIN commerce.media_assets AS media \
+         FROM chaos_commerce.product_variant_media_assets AS link \
+         INNER JOIN chaos_commerce.media_assets AS media \
             ON media.store_id=link.store_id AND media.id=link.media_asset_id \
-         INNER JOIN commerce.product_variants AS variant \
+         INNER JOIN chaos_commerce.product_variants AS variant \
             ON variant.store_id=link.store_id AND variant.product_id=link.product_id \
            AND variant.id=link.product_variant_id AND variant.status='active' \
          WHERE link.store_id = $1 AND link.product_id = ANY($2) \
@@ -304,19 +304,19 @@ async fn load_cart_media(
         .collect::<Vec<_>>();
     let selected_rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
         "SELECT selection.variant_id, selection.option_id, selection.option_value_id \
-         FROM commerce.variant_selected_options AS selection \
-         INNER JOIN commerce.product_options AS option \
+         FROM chaos_commerce.variant_selected_options AS selection \
+         INNER JOIN chaos_commerce.product_options AS option \
            ON option.store_id=selection.store_id \
           AND option.product_id=selection.product_id \
           AND option.id=selection.option_id \
           AND option.archived_at IS NULL \
-         INNER JOIN commerce.product_option_values AS option_value \
+         INNER JOIN chaos_commerce.product_option_values AS option_value \
            ON option_value.store_id=selection.store_id \
           AND option_value.product_id=selection.product_id \
           AND option_value.option_id=selection.option_id \
           AND option_value.id=selection.option_value_id \
           AND option_value.archived_at IS NULL \
-         INNER JOIN commerce.product_variants AS variant \
+         INNER JOIN chaos_commerce.product_variants AS variant \
            ON variant.store_id=selection.store_id \
           AND variant.product_id=selection.product_id \
           AND variant.id=selection.variant_id \
@@ -402,19 +402,19 @@ async fn refresh_cart_lines(
         "SELECT product.id, variant.id, product.title, variant.title, \
                 variant.sku::text, variant.track_inventory, cart_line.quantity, \
                 price.amount_minor \
-         FROM commerce.cart_lines AS cart_line \
-         INNER JOIN commerce.product_variants AS variant \
+         FROM chaos_commerce.cart_lines AS cart_line \
+         INNER JOIN chaos_commerce.product_variants AS variant \
            ON variant.store_id = cart_line.store_id \
           AND variant.id = cart_line.product_variant_id AND variant.status = 'active' \
-         INNER JOIN commerce.products AS product \
+         INNER JOIN chaos_commerce.products AS product \
            ON product.store_id = variant.store_id AND product.id = variant.product_id \
           AND product.status = 'active' \
-         INNER JOIN commerce.product_publications AS publication \
+         INNER JOIN chaos_commerce.product_publications AS publication \
            ON publication.store_id = product.store_id AND publication.product_id = product.id \
           AND publication.channel_id = $1 \
-         INNER JOIN commerce.price_lists AS price_list \
+         INNER JOIN chaos_commerce.price_lists AS price_list \
            ON price_list.store_id = cart_line.store_id AND price_list.id = $2 \
-         INNER JOIN commerce.price_list_items AS price \
+         INNER JOIN chaos_commerce.price_list_items AS price \
            ON price.store_id = variant.store_id AND price.price_list_id = price_list.id \
           AND price.product_variant_id = variant.id \
          WHERE cart_line.store_id = $3 \
@@ -452,7 +452,7 @@ async fn require_price_list_active(
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     let active: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM commerce.price_lists \
+        "SELECT EXISTS (SELECT 1 FROM chaos_commerce.price_lists \
          WHERE store_id = $1 AND id = $2 \
            AND currency = $3 AND status = 'active' \
            AND (starts_at IS NULL OR starts_at <= $4) \

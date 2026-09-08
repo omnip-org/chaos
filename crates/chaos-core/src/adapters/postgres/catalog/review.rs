@@ -185,8 +185,8 @@ impl PostgresReviewRepository {
             "SELECT id, product_id, parent_review_id, rating, title, content, author_name, \
                     author_email::text, status::text, is_staff_reply, verified_buyer, \
                     origin::text, source_channel, source_reference, created_at, updated_at \
-             FROM commerce.reviews \
-             WHERE store_id=$1 AND status=$2::commerce.review_status \
+             FROM chaos_commerce.reviews \
+             WHERE store_id=$1 AND status=$2::chaos_commerce.review_status \
                AND ($3::uuid IS NULL OR id < $3) \
              ORDER BY id DESC LIMIT $4",
         )
@@ -234,10 +234,10 @@ impl PostgresReviewRepository {
             });
         }
         let updated = sqlx::query(
-            "UPDATE commerce.reviews \
-             SET status=$3::commerce.review_status, \
+            "UPDATE chaos_commerce.reviews \
+             SET status=$3::chaos_commerce.review_status, \
                  verified_buyer=$4, \
-                 approved_at=CASE WHEN $3::commerce.review_status='approved' THEN $5 ELSE NULL END, \
+                 approved_at=CASE WHEN $3::chaos_commerce.review_status='approved' THEN $5 ELSE NULL END, \
                  updated_at=$5 \
              WHERE store_id=$1 AND id=$2 AND status='pending'",
         )
@@ -270,7 +270,7 @@ impl PostgresReviewRepository {
     ) -> Result<ReviewId, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
         let product_id: Option<Uuid> = sqlx::query_scalar(
-            "SELECT product_id FROM commerce.reviews \
+            "SELECT product_id FROM chaos_commerce.reviews \
              WHERE store_id=$1 AND id=$2 AND status='approved' \
                AND parent_review_id IS NULL",
         )
@@ -287,7 +287,7 @@ impl PostgresReviewRepository {
         };
         let reply_id = ReviewId::new();
         sqlx::query(
-            "INSERT INTO commerce.reviews \
+            "INSERT INTO chaos_commerce.reviews \
              (id, store_id, product_id, parent_review_id, content, \
               author_name, status, is_staff_reply, approved_at, \
               created_at, updated_at) \
@@ -318,7 +318,7 @@ impl PostgresReviewRepository {
             "SELECT id, product_id, parent_review_id, rating, title, content, author_name, \
 	                status::text, is_staff_reply, verified_buyer, origin::text, \
 	                source_channel, source_reference, created_at, updated_at \
-             FROM commerce.reviews \
+             FROM chaos_commerce.reviews \
              WHERE store_id=$1 AND product_id=$2 \
                AND status='approved' AND parent_review_id IS NULL \
                AND ($3::uuid IS NULL OR id < $3) \
@@ -339,7 +339,7 @@ impl PostgresReviewRepository {
                 "SELECT id, product_id, parent_review_id, rating, title, content, author_name, \
 	                    status::text, is_staff_reply, verified_buyer, origin::text, \
 	                    source_channel, source_reference, created_at, updated_at \
-                 FROM commerce.reviews \
+                 FROM chaos_commerce.reviews \
                  WHERE store_id=$1 AND status='approved' \
                    AND parent_review_id = ANY($2::uuid[]) \
                  ORDER BY parent_review_id, id ASC",
@@ -412,11 +412,11 @@ async fn insert_review(
     record: ReviewInsertRecord,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "INSERT INTO commerce.reviews \
+        "INSERT INTO chaos_commerce.reviews \
          (id, store_id, product_id, rating, title, content, author_name, author_email, \
           status, is_staff_reply, verified_buyer, origin, source_channel, source_reference, \
           created_by_user_id, created_at, updated_at) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',false,false,$9::commerce.review_origin,\
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',false,false,$9::chaos_commerce.review_origin,\
                  $10,$11,$12,$13,$13)",
     )
     .bind(record.id.as_uuid())
@@ -450,8 +450,8 @@ async fn load_review_images(
         "SELECT link.review_id, media.id AS asset_id, media.media_type, \
                 media.media_kind::text, link.alt_text, link.position, \
                 media.status::text, media.public_url \
-         FROM commerce.review_media_assets AS link \
-         INNER JOIN commerce.media_assets AS media \
+         FROM chaos_commerce.review_media_assets AS link \
+         INNER JOIN chaos_commerce.media_assets AS media \
             ON media.store_id=link.store_id AND media.id=link.media_asset_id \
          WHERE link.store_id=$1 AND link.review_id = ANY($2::uuid[]) \
            AND link.archived_at IS NULL \
@@ -495,8 +495,8 @@ async fn review_has_unready_media(
     sqlx::query_scalar(
         "SELECT EXISTS( \
             SELECT 1 \
-            FROM commerce.review_media_assets AS link \
-            INNER JOIN commerce.media_assets AS media \
+            FROM chaos_commerce.review_media_assets AS link \
+            INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id=link.store_id AND media.id=link.media_asset_id \
             WHERE link.store_id=$1 AND link.review_id=$2 \
               AND link.archived_at IS NULL AND media.status <> 'ready' \
@@ -543,7 +543,7 @@ async fn store_exists(
     tx: &mut Transaction<'_, Postgres>,
     store: StoreId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM commerce.stores WHERE id=$1)")
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chaos_commerce.stores WHERE id=$1)")
         .bind(store.as_uuid())
         .fetch_one(&mut **tx)
         .await
@@ -555,7 +555,7 @@ async fn review_exists_for_update(
     store: StoreId,
     id: ReviewId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query("SELECT 1 FROM commerce.reviews WHERE store_id=$1 AND id=$2 FOR UPDATE")
+    sqlx::query("SELECT 1 FROM chaos_commerce.reviews WHERE store_id=$1 AND id=$2 FOR UPDATE")
         .bind(store.as_uuid())
         .bind(id.as_uuid())
         .fetch_optional(&mut **tx)

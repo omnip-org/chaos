@@ -182,10 +182,10 @@ async fn load_order_checkout_payment(
                 sales_order.payment_status::text AS payment_status, \
                 account.provider::text AS provider, \
                 source_cart.payment_client_action AS client_action \
-         FROM commerce.orders AS sales_order \
-         INNER JOIN commerce.carts AS source_cart \
+         FROM chaos_commerce.orders AS sales_order \
+         INNER JOIN chaos_commerce.carts AS source_cart \
            ON source_cart.store_id = sales_order.store_id AND source_cart.id = sales_order.cart_id \
-         INNER JOIN integration.provider_accounts AS account \
+         INNER JOIN chaos_integration.provider_accounts AS account \
            ON account.store_id = sales_order.store_id \
           AND account.id = sales_order.payment_provider_account_id \
          WHERE sales_order.store_id = $1 AND sales_order.channel_id = $2 \
@@ -252,7 +252,7 @@ async fn load_order_analytics_items(
 ) -> Result<Vec<Value>, ApplicationError> {
     let rows: Vec<(Uuid, Uuid, i32, i64)> = sqlx::query_as(
         "SELECT product_id, product_variant_id, quantity, unit_price_amount_minor
-           FROM commerce.order_lines
+           FROM chaos_commerce.order_lines
           WHERE store_id = $1 AND order_id = $2
           ORDER BY position",
     )
@@ -350,7 +350,7 @@ async fn load_stripe_account(
     sqlx::query_as::<_, ProviderAccountRow>(
         "SELECT id, display_name, \
                 credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
-                created_at, updated_at FROM integration.provider_accounts \
+                created_at, updated_at FROM chaos_integration.provider_accounts \
          WHERE store_id = $1 AND id = $2 AND capability = 'payment' AND provider = 'stripe'",
     )
     .bind(store_id.as_uuid())

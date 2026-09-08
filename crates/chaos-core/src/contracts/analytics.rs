@@ -4,7 +4,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-/// Meta's destination config lives in `integration.provider_accounts`
+/// Meta's destination config lives in `chaos_integration.provider_accounts`
 /// (`capability = 'analytics', provider = 'meta'`) alongside every other
 /// capability's accounts; `external_account_reference` (the Meta Dataset
 /// ID) is stored inside that row's `configuration` JSONB rather than a
