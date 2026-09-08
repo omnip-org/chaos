@@ -164,7 +164,7 @@ impl PostgresStorefrontSalesRepository {
         )
         .await?
         .ok_or_else(|| variant_unavailable(product_variant_id))?;
-        let previous_quantity: i64 = sqlx::query_scalar(
+        let previous_quantity: i32 = sqlx::query_scalar(
             "SELECT quantity FROM chaos_commerce.cart_lines \
              WHERE store_id = $1 AND cart_id = $2 AND product_variant_id = $3",
         )
@@ -203,7 +203,7 @@ impl PostgresStorefrontSalesRepository {
         insert_or_replace_line(&mut transaction, actor, cart_id, &line).await?;
         bump_cart(&mut transaction, actor, cart_id).await?;
 
-        let added = i64::from(quantity) - previous_quantity;
+        let added = i64::from(quantity) - i64::from(previous_quantity);
         let add_to_cart_event_id = if added >= 1 {
             let event_id = Uuid::now_v7();
             let mut properties = json!({
