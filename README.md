@@ -58,7 +58,7 @@ docker compose -f deploy/docker-compose.yaml down
 
 The data volumes are `external: true`, so `down -v` cannot delete them — use `docker volume rm chaos-postgres-data chaos-redis-data` if you deliberately want a clean slate.
 
-PostgreSQL must have the `pgmq` and `citext` extensions available; the first migration enables them (citext in a `chaos_extensions` schema) and defines its own exact-match topic routing on top of `pgmq.send` (so pgmq 1.5.x, as shipped by Supabase, is enough). Every project-owned schema is `chaos_`-prefixed (`chaos_commerce`, `chaos_identity`, `chaos_integration`, `chaos_extensions`). The `local` profile's image bundles `pgmq` (plus currently-unused `pg_cron` / `pg_partman`).
+The migration role must be allowed to `CREATE EXTENSION`; the first migration creates `pgmq` and `citext` itself (citext in a `chaos_extensions` schema) and defines its own exact-match topic routing on top of `pgmq.send` (so pgmq 1.5.x, as shipped by Supabase, is enough). Do not pre-enable `pgmq` out of band — `pgmq.create()` needs extension ownership, so the migration role has to be the one that creates it. Every project-owned schema is `chaos_`-prefixed (`chaos_commerce`, `chaos_identity`, `chaos_integration`, `chaos_extensions`). The `local` profile's image bundles `pgmq` (plus currently-unused `pg_cron` / `pg_partman`).
 
 ## Development commands
 
