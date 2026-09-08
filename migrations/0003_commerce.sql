@@ -5,14 +5,14 @@ CREATE TYPE chaos_commerce.store_status AS ENUM ('active', 'inactive');
 CREATE TYPE chaos_commerce.sales_channel_status AS ENUM ('active', 'archived');
 
 CREATE TABLE chaos_commerce.stores (
-    id          UUID                     NOT NULL PRIMARY KEY,
-    name        TEXT                     NOT NULL,
-    region      CHAR(2)                  NOT NULL DEFAULT 'US',
-    currency    CHAR(3)                  NOT NULL DEFAULT 'USD',
+    id          UUID                           NOT NULL PRIMARY KEY,
+    name        TEXT                           NOT NULL,
+    region      CHAR(2)                        NOT NULL DEFAULT 'US',
+    currency    CHAR(3)                        NOT NULL DEFAULT 'USD',
     meta        JSONB,
     status      chaos_commerce.store_status    NOT NULL DEFAULT 'active',
-    created_at  TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at  TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT stores_name_length_check           CHECK (length(trim(name)) BETWEEN 1 AND 120),
     CONSTRAINT stores_region_format_check         CHECK (region ~ '^[A-Z]{2}$'),
@@ -22,11 +22,11 @@ CREATE TABLE chaos_commerce.stores (
 );
 
 CREATE TABLE chaos_commerce.store_memberships (
-    store_id   UUID                 NOT NULL,
-    user_id    UUID                 NOT NULL,
+    store_id   UUID                       NOT NULL,
+    user_id    UUID                       NOT NULL,
     role       chaos_commerce.store_role  NOT NULL,
-    created_at TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT store_memberships_pkey               PRIMARY KEY (store_id, user_id),
     CONSTRAINT store_memberships_store_id_fkey      FOREIGN KEY (store_id) REFERENCES chaos_commerce.stores (id) ON DELETE CASCADE,
@@ -64,13 +64,13 @@ CREATE TABLE chaos_commerce.shoppers (
 );
 
 CREATE TABLE chaos_commerce.channels (
-    id                UUID                           NOT NULL PRIMARY KEY,
-    store_id          UUID                           NOT NULL,
-    name              TEXT                           NOT NULL,
-    origin            TEXT                           NOT NULL,
+    id                UUID                                 NOT NULL PRIMARY KEY,
+    store_id          UUID                                 NOT NULL,
+    name              TEXT                                 NOT NULL,
+    origin            TEXT                                 NOT NULL,
     status            chaos_commerce.sales_channel_status  NOT NULL DEFAULT 'active',
-    created_at        TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at        TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at        TIMESTAMPTZ                          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMPTZ                          NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT channels_store_id_id_key        UNIQUE (store_id, id),
     CONSTRAINT channels_origin_key             UNIQUE (origin),

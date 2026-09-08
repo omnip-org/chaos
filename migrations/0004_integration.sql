@@ -25,17 +25,17 @@ INSERT INTO chaos_integration.topic_bindings (routing_key, queue_name) VALUES
 CREATE TYPE chaos_integration.provider_capability AS ENUM ('email', 'payment', 'shipping', 'analytics');
 
 CREATE TABLE chaos_integration.provider_accounts (
-    id                           UUID                            NOT NULL PRIMARY KEY,
-    store_id                     UUID                            NOT NULL,
+    id                           UUID                                  NOT NULL PRIMARY KEY,
+    store_id                     UUID                                  NOT NULL,
     capability                   chaos_integration.provider_capability NOT NULL,
-    provider                     TEXT                            NOT NULL,
-    display_name                 TEXT                            NOT NULL DEFAULT 'Integration Provider',
+    provider                     TEXT                                  NOT NULL,
+    display_name                 TEXT                                  NOT NULL DEFAULT 'Integration Provider',
     credential_secret_reference  TEXT,
     webhook_secret_reference     TEXT,
-    configuration                JSONB                           NOT NULL DEFAULT '{}'::jsonb,
-    enabled                      BOOLEAN                         NOT NULL DEFAULT true,
-    created_at                   TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                   TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    configuration                JSONB                                 NOT NULL DEFAULT '{}'::jsonb,
+    enabled                      BOOLEAN                               NOT NULL DEFAULT true,
+    created_at                   TIMESTAMPTZ                           NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                   TIMESTAMPTZ                           NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT provider_accounts_store_capability_provider_key     UNIQUE (store_id, capability, provider),
     CONSTRAINT provider_accounts_store_id_id_key                   UNIQUE (store_id, id),
@@ -50,16 +50,16 @@ CREATE TABLE chaos_integration.provider_accounts (
 );
 
 CREATE TABLE chaos_integration.provider_webhooks (
-    id                     UUID                            NOT NULL PRIMARY KEY,
-    store_id               UUID                            NOT NULL,
-    provider_account_id    UUID                            NOT NULL,
+    id                     UUID                                  NOT NULL PRIMARY KEY,
+    store_id               UUID                                  NOT NULL,
+    provider_account_id    UUID                                  NOT NULL,
     capability             chaos_integration.provider_capability NOT NULL,
-    provider               TEXT                            NOT NULL,
-    provider_event_id      TEXT                            NOT NULL,
-    provider_event_type    TEXT                            NOT NULL,
+    provider               TEXT                                  NOT NULL,
+    provider_event_id      TEXT                                  NOT NULL,
+    provider_event_type    TEXT                                  NOT NULL,
     normalized_event_type  TEXT,
-    payload                JSONB                           NOT NULL,
-    received_at            TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    payload                JSONB                                 NOT NULL,
+    received_at            TIMESTAMPTZ                           NOT NULL DEFAULT CURRENT_TIMESTAMP,
     processed_at           TIMESTAMPTZ,
 
     CONSTRAINT provider_webhooks_dedup_key              UNIQUE (provider_account_id, provider_event_id),

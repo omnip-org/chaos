@@ -8,16 +8,16 @@ CREATE TYPE chaos_commerce.review_origin AS ENUM ('storefront', 'manual');
 CREATE TYPE chaos_commerce.price_list_status AS ENUM ('draft', 'active', 'archived');
 
 CREATE TABLE chaos_commerce.products (
-    id          UUID                       NOT NULL PRIMARY KEY,
-    store_id    UUID                       NOT NULL,
+    id          UUID                             NOT NULL PRIMARY KEY,
+    store_id    UUID                             NOT NULL,
     handle      chaos_extensions.citext          NOT NULL,
-    title       TEXT                       NOT NULL,
-    description TEXT                       NOT NULL DEFAULT '',
+    title       TEXT                             NOT NULL,
+    description TEXT                             NOT NULL DEFAULT '',
     status      chaos_commerce.product_status    NOT NULL DEFAULT 'draft',
     meta        JSONB,
-    revision    BIGINT                     NOT NULL DEFAULT 0,
-    created_at  TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    revision    BIGINT                           NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT products_store_id_handle_key        UNIQUE (store_id, handle),
     CONSTRAINT products_store_id_id_key            UNIQUE (store_id, id),
@@ -31,14 +31,14 @@ CREATE TABLE chaos_commerce.products (
 );
 
 CREATE TABLE chaos_commerce.product_options (
-    id          UUID              NOT NULL PRIMARY KEY,
-    store_id    UUID              NOT NULL,
-    product_id  UUID              NOT NULL,
+    id          UUID                    NOT NULL PRIMARY KEY,
+    store_id    UUID                    NOT NULL,
+    product_id  UUID                    NOT NULL,
     name        chaos_extensions.citext NOT NULL,
-    position    SMALLINT          NOT NULL,
+    position    SMALLINT                NOT NULL,
     archived_at TIMESTAMPTZ,
-    created_at  TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT product_options_store_id_product_id_id_key          UNIQUE (store_id, product_id, id),
     CONSTRAINT product_options_store_id_product_id_fkey            FOREIGN KEY (store_id, product_id) REFERENCES chaos_commerce.products (store_id, id) ON DELETE CASCADE,
@@ -47,15 +47,15 @@ CREATE TABLE chaos_commerce.product_options (
 );
 
 CREATE TABLE chaos_commerce.product_option_values (
-    id          UUID              NOT NULL PRIMARY KEY,
-    store_id    UUID              NOT NULL,
-    product_id  UUID              NOT NULL,
-    option_id   UUID              NOT NULL,
+    id          UUID                    NOT NULL PRIMARY KEY,
+    store_id    UUID                    NOT NULL,
+    product_id  UUID                    NOT NULL,
+    option_id   UUID                    NOT NULL,
     value       chaos_extensions.citext NOT NULL,
-    position    SMALLINT          NOT NULL,
+    position    SMALLINT                NOT NULL,
     archived_at TIMESTAMPTZ,
-    created_at  TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT product_option_values_store_id_product_id_option_id_id_key  UNIQUE (store_id, product_id, option_id, id),
     CONSTRAINT product_option_values_store_id_product_id_option_id_fkey    FOREIGN KEY (store_id, product_id, option_id) REFERENCES chaos_commerce.product_options (store_id, product_id, id) ON DELETE CASCADE,
@@ -64,18 +64,18 @@ CREATE TABLE chaos_commerce.product_option_values (
 );
 
 CREATE TABLE chaos_commerce.product_variants (
-    id                UUID                       NOT NULL PRIMARY KEY,
-    store_id          UUID                       NOT NULL,
-    product_id        UUID                       NOT NULL,
-    title             TEXT                       NOT NULL,
+    id                UUID                             NOT NULL PRIMARY KEY,
+    store_id          UUID                             NOT NULL,
+    product_id        UUID                             NOT NULL,
+    title             TEXT                             NOT NULL,
     sku               chaos_extensions.citext,
     status            chaos_commerce.variant_status    NOT NULL DEFAULT 'draft',
-    track_inventory   BOOLEAN                    NOT NULL DEFAULT true,
-    on_hand_quantity  BIGINT                     NOT NULL DEFAULT 0,
-    reserved_quantity BIGINT                     NOT NULL DEFAULT 0,
+    track_inventory   BOOLEAN                          NOT NULL DEFAULT true,
+    on_hand_quantity  BIGINT                           NOT NULL DEFAULT 0,
+    reserved_quantity BIGINT                           NOT NULL DEFAULT 0,
     meta              JSONB,
-    created_at        TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at        TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at        TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT product_variants_store_id_id_key                  UNIQUE (store_id, id),
     CONSTRAINT product_variants_store_id_product_id_id_key       UNIQUE (store_id, product_id, id),
@@ -116,15 +116,15 @@ CREATE TABLE chaos_commerce.product_publications (
 );
 
 CREATE TABLE chaos_commerce.collections (
-    id          UUID                       NOT NULL PRIMARY KEY,
-    store_id    UUID                       NOT NULL,
+    id          UUID                             NOT NULL PRIMARY KEY,
+    store_id    UUID                             NOT NULL,
     handle      chaos_extensions.citext          NOT NULL,
-    title       TEXT                       NOT NULL,
-    description TEXT                       NOT NULL DEFAULT '',
+    title       TEXT                             NOT NULL,
+    description TEXT                             NOT NULL DEFAULT '',
     status      chaos_commerce.collection_status NOT NULL DEFAULT 'draft',
     meta        JSONB,
-    created_at  TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at  TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT collections_store_id_handle_key        UNIQUE (store_id, handle),
     CONSTRAINT collections_store_id_id_key            UNIQUE (store_id, id),
@@ -162,14 +162,14 @@ CREATE TABLE chaos_commerce.collection_publications (
 );
 
 CREATE TABLE chaos_commerce.media_assets (
-    id                 UUID                        NOT NULL PRIMARY KEY,
-    store_id           UUID                        NOT NULL,
-    object_key         TEXT                        NOT NULL UNIQUE,
-    file_name          TEXT                        NOT NULL,
-    media_type         TEXT                        NOT NULL,
+    id                 UUID                              NOT NULL PRIMARY KEY,
+    store_id           UUID                              NOT NULL,
+    object_key         TEXT                              NOT NULL UNIQUE,
+    file_name          TEXT                              NOT NULL,
+    media_type         TEXT                              NOT NULL,
     media_kind         chaos_commerce.media_kind         NOT NULL,
-    byte_size          BIGINT                      NOT NULL,
-    sha256_digest      BYTEA                       NOT NULL,
+    byte_size          BIGINT                            NOT NULL,
+    sha256_digest      BYTEA                             NOT NULL,
     status             chaos_commerce.media_asset_status NOT NULL DEFAULT 'pending',
     public_url         TEXT,
     ready_at           TIMESTAMPTZ,
@@ -257,25 +257,25 @@ CREATE TABLE chaos_commerce.product_meta_media_assets (
 );
 
 CREATE TABLE chaos_commerce.reviews (
-    id                            UUID                    NOT NULL PRIMARY KEY,
-    store_id                      UUID                    NOT NULL,
-    product_id                    UUID                    NOT NULL,
+    id                            UUID                          NOT NULL PRIMARY KEY,
+    store_id                      UUID                          NOT NULL,
+    product_id                    UUID                          NOT NULL,
     parent_review_id              UUID,
     rating                        SMALLINT,
     title                         TEXT,
-    content                       TEXT                    NOT NULL,
-    author_name                   TEXT                    NOT NULL,
+    content                       TEXT                          NOT NULL,
+    author_name                   TEXT                          NOT NULL,
     author_email                  chaos_extensions.citext,
     status                        chaos_commerce.review_status  NOT NULL DEFAULT 'pending',
-    is_staff_reply                BOOLEAN                 NOT NULL DEFAULT false,
-    verified_buyer                BOOLEAN                 NOT NULL DEFAULT false,
+    is_staff_reply                BOOLEAN                       NOT NULL DEFAULT false,
+    verified_buyer                BOOLEAN                       NOT NULL DEFAULT false,
     origin                        chaos_commerce.review_origin  NOT NULL DEFAULT 'storefront',
     source_channel                TEXT,
     source_reference              TEXT,
     created_by_user_id            UUID,
     approved_at                   TIMESTAMPTZ,
-    created_at                    TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                    TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at                    TIMESTAMPTZ                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                    TIMESTAMPTZ                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT reviews_store_id_id_key                        UNIQUE (store_id, id),
     CONSTRAINT reviews_store_id_product_id_id_key             UNIQUE (store_id, product_id, id),
@@ -341,16 +341,16 @@ CREATE TABLE chaos_commerce.product_documents (
 );
 
 CREATE TABLE chaos_commerce.price_lists (
-    id          UUID                         NOT NULL PRIMARY KEY,
-    store_id    UUID                         NOT NULL,
+    id          UUID                               NOT NULL PRIMARY KEY,
+    store_id    UUID                               NOT NULL,
     code        chaos_extensions.citext            NOT NULL,
-    name        TEXT                         NOT NULL,
-    currency    CHAR(3)                      NOT NULL,
+    name        TEXT                               NOT NULL,
+    currency    CHAR(3)                            NOT NULL,
     status      chaos_commerce.price_list_status   NOT NULL DEFAULT 'draft',
     starts_at   TIMESTAMPTZ,
     ends_at     TIMESTAMPTZ,
-    created_at  TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at  TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT price_lists_store_id_id_key              UNIQUE (store_id, id),
     CONSTRAINT price_lists_store_id_code_key            UNIQUE (store_id, code),

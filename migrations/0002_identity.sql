@@ -4,25 +4,25 @@ CREATE TYPE chaos_identity.user_status AS ENUM ('active', 'disabled');
 CREATE TYPE chaos_identity.identity_provider AS ENUM ('apple', 'google');
 
 CREATE TABLE chaos_identity.users (
-    id          UUID                     NOT NULL,
+    id          UUID                           NOT NULL,
     email       chaos_extensions.citext        NOT NULL,
     status      chaos_identity.user_status     NOT NULL DEFAULT 'active',
-    created_at  TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at  TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT users_pkey                PRIMARY KEY (id),
-    CONSTRAINT users_email_key           UNIQUE (email),
-    CONSTRAINT users_email_length_check  CHECK (length(trim(email::text)) BETWEEN 3 AND 320)
+    CONSTRAINT users_pkey                      PRIMARY KEY (id),
+    CONSTRAINT users_email_key                 UNIQUE (email),
+    CONSTRAINT users_email_length_check        CHECK (length(trim(email::text)) BETWEEN 3 AND 320)
 );
 
 CREATE TABLE chaos_identity.credentials (
     provider    chaos_identity.identity_provider  NOT NULL,
-    subject     TEXT                        NOT NULL,
-    user_id     UUID                        NOT NULL,
+    subject     TEXT                              NOT NULL,
+    user_id     UUID                              NOT NULL,
     email       chaos_extensions.citext           NOT NULL,
     meta        JSONB,
-    created_at  TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at  TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT credentials_provider_user_id_key      UNIQUE (provider, user_id),
     CONSTRAINT credentials_pkey                      PRIMARY KEY (provider, subject),
@@ -67,7 +67,7 @@ CREATE TABLE chaos_identity.oauth_authorization_requests (
     code_challenge_method       TEXT                            NOT NULL,
     resource                    TEXT                            NOT NULL,
     expires_at                  TIMESTAMPTZ                     NOT NULL,
-    used_at                    TIMESTAMPTZ,
+    used_at                     TIMESTAMPTZ,
     created_at                  TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT oauth_authorization_requests_pkey                PRIMARY KEY (id),
