@@ -65,7 +65,7 @@ CREATE TABLE chaos_commerce.orders (
     shipping_amount_minor           BIGINT                                  NOT NULL,
     total_amount_minor              BIGINT                                  NOT NULL,
     amounts_finalized_at            TIMESTAMPTZ,
-    contact_email                   chaos_extensions.citext,
+    contact_email                   citext,
     contact_phone                   TEXT,
     billing_full_name               TEXT,
     billing_address_line1           TEXT,

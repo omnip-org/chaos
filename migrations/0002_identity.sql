@@ -5,7 +5,7 @@ CREATE TYPE chaos_identity.identity_provider AS ENUM ('apple', 'google');
 
 CREATE TABLE chaos_identity.users (
     id          UUID                           NOT NULL,
-    email       chaos_extensions.citext        NOT NULL,
+    email       citext                         NOT NULL,
     status      chaos_identity.user_status     NOT NULL DEFAULT 'active',
     created_at  TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -19,7 +19,7 @@ CREATE TABLE chaos_identity.credentials (
     provider    chaos_identity.identity_provider  NOT NULL,
     subject     TEXT                              NOT NULL,
     user_id     UUID                              NOT NULL,
-    email       chaos_extensions.citext           NOT NULL,
+    email       citext                            NOT NULL,
     meta        JSONB,
     created_at  TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,

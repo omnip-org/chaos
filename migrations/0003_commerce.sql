@@ -48,7 +48,7 @@ CREATE TABLE chaos_commerce.store_shipping_countries (
 CREATE TABLE chaos_commerce.shoppers (
     id           UUID                     NOT NULL PRIMARY KEY,
     store_id     UUID                     NOT NULL,
-    email        chaos_extensions.citext,
+    email        citext,
     meta         JSONB,
     attribution  JSONB,
     created_at   TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
