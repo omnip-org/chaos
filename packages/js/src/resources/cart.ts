@@ -16,6 +16,19 @@ function isActiveCart(cart: Cart): boolean {
   return cart.status === undefined || cart.status === "active";
 }
 
+/**
+ * The 409 the Storefront API returns from a line mutation when the cart has
+ * been locked or completed by checkout. The recovery is always the same:
+ * move to the shopper's current active cart and try once more.
+ */
+function isCartNotActive(error: unknown): error is ChaosApiError {
+  return (
+    error instanceof ChaosApiError &&
+    error.status === 409 &&
+    error.code === "cart_not_active"
+  );
+}
+
 export class CartResource {
   private readonly mutationQueues = new Map<string, Promise<unknown>>();
   /** Freshest cart body the API returned per id, with the time it arrived. */
@@ -181,10 +194,11 @@ export class CartResource {
     productVariantId: string,
     body: SetCartLineRequest,
   ): Promise<DataEnvelope<Cart>> {
-    return this.enqueueMutation(cartId, async () => {
-      const current = await this.snapshot(cartId);
-      return this.setLineRequest(cartId, productVariantId, body, current);
-    });
+    return this.enqueueMutation(cartId, () =>
+      this.mutateActiveCart(cartId, (activeCartId, activeCart) =>
+        this.setLineRequest(activeCartId, productVariantId, body, activeCart),
+      ),
+    );
   }
 
   /** Adds a quantity to a Cart line. */
@@ -196,48 +210,74 @@ export class CartResource {
     if (!Number.isInteger(quantity) || quantity < 1) {
       throw new RangeError("quantity must be a positive integer");
     }
-    return this.enqueueMutation(cartId, async () => {
-      const current = await this.snapshot(cartId);
-      const existing = current.lines.find(
-        (line) => line.product_variant_id === productVariantId,
-      );
-      return this.setLineRequest(
-        cartId,
-        productVariantId,
-        {
-          quantity: (existing?.quantity ?? 0) + quantity,
-        },
-        current,
-      );
-    });
+    return this.enqueueMutation(cartId, () =>
+      this.mutateActiveCart(cartId, (activeCartId, activeCart) => {
+        const existing = activeCart.lines.find(
+          (line) => line.product_variant_id === productVariantId,
+        );
+        return this.setLineRequest(
+          activeCartId,
+          productVariantId,
+          { quantity: (existing?.quantity ?? 0) + quantity },
+          activeCart,
+        );
+      }),
+    );
   }
 
   removeLine(
     cartId: string,
     productVariantId: string,
   ): Promise<DataEnvelope<Cart>> {
-    return this.enqueueMutation(cartId, async () => {
-      const current = await this.snapshot(cartId);
-      const previousQuantity = current.lines.find(
-        (line) => line.product_variant_id === productVariantId,
-      )?.quantity;
-      const response = await this.client.request<DataEnvelope<Cart>>(
-        `/carts/${encodeURIComponent(cartId)}/lines/${encodeURIComponent(productVariantId)}`,
-        {
-          method: "DELETE",
-          requiresShopperToken: true,
-        },
-      );
-      this.remember(response.data);
-      this.client.recordCartMutation({
-        cart: response.data,
-        product_variant_id: productVariantId,
-        previous_quantity: previousQuantity ?? 0,
-        new_quantity: 0,
-        removed: true,
-      });
-      return response;
-    });
+    return this.enqueueMutation(cartId, () =>
+      this.mutateActiveCart(cartId, async (activeCartId, activeCart) => {
+        const previousQuantity = activeCart.lines.find(
+          (line) => line.product_variant_id === productVariantId,
+        )?.quantity;
+        const response = await this.client.request<DataEnvelope<Cart>>(
+          `/carts/${encodeURIComponent(activeCartId)}/lines/${encodeURIComponent(productVariantId)}`,
+          {
+            method: "DELETE",
+            requiresShopperToken: true,
+          },
+        );
+        this.remember(response.data);
+        this.client.recordCartMutation({
+          cart: response.data,
+          product_variant_id: productVariantId,
+          previous_quantity: previousQuantity ?? 0,
+          new_quantity: 0,
+          removed: true,
+        });
+        return response;
+      }),
+    );
+  }
+
+  /**
+   * Runs a line mutation against the current cart body, and once against a
+   * freshly resolved active cart if the server rejects the first attempt with
+   * `cart_not_active` (the cart was locked or completed by a checkout). A
+   * recovered call returns a cart with a different `id` — callers that hold a
+   * cart id must read it back from the response.
+   */
+  private async mutateActiveCart(
+    cartId: string,
+    perform: (
+      activeCartId: string,
+      activeCart: Cart,
+    ) => Promise<DataEnvelope<Cart>>,
+  ): Promise<DataEnvelope<Cart>> {
+    try {
+      return await perform(cartId, await this.snapshot(cartId));
+    } catch (error) {
+      if (!isCartNotActive(error)) throw error;
+      this.forget(cartId);
+      // `POST /carts` returns this shopper's canonical active cart, minting
+      // one because the previous cart is no longer active.
+      const fresh = await this.create();
+      return perform(fresh.data.id, fresh.data);
+    }
   }
 
   private async setLineRequest(
