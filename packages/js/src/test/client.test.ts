@@ -994,3 +994,315 @@ test("checkout reuses one idempotency key per cart so a retry cannot double-char
   assert.equal(idempotencyKeys[1], idempotencyKeys[2]);
   assert.notEqual(idempotencyKeys[2], idempotencyKeys[3]);
 });
+
+test("addLine after getOrCreate reuses the created cart without a GET", async () => {
+  const calls: string[] = [];
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async (url: string, init: RequestInit) => {
+      calls.push(`${init.method ?? "GET"} ${url}`);
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "tok" } });
+      }
+      if (url.endsWith("/carts") && init.method === "POST") {
+        return jsonResponse(201, {
+          data: {
+            id: "cart-1",
+            status: "active",
+            currency: "USD",
+            subtotal_amount_minor: 0,
+            lines: [],
+          },
+        });
+      }
+      return jsonResponse(200, {
+        data: {
+          id: "cart-1",
+          status: "active",
+          currency: "USD",
+          subtotal_amount_minor: 500,
+          lines: [
+            {
+              product_id: "p-1",
+              product_variant_id: "v-1",
+              quantity: 1,
+              unit_price_amount_minor: 500,
+            },
+          ],
+        },
+      });
+    }) as unknown as typeof fetch,
+  });
+
+  const cart = await client.cart.getOrCreate();
+  await client.cart.addLine(cart.data.id, "v-1", 1);
+
+  assert.deepEqual(
+    calls.map((entry) => entry.split(" ")[0]),
+    ["POST", "POST", "PUT"],
+  );
+  assert.ok(
+    !calls.some((entry) => entry.startsWith("GET")),
+    "addLine must not issue GET /carts when it already holds a fresh cart",
+  );
+});
+
+test("a second addLine on the same cart skips the GET and stacks quantity", async () => {
+  let getCount = 0;
+  let stored = 0;
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async (url: string, init: RequestInit) => {
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "tok" } });
+      }
+      if (init.method === "GET") {
+        getCount += 1;
+        return jsonResponse(200, {
+          data: {
+            id: "cart-1",
+            status: "active",
+            currency: "USD",
+            subtotal_amount_minor: stored * 500,
+            lines: stored
+              ? [
+                  {
+                    product_id: "p",
+                    product_variant_id: "v-1",
+                    quantity: stored,
+                    unit_price_amount_minor: 500,
+                  },
+                ]
+              : [],
+          },
+        });
+      }
+      stored = JSON.parse(String(init.body)).quantity;
+      return jsonResponse(200, {
+        data: {
+          id: "cart-1",
+          status: "active",
+          currency: "USD",
+          subtotal_amount_minor: stored * 500,
+          lines: [
+            {
+              product_id: "p",
+              product_variant_id: "v-1",
+              quantity: stored,
+              unit_price_amount_minor: 500,
+            },
+          ],
+        },
+      });
+    }) as unknown as typeof fetch,
+  });
+
+  const first = await client.cart.addLine("cart-1", "v-1", 1);
+  assert.equal(first.data.lines[0]!.quantity, 1);
+  const second = await client.cart.addLine("cart-1", "v-1", 2);
+  assert.equal(second.data.lines[0]!.quantity, 3);
+  assert.equal(getCount, 1, "only the first addLine reads the cart");
+});
+
+test("addLine re-reads the cart once the snapshot TTL has passed", async () => {
+  let clock = 1_000;
+  let getCount = 0;
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    cartSnapshotTtlMs: 10_000,
+    now: () => clock,
+    fetch: (async (url: string, init: RequestInit) => {
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "tok" } });
+      }
+      if (init.method === "GET") getCount += 1;
+      return jsonResponse(200, {
+        data: {
+          id: "cart-1",
+          status: "active",
+          currency: "USD",
+          subtotal_amount_minor: 0,
+          lines: [],
+        },
+      });
+    }) as unknown as typeof fetch,
+  });
+
+  await client.cart.addLine("cart-1", "v-1", 1); // cold -> GET #1
+  clock += 5_000;
+  await client.cart.addLine("cart-1", "v-1", 1); // within TTL -> no GET
+  clock += 10_000;
+  await client.cart.addLine("cart-1", "v-1", 1); // TTL elapsed -> GET #2
+
+  assert.equal(getCount, 2);
+});
+
+test("cartSnapshotTtlMs 0 makes every mutation re-read the cart", async () => {
+  let getCount = 0;
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    cartSnapshotTtlMs: 0,
+    fetch: (async (url: string, init: RequestInit) => {
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "tok" } });
+      }
+      if (init.method === "GET") getCount += 1;
+      return jsonResponse(200, {
+        data: {
+          id: "cart-1",
+          status: "active",
+          currency: "USD",
+          subtotal_amount_minor: 0,
+          lines: [],
+        },
+      });
+    }) as unknown as typeof fetch,
+  });
+
+  await client.cart.addLine("cart-1", "v-1", 1);
+  await client.cart.addLine("cart-1", "v-1", 1);
+  assert.equal(getCount, 2);
+});
+
+test("resume reuses a persisted active cart instead of creating one", async () => {
+  const storage = new MemoryStorage();
+  const makeClient = (calls: string[]) =>
+    new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      baseUrl: "https://shop.example.com/api/v1",
+      storage,
+      fetch: (async (url: string, init: RequestInit) => {
+        calls.push(`${init.method ?? "GET"} ${url}`);
+        if (url.endsWith("/shopper/sessions")) {
+          return jsonResponse(201, { data: { shopper_token: "tok" } });
+        }
+        return jsonResponse(url.endsWith("/carts") ? 201 : 200, {
+          data: {
+            id: "cart-1",
+            status: "active",
+            currency: "USD",
+            subtotal_amount_minor: 0,
+            lines: [],
+          },
+        });
+      }) as unknown as typeof fetch,
+    });
+
+  const firstLoad: string[] = [];
+  const created = await makeClient(firstLoad).cart.resume();
+  assert.equal(created.data.id, "cart-1");
+  assert.ok(
+    firstLoad.some(
+      (entry) =>
+        entry === "POST https://shop.example.com/api/v1/carts",
+    ),
+    "first load with no persisted id creates a cart",
+  );
+
+  const secondLoad: string[] = [];
+  const resumed = await makeClient(secondLoad).cart.resume();
+  assert.equal(resumed.data.id, "cart-1");
+  assert.ok(
+    secondLoad.includes("GET https://shop.example.com/api/v1/carts/cart-1"),
+    "second load validates the persisted id with a GET",
+  );
+  assert.ok(
+    !secondLoad.some((entry) => entry.startsWith("POST https://shop.example.com/api/v1/carts")),
+    "second load does not create a new cart",
+  );
+});
+
+test("resume creates a new cart when the persisted one is locked", async () => {
+  const storage = new MemoryStorage();
+  await new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage,
+    fetch: (async (url: string) => {
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "tok" } });
+      }
+      return jsonResponse(201, {
+        data: {
+          id: "cart-1",
+          status: "active",
+          currency: "USD",
+          subtotal_amount_minor: 0,
+          lines: [],
+        },
+      });
+    }) as unknown as typeof fetch,
+  }).cart.resume();
+
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage,
+    fetch: (async (url: string) => {
+      if (url.endsWith("/carts/cart-1")) {
+        return jsonResponse(200, {
+          data: {
+            id: "cart-1",
+            status: "locked",
+            currency: "USD",
+            subtotal_amount_minor: 0,
+            lines: [],
+          },
+        });
+      }
+      return jsonResponse(201, {
+        data: {
+          id: "cart-2",
+          status: "active",
+          currency: "USD",
+          subtotal_amount_minor: 0,
+          lines: [],
+        },
+      });
+    }) as unknown as typeof fetch,
+  });
+
+  const resumed = await client.cart.resume();
+  assert.equal(resumed.data.id, "cart-2");
+  assert.equal(client.getStoredCartId(), "cart-2");
+});
+
+test("concurrent warmup calls do one session and one cart round", async () => {
+  let sessions = 0;
+  let carts = 0;
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async (url: string, init: RequestInit) => {
+      if (url.endsWith("/shopper/sessions")) {
+        sessions += 1;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return jsonResponse(201, { data: { shopper_token: "tok" } });
+      }
+      if (url.endsWith("/carts") && init.method === "POST") {
+        carts += 1;
+        return jsonResponse(201, {
+          data: {
+            id: "cart-1",
+            status: "active",
+            currency: "USD",
+            subtotal_amount_minor: 0,
+            lines: [],
+          },
+        });
+      }
+      return jsonResponse(404, { error: { code: "not_found", message: "x" } });
+    }) as unknown as typeof fetch,
+  });
+
+  const [a, b] = await Promise.all([
+    client.cart.warmup(),
+    client.cart.warmup(),
+  ]);
+  assert.equal(a.data.id, "cart-1");
+  assert.equal(b.data.id, "cart-1");
+  assert.equal(sessions, 1);
+  assert.equal(carts, 1);
+});

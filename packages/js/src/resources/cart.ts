@@ -7,29 +7,87 @@ import type {
   SetCartLineRequest,
 } from "../types.js";
 
+/**
+ * A cart body counts as active — safe to reuse for a later mutation and to
+ * persist as the `resume()` target — when the server says so, or when status
+ * is absent (older responses and test doubles omit it).
+ */
+function isActiveCart(cart: Cart): boolean {
+  return cart.status === undefined || cart.status === "active";
+}
+
 export class CartResource {
   private readonly mutationQueues = new Map<string, Promise<unknown>>();
+  /** Freshest cart body the API returned per id, with the time it arrived. */
+  private readonly snapshots = new Map<string, { cart: Cart; at: number }>();
+  private pendingWarmup: Promise<DataEnvelope<Cart>> | null = null;
 
-  constructor(private readonly client: ChaosStorefrontClient) {}
+  constructor(
+    private readonly client: ChaosStorefrontClient,
+    /**
+     * How long a remembered cart body satisfies the pre-write read in
+     * `addLine`/`setLine`/`removeLine` instead of a separate `GET /carts/{id}`.
+     * 0 disables the cache — every mutation re-reads, matching the pre-cache
+     * behaviour.
+     */
+    private readonly snapshotTtlMs = 30_000,
+  ) {}
 
-  create(body: Record<string, never> = {}): Promise<DataEnvelope<Cart>> {
-    return this.client.request("/carts", {
+  /**
+   * Records a cart body as the freshest known state for its id so the read
+   * that a line mutation does before its write can skip `GET /carts/{id}`, and
+   * persists an active cart id for `resume()`. Inactive carts are neither
+   * cached nor persisted.
+   */
+  private remember(cart: Cart): Cart {
+    if (!isActiveCart(cart)) return cart;
+    if (this.snapshotTtlMs > 0) {
+      this.snapshots.set(cart.id, { cart, at: this.client.now() });
+    }
+    this.client.setStoredCartId(cart.id);
+    return cart;
+  }
+
+  /** Drops a cart from the cache and, if it is the persisted one, from storage. */
+  private forget(cartId: string): void {
+    this.snapshots.delete(cartId);
+    if (this.client.getStoredCartId() === cartId) {
+      this.client.setStoredCartId(null);
+    }
+  }
+
+  /** The remembered cart body while still within the TTL, otherwise a fresh `GET`. */
+  private async snapshot(cartId: string): Promise<Cart> {
+    const hit = this.snapshots.get(cartId);
+    if (hit && this.client.now() - hit.at < this.snapshotTtlMs) {
+      return hit.cart;
+    }
+    return (await this.get(cartId)).data;
+  }
+
+  async create(body: Record<string, never> = {}): Promise<DataEnvelope<Cart>> {
+    const response = await this.client.request<DataEnvelope<Cart>>("/carts", {
       method: "POST",
       body,
       requiresShopperToken: true,
     });
+    this.remember(response.data);
+    return response;
   }
 
-  get(cartId: string): Promise<DataEnvelope<Cart>> {
-    return this.client.request(`/carts/${encodeURIComponent(cartId)}`, {
-      method: "GET",
-      requiresShopperToken: true,
-    });
+  async get(cartId: string): Promise<DataEnvelope<Cart>> {
+    const response = await this.client.request<DataEnvelope<Cart>>(
+      `/carts/${encodeURIComponent(cartId)}`,
+      { method: "GET", requiresShopperToken: true },
+    );
+    this.remember(response.data);
+    return response;
   }
 
   /**
    * Reads a cart only when it is still active. A missing, locked, or
-   * abandoned cart returns null without creating a replacement.
+   * abandoned cart returns null without creating a replacement, and is
+   * dropped from the cache and the persisted id.
    *
    * Invalid shopper credentials are cleared from the configured token
    * storage, but this method never mints a new identity as a side effect.
@@ -38,7 +96,9 @@ export class CartResource {
     if (!this.client.getShopperToken()) return null;
     try {
       const response = await this.get(cartId);
-      return response.data.status === "active" ? response : null;
+      if (response.data.status === "active") return response;
+      this.forget(cartId);
+      return null;
     } catch (error) {
       if (
         error instanceof ChaosApiError &&
@@ -47,6 +107,7 @@ export class CartResource {
         if (error.status === 401 || error.status === 403) {
           this.client.setShopperToken(null);
         }
+        this.forget(cartId);
         return null;
       }
       throw error;
@@ -84,14 +145,45 @@ export class CartResource {
     }
   }
 
+  /**
+   * Resumes the last active cart this client persisted (see
+   * `ClientOptions.storage`), creating a fresh one only when there is no
+   * stored id or it is no longer active. The stored id is still validated with
+   * a `GET`, so a stale id can never surface a locked or foreign cart.
+   */
+  async resume(): Promise<DataEnvelope<Cart>> {
+    const stored = this.client.getStoredCartId();
+    return stored ? this.getOrCreate(stored) : this.getOrCreate();
+  }
+
+  /**
+   * Acquires the shopper session and an active cart ahead of the first
+   * mutation, so the "add to cart" click is a single `PUT`. Call it on page
+   * load without blocking render (don't `await` it on the critical path);
+   * concurrent calls share one round of work. If it fails (e.g. offline) the
+   * later mutation just pays the original session/create cost — nothing is
+   * left half-initialised.
+   */
+  warmup(): Promise<DataEnvelope<Cart>> {
+    if (!this.pendingWarmup) {
+      this.pendingWarmup = (async () => {
+        await this.client.acquireShopperToken();
+        return this.resume();
+      })().finally(() => {
+        this.pendingWarmup = null;
+      });
+    }
+    return this.pendingWarmup;
+  }
+
   async setLine(
     cartId: string,
     productVariantId: string,
     body: SetCartLineRequest,
   ): Promise<DataEnvelope<Cart>> {
     return this.enqueueMutation(cartId, async () => {
-      const current = await this.get(cartId);
-      return this.setLineRequest(cartId, productVariantId, body, current.data);
+      const current = await this.snapshot(cartId);
+      return this.setLineRequest(cartId, productVariantId, body, current);
     });
   }
 
@@ -105,8 +197,8 @@ export class CartResource {
       throw new RangeError("quantity must be a positive integer");
     }
     return this.enqueueMutation(cartId, async () => {
-      const current = await this.get(cartId);
-      const existing = current.data.lines.find(
+      const current = await this.snapshot(cartId);
+      const existing = current.lines.find(
         (line) => line.product_variant_id === productVariantId,
       );
       return this.setLineRequest(
@@ -115,7 +207,7 @@ export class CartResource {
         {
           quantity: (existing?.quantity ?? 0) + quantity,
         },
-        current.data,
+        current,
       );
     });
   }
@@ -125,8 +217,8 @@ export class CartResource {
     productVariantId: string,
   ): Promise<DataEnvelope<Cart>> {
     return this.enqueueMutation(cartId, async () => {
-      const current = await this.get(cartId);
-      const previousQuantity = current.data.lines.find(
+      const current = await this.snapshot(cartId);
+      const previousQuantity = current.lines.find(
         (line) => line.product_variant_id === productVariantId,
       )?.quantity;
       const response = await this.client.request<DataEnvelope<Cart>>(
@@ -136,6 +228,7 @@ export class CartResource {
           requiresShopperToken: true,
         },
       );
+      this.remember(response.data);
       this.client.recordCartMutation({
         cart: response.data,
         product_variant_id: productVariantId,
@@ -168,6 +261,7 @@ export class CartResource {
         requiresShopperToken: true,
       },
     );
+    this.remember(response.data);
     const newQuantity = response.data.lines.find(
       (line) => line.product_variant_id === productVariantId,
     )?.quantity ?? 0;

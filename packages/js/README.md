@@ -54,6 +54,12 @@ const chaos = new ChaosStorefrontClient({
   },
 });
 
+// Call once on page load (don't await it on the critical render path):
+// acquires the shopper session and an active cart, resuming the persisted one
+// when possible, so the first "add to cart" is a single PUT instead of
+// session + create + get + put. Concurrent calls share one round of work.
+const cart = await chaos.cart.warmup();
+
 // Catalog reads record Search/ViewContent to the configured providers.
 const { data: products } = await chaos.catalog.listProducts({ q: "shoes" });
 const { data: product } = await chaos.catalog.getProduct("running-shoes");
@@ -68,8 +74,9 @@ const gallery = resolveProductMedia(product, selectedVariant);
 // quantity also reads fbc/fbp and the current page URL off the browser and
 // sends them with the request; Chaos then fires `AddToCart` to Meta CAPI
 // with a server-minted event id and returns that id so the Pixel projection
-// reuses it for deduplication.
-const cart = await chaos.cart.getOrCreate();
+// reuses it for deduplication. addLine/setLine/removeLine reuse the last cart
+// body the client saw (within `cartSnapshotTtlMs`, default 30s) instead of a
+// separate GET; pass `cartSnapshotTtlMs: 0` to force a re-read every time.
 await chaos.cart.addLine(cart.data.id, selectedVariant.id, 1);
 
 // Checkout: fbc/fbp and the current page URL are read automatically (pass
@@ -127,6 +134,11 @@ Advanced/uncommon operations (`getShopperToken`, `randomUUID`, the raw
 `cart.getActive()`/`cart.getOrCreate()`) live directly on the client; invalid
 shopper-token retries are opt-in (`retryInvalidShopperToken`) because
 silently minting a replacement can orphan a cart or hide an order.
+`cart.warmup()` is the intended page-load call; it delegates to
+`cart.resume()`, which reuses the cart id the client persisted next to the
+shopper token (same `storage`) after validating it with a `GET`. A consumer
+that drives the cart id itself can keep calling `cart.getOrCreate(id)` and
+ignore both.
 
 There are exactly six events — `page_view`, `view_content`, `search`,
 `add_to_cart`, `initiate_checkout`, `purchase` — and this SDK is the only

@@ -19,6 +19,8 @@ import type {
 } from "./types.js";
 
 const SHOPPER_TOKEN_STORAGE_PREFIX = "chaos.storefront.shopper_token";
+const CART_ID_STORAGE_PREFIX = "chaos.storefront.cart_id";
+const DEFAULT_CART_SNAPSHOT_TTL_MS = 30_000;
 
 /**
  * Meta Pixel/GA4 event delivery, keyed by destination: pass `metaPixel` to
@@ -49,6 +51,15 @@ export interface ClientOptions {
   retryInvalidShopperToken?: boolean;
   /** Turns on client-side Meta Pixel/GA4 event delivery; omit to leave it off. */
   events?: StorefrontEventsOptions;
+  /**
+   * How long (ms) a cart body returned by the API is reused to serve the read
+   * that `cart.addLine`/`setLine`/`removeLine` do before their write, instead
+   * of a separate `GET /carts/{id}`. 0 disables it — every mutation re-reads.
+   * Defaults to 30000.
+   */
+  cartSnapshotTtlMs?: number;
+  /** Millisecond clock used for the cart snapshot TTL; defaults to Date.now. */
+  now?: () => number;
 }
 
 /** @internal */
@@ -73,10 +84,12 @@ export class ChaosStorefrontClient {
     "getItem" | "setItem" | "removeItem"
   > | null;
   private readonly shopperTokenStorageKey: string;
+  private readonly cartIdStorageKey: string;
   private readonly autoAcquireShopperToken: boolean;
   private readonly retryInvalidShopperToken: boolean;
   private readonly analytics: ChaosStorefrontAnalytics | null;
   readonly randomUUID: () => string;
+  readonly now: () => number;
   private shopperTokenCache: string | null = null;
   private pendingShopperSession: Promise<string> | null = null;
 
@@ -98,7 +111,13 @@ export class ChaosStorefrontClient {
       options.storage !== undefined
         ? options.storage
         : (globalThis.localStorage ?? null);
-    this.shopperTokenStorageKey = scopedShopperTokenKey(
+    this.shopperTokenStorageKey = scopedStorageKey(
+      SHOPPER_TOKEN_STORAGE_PREFIX,
+      this.baseUrl,
+      this.publishableKey,
+    );
+    this.cartIdStorageKey = scopedStorageKey(
+      CART_ID_STORAGE_PREFIX,
       this.baseUrl,
       this.publishableKey,
     );
@@ -115,6 +134,7 @@ export class ChaosStorefrontClient {
     this.randomUUID =
       options.randomUUID ??
       globalThis.crypto?.randomUUID.bind(globalThis.crypto);
+    this.now = options.now ?? (() => Date.now());
     if (!this.fetchImpl) {
       throw new TypeError(
         "fetch is required (pass options.fetch in environments without a global fetch)",
@@ -134,7 +154,10 @@ export class ChaosStorefrontClient {
 
     this.catalog = new CatalogResource(this);
     this.shopperSession = new ShopperSessionResource(this);
-    this.cart = new CartResource(this);
+    this.cart = new CartResource(
+      this,
+      options.cartSnapshotTtlMs ?? DEFAULT_CART_SNAPSHOT_TTL_MS,
+    );
     this.orders = new OrdersResource(this);
     this.payments = new PaymentsResource(this);
     this.reviews = new ReviewsResource(this);
@@ -154,6 +177,33 @@ export class ChaosStorefrontClient {
       }
     } catch {
       // Storage is optional; the in-memory token remains usable.
+    }
+  }
+
+  /**
+   * The last active cart id this client persisted, or null. Read straight from
+   * storage (not cached) so another tab's change is visible. `cart.resume()`
+   * and `cart.warmup()` use it to skip re-creating a cart on reload.
+   * @internal
+   */
+  getStoredCartId(): string | null {
+    try {
+      return this.storage?.getItem(this.cartIdStorageKey) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** @internal */
+  setStoredCartId(cartId: string | null): void {
+    try {
+      if (cartId) {
+        this.storage?.setItem(this.cartIdStorageKey, cartId);
+      } else {
+        this.storage?.removeItem(this.cartIdStorageKey);
+      }
+    } catch {
+      // Storage is optional; cart recovery simply falls back to creating one.
     }
   }
 
@@ -340,10 +390,11 @@ export class ChaosStorefrontClient {
   }
 }
 
-function scopedShopperTokenKey(
+function scopedStorageKey(
+  prefix: string,
   baseUrl: string,
   publishableKey: string,
 ): string {
   const hash = fnv1a32(`${baseUrl}\0${publishableKey}`);
-  return `${SHOPPER_TOKEN_STORAGE_PREFIX}.${hash.toString(36)}`;
+  return `${prefix}.${hash.toString(36)}`;
 }
