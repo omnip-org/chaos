@@ -76,7 +76,10 @@ const gallery = resolveProductMedia(product, selectedVariant);
 // with a server-minted event id and returns that id so the Pixel projection
 // reuses it for deduplication. addLine/setLine/removeLine reuse the last cart
 // body the client saw (within `cartSnapshotTtlMs`, default 30s) instead of a
-// separate GET; pass `cartSnapshotTtlMs: 0` to force a re-read every time.
+// separate GET; pass `cartSnapshotTtlMs: 0` to force a re-read every time. If
+// the cart id has since been locked or completed by a checkout, the mutation
+// retries once against the shopper's current active cart — read the id back
+// from the response, it may have changed.
 await chaos.cart.addLine(cart.data.id, selectedVariant.id, 1);
 
 // Checkout: fbc/fbp and the current page URL are read automatically (pass

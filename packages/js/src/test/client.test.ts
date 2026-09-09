@@ -1306,3 +1306,126 @@ test("concurrent warmup calls do one session and one cart round", async () => {
   assert.equal(sessions, 1);
   assert.equal(carts, 1);
 });
+
+test("addLine recovers from cart_not_active by rotating to a fresh cart", async () => {
+  const puts: string[] = [];
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: new MemoryStorage(),
+    fetch: (async (url: string, init: RequestInit) => {
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "tok" } });
+      }
+      if (url.endsWith("/carts") && init.method === "POST") {
+        return jsonResponse(201, {
+          data: {
+            id: "cart-new",
+            status: "active",
+            currency: "USD",
+            subtotal_amount_minor: 0,
+            lines: [],
+          },
+        });
+      }
+      if (init.method === "GET" && url.endsWith("/carts/cart-done")) {
+        return jsonResponse(200, {
+          data: {
+            id: "cart-done",
+            status: "completed",
+            currency: "USD",
+            subtotal_amount_minor: 0,
+            lines: [],
+          },
+        });
+      }
+      if (init.method === "PUT") {
+        puts.push(url);
+        if (url.includes("/carts/cart-done/")) {
+          return jsonResponse(409, {
+            error: {
+              code: "cart_not_active",
+              message: "the Cart is no longer active",
+            },
+          });
+        }
+        return jsonResponse(200, {
+          data: {
+            id: "cart-new",
+            status: "active",
+            currency: "USD",
+            subtotal_amount_minor: 500,
+            lines: [
+              {
+                product_id: "p-1",
+                product_variant_id: "v-1",
+                quantity: 1,
+                unit_price_amount_minor: 500,
+              },
+            ],
+          },
+        });
+      }
+      return jsonResponse(404, { error: { code: "not_found", message: "x" } });
+    }) as unknown as typeof fetch,
+  });
+
+  const result = await client.cart.addLine("cart-done", "v-1", 1);
+
+  assert.equal(result.data.id, "cart-new");
+  assert.equal(result.data.lines[0]!.quantity, 1);
+  assert.deepEqual(
+    puts.map((url) => new URL(url, "https://x").pathname),
+    ["/api/v1/carts/cart-done/lines/v-1", "/api/v1/carts/cart-new/lines/v-1"],
+  );
+  assert.equal(
+    client.getStoredCartId(),
+    "cart-new",
+    "the dead cart id must not stay persisted",
+  );
+});
+
+test("setLine surfaces cart_not_active if the fresh cart also rejects it", async () => {
+  let posts = 0;
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async (url: string, init: RequestInit) => {
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "tok" } });
+      }
+      if (url.endsWith("/carts") && init.method === "POST") {
+        posts += 1;
+        return jsonResponse(201, {
+          data: {
+            id: `cart-${posts}`,
+            status: "active",
+            currency: "USD",
+            subtotal_amount_minor: 0,
+            lines: [],
+          },
+        });
+      }
+      if (init.method === "GET") {
+        return jsonResponse(200, {
+          data: {
+            id: "cart-0",
+            status: "completed",
+            currency: "USD",
+            subtotal_amount_minor: 0,
+            lines: [],
+          },
+        });
+      }
+      return jsonResponse(409, {
+        error: { code: "cart_not_active", message: "the Cart is no longer active" },
+      });
+    }) as unknown as typeof fetch,
+  });
+
+  await assert.rejects(
+    client.cart.setLine("cart-0", "v-1", { quantity: 2 }),
+    (error: unknown) =>
+      error instanceof ChaosApiError && error.code === "cart_not_active",
+  );
+  assert.equal(posts, 1, "recovery is attempted exactly once");
+});
