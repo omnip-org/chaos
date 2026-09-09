@@ -1,22 +1,34 @@
 import type { CheckoutAttribution } from "../types.js";
-import { readUtmTags } from "./utm.js";
+import { lastTouchUtmTags, type UtmKey } from "./utm.js";
+
+type UtmStorage = Pick<Storage, "getItem" | "setItem"> | null;
 
 /**
- * Ad-platform attribution read off the browser's own cookies and URL, shared
- * by the checkout call (Meta CAPI `InitiateCheckout`) and cart-line additions
- * (Meta CAPI `AddToCart`). Meta's Pixel install sets `_fbp` itself; `_fbc` is
- * chaos-js's own copy of the `fbclid` URL param (see `events/browser.ts`'s
- * `maintainFbcCookie`). Both are plain, non-HttpOnly cookies by Meta's own
- * design, so reading them here needs no extra wiring. `source_url` is the
- * current page URL — chaos-rust forwards it as the CAPI `event_source_url`.
+ * Ad-platform attribution for the checkout call (Meta CAPI `InitiateCheckout`
+ * / `Purchase`) and cart-line additions (Meta CAPI `AddToCart`).
+ *
+ * `_fbp` is set by Meta's Pixel; `_fbc` is chaos-js's own copy of the
+ * `fbclid` URL param (see `events/browser.ts`'s `maintainFbcCookie`). Both are
+ * plain, non-HttpOnly cookies by Meta's design, so reading them needs no extra
+ * wiring. `source_url` is the current page URL — chaos-rust forwards it as the
+ * CAPI `event_source_url`.
+ *
+ * `utm` is the *last touch* (journey entry point), read from `storage` so an
+ * MPA navigation that dropped `utm_*` from the URL does not lose it — the live
+ * URL is only the fallback. This is what reaches the server-side Purchase
+ * event via `carts.attribution`.
  * @internal
  */
-export function defaultAdAttribution(): CheckoutAttribution {
+export function defaultAdAttribution(
+  storage: UtmStorage,
+): CheckoutAttribution {
   const fbc = readCookie("_fbc");
   const fbp = readCookie("_fbp");
   const sourceUrl =
     typeof window === "undefined" ? undefined : window.location.href;
-  const utm = readUtmTags();
+  const utm = lastTouchUtmTags(storage) as
+    | Partial<Record<UtmKey, string>>
+    | undefined;
   return {
     ...(sourceUrl && { source_url: sourceUrl }),
     ...(utm && { utm }),
@@ -37,10 +49,12 @@ export function hasAdAttribution(attribution: CheckoutAttribution): boolean {
  * `{ attribution }` when the browser had anything to attach, else `{}` — spread
  * into a request body so an empty attribution is simply omitted. @internal
  */
-export function adAttributionBody():
+export function adAttributionBody(
+  storage: UtmStorage,
+):
   | { attribution: CheckoutAttribution }
   | Record<string, never> {
-  const attribution = defaultAdAttribution();
+  const attribution = defaultAdAttribution(storage);
   return hasAdAttribution(attribution) ? { attribution } : {};
 }
 

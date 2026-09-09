@@ -4,7 +4,12 @@ import {
   type AnalyticsOptions,
 } from "./events/browser.js";
 import { fnv1a32 } from "./internal/hash.js";
-import { utmRequestParams, type UtmRequestParams } from "./internal/utm.js";
+import {
+  firstTouchUtmParams,
+  lastTouchUtmParams,
+  recordPageUtm,
+  type UtmRequestParams,
+} from "./internal/utm.js";
 import { CartResource } from "./resources/cart.js";
 import { CatalogResource } from "./resources/catalog.js";
 import { OrdersResource } from "./resources/orders.js";
@@ -92,6 +97,10 @@ export class ChaosStorefrontClient {
   readonly now: () => number;
   private shopperTokenCache: string | null = null;
   private pendingShopperSession: Promise<string> | null = null;
+  /** True once this client mints its own session, so the `last_seen` refresh
+   * (which only makes sense for a session that predates this page load) is
+   * suppressed — the new session already recorded `last_seen == first_seen`. */
+  private sessionMintedHere = false;
 
   readonly catalog: CatalogResource;
   readonly shopperSession: ShopperSessionResource;
@@ -152,6 +161,12 @@ export class ChaosStorefrontClient {
       this.shopperTokenCache = null;
     }
 
+    // One capture per page load: first touch (once) and last touch (every
+    // load that carries utm_*). Later checkout / AddToCart / session-refresh
+    // reads draw on these instead of the live URL, which an MPA navigation
+    // strips.
+    recordPageUtm(this.storage);
+
     this.catalog = new CatalogResource(this);
     this.shopperSession = new ShopperSessionResource(this);
     this.cart = new CartResource(
@@ -208,6 +223,36 @@ export class ChaosStorefrontClient {
   }
 
   /**
+   * `utm_*` query params for shopper-session creation — the visitor's first
+   * touch, persisted so an MPA navigation that drops `utm_*` from the URL
+   * still forwards it. The server records this as
+   * `shoppers.attribution.first_seen` and never rewrites it.
+   * @internal
+   */
+  firstTouchUtmParams(): UtmRequestParams {
+    return firstTouchUtmParams(this.storage);
+  }
+
+  /**
+   * `utm_*` query params for the `last_seen` session refresh — the entry
+   * point of the visitor's current journey, overwritten on every page load
+   * that carries `utm_*`. Same source the checkout / AddToCart
+   * `attribution.utm` body draws on.
+   * @internal
+   */
+  lastTouchUtmParams(): UtmRequestParams {
+    return lastTouchUtmParams(this.storage);
+  }
+
+  /** The storage backing token/cart/UTM persistence, for the resources that
+   * assemble attribution. `null` when persistence is disabled. @internal */
+  get attributionStorage():
+    | Pick<Storage, "getItem" | "setItem">
+    | null {
+    return this.storage;
+  }
+
+  /**
    * Explicitly acquires a shopper session when one is not already cached.
    * Concurrent callers share the same in-flight request.
    */
@@ -236,10 +281,50 @@ export class ChaosStorefrontClient {
   private async createShopperSession(): Promise<string> {
     const envelope = await this.request<{ data: ShopperSession }, UtmRequestParams>(
       "/shopper/sessions",
-      { method: "POST", query: utmRequestParams() },
+      { method: "POST", query: this.firstTouchUtmParams() },
     );
     this.setShopperToken(envelope.data.shopper_token);
+    this.sessionMintedHere = true;
     return envelope.data.shopper_token;
+  }
+
+  /**
+   * Refreshes `shoppers.attribution.last_seen` with the current journey's
+   * `utm_*` for a shopper whose session already exists — a returning visitor
+   * who came back through a different ad. A no-op unless there is a stored
+   * token, a persisted last-touch, and this browser-tab session has not
+   * already refreshed. Fire-and-forget: failures are swallowed, never
+   * surfaced to the cart path that triggered it.
+   * @internal
+   */
+  refreshLastSeen(): void {
+    if (!this.shopperTokenCache || this.sessionMintedHere) return;
+    const query = this.lastTouchUtmParams();
+    if (Object.keys(query).length === 0) return;
+    let session: Pick<Storage, "getItem" | "setItem"> | null;
+    try {
+      session = globalThis.sessionStorage ?? null;
+    } catch {
+      session = null;
+    }
+    const throttleKey = `${this.shopperTokenStorageKey}.last_seen_synced`;
+    try {
+      if (session?.getItem(throttleKey)) return;
+    } catch {
+      // Unreadable sessionStorage — fall through and refresh anyway.
+    }
+    try {
+      session?.setItem(throttleKey, "1");
+    } catch {
+      // Can't throttle; the refresh below is idempotent server-side anyway.
+    }
+    void this.request("/shopper/sessions/touch", {
+      method: "POST",
+      query,
+      requiresShopperToken: true,
+    }).catch(() => {
+      // last_seen is best-effort enrichment; a checkout must never depend on it.
+    });
   }
 
   /** @internal */

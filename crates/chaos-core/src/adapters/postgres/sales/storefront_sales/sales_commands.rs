@@ -46,6 +46,36 @@ impl PostgresStorefrontSalesRepository {
         Ok(shopper_id)
     }
 
+    /// Overwrites `attribution.last_seen` for an existing shopper without
+    /// touching `first_seen` — the returning-visitor "last touch" refresh.
+    /// `snapshot` is a `shopper_seen_snapshot` object (never `None`: the
+    /// caller drops empty refreshes before reaching here). `COALESCE` seeds a
+    /// missing `attribution` (a first session that carried nothing) so the
+    /// `last_seen` write still lands. RLS `store_isolation` plus the explicit
+    /// `id` predicate scope it to this shopper.
+    pub(crate) async fn refresh_shopper_last_seen(
+        &self,
+        shopper: &ShopperActor,
+        snapshot: Value,
+    ) -> Result<(), ApplicationError> {
+        require_channel(&shopper.machine)?;
+        let mut transaction = self.begin_shopper(shopper).await?;
+        sqlx::query(
+            "UPDATE chaos_commerce.shoppers \
+             SET attribution = jsonb_set(COALESCE(attribution, '{}'::jsonb), '{last_seen}', $3), \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $1 AND id = $2",
+        )
+        .bind(shopper.machine.store_id.as_uuid())
+        .bind(shopper.shopper_id.as_uuid())
+        .bind(snapshot)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(())
+    }
+
     pub(crate) async fn create_cart(
         &self,
         shopper: &ShopperActor,
