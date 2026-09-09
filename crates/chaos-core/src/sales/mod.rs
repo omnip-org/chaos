@@ -120,6 +120,25 @@ impl StorefrontSales {
             .await
     }
 
+    /// Refreshes `attribution.last_seen` for a shopper whose session already
+    /// exists — a returning visitor who arrived through a different campaign.
+    /// `first_seen` is never touched. A context that sanitizes down to nothing
+    /// (no UTM, no UA, no IP) is a no-op: last-touch enrichment must never
+    /// blank an existing `last_seen`.
+    pub async fn refresh_shopper_seen(
+        &self,
+        actor: &ShopperActor,
+        context: ShopperSessionContext,
+    ) -> Result<(), ApplicationError> {
+        actor.machine.require_sales_channel()?;
+        let Some(snapshot) = shopper_seen_snapshot(context) else {
+            return Ok(());
+        };
+        self.repository
+            .refresh_shopper_last_seen(actor, snapshot)
+            .await
+    }
+
     pub async fn create_cart(
         &self,
         input: CreateCartInput,
@@ -342,5 +361,25 @@ mod tests {
     #[test]
     fn shopper_session_attribution_is_none_when_nothing_was_captured() {
         assert!(shopper_session_attribution(ShopperSessionContext::default()).is_none());
+    }
+
+    #[test]
+    fn last_seen_refresh_snapshot_is_none_without_utm_so_refresh_is_a_noop() {
+        // `refresh_shopper_seen` short-circuits on `None` and never issues the
+        // UPDATE — a bare last-touch request must not blank an existing
+        // `last_seen`. UA/IP alone still produce a snapshot.
+        assert!(shopper_seen_snapshot(ShopperSessionContext::default()).is_none());
+
+        let utm_only = ShopperSessionContext {
+            utm: UtmTags {
+                source: Some("meta".into()),
+                ..UtmTags::default()
+            },
+            ..ShopperSessionContext::default()
+        };
+        let snapshot = shopper_seen_snapshot(utm_only).expect("utm produces a snapshot");
+        assert_eq!(snapshot["utm"], json!({ "utm_source": "meta" }));
+        assert!(snapshot.get("first_seen").is_none());
+        assert!(snapshot.get("last_seen").is_none());
     }
 }

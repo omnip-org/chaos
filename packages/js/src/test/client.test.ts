@@ -650,6 +650,204 @@ test("shopper session creation forwards utm_* tags from the current page URL", a
   }
 });
 
+test("shopper session creation forwards the first-touch utm_* even after the URL drops them", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const storage = new MemoryStorage();
+  const setHref = (href: string) =>
+    Object.defineProperty(globalThis, "window", {
+      value: { location: { href } },
+      configurable: true,
+    });
+  try {
+    // Landing page carries the campaign tags.
+    setHref("https://shop.example.com/?utm_source=meta&utm_campaign=spring");
+    const first = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      baseUrl: "https://shop.example.com/api/v1",
+      storage,
+      fetch: (async () =>
+        jsonResponse(201, {
+          data: { shopper_token: "t" },
+        })) as unknown as typeof fetch,
+    });
+    await first.shopperSession.create();
+
+    // A later MPA navigation: no utm_* on the URL, and a stale token so a new
+    // session is minted. It must still carry the persisted first-touch tags.
+    setHref("https://shop.example.com/products/x");
+    const requests: string[] = [];
+    const later = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      baseUrl: "https://shop.example.com/api/v1",
+      storage,
+      fetch: (async (url: string) => {
+        requests.push(String(url));
+        return jsonResponse(201, { data: { shopper_token: "t2" } });
+      }) as unknown as typeof fetch,
+    });
+    later.setShopperToken(null);
+    await later.shopperSession.create();
+
+    const params = new URL(requests[0]!).searchParams;
+    assert.equal(params.get("utm_source"), "meta");
+    assert.equal(params.get("utm_campaign"), "spring");
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(globalThis, "window", descriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+  }
+});
+
+test("checkout keeps the last-touch utm_* after an MPA navigation drops them from the URL", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const storage = new MemoryStorage();
+  const setHref = (href: string) =>
+    Object.defineProperty(globalThis, "window", {
+      value: { location: { href } },
+      configurable: true,
+    });
+  try {
+    // Landing page carries the campaign.
+    setHref("https://shop.example.com/?utm_source=meta&utm_campaign=spring");
+    new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      baseUrl: "https://shop.example.com/api/v1",
+      storage,
+      fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+    });
+
+    // Navigate to /checkout — a fresh full page load, no utm_* on the URL.
+    setHref("https://shop.example.com/checkout");
+    let checkoutBody: string | undefined;
+    const client = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      baseUrl: "https://shop.example.com/api/v1",
+      storage,
+      fetch: (async (url: string, init: RequestInit) => {
+        if (url.includes("/shopper/sessions")) {
+          return jsonResponse(201, { data: { shopper_token: "t" } });
+        }
+        if (url.endsWith("/carts/cart-1")) {
+          return jsonResponse(200, {
+            data: { id: "cart-1", currency: "USD", subtotal_amount_minor: 2_000, lines: [] },
+          });
+        }
+        if (url.endsWith("/checkout")) {
+          checkoutBody = typeof init.body === "string" ? init.body : undefined;
+          return jsonResponse(201, {
+            data: {
+              order_number: "W-1",
+              event_id: "W-1",
+              client_action: {
+                type: "stripe_checkout_embedded",
+                public_key: "pk",
+                client_token: "cs",
+              },
+            },
+          });
+        }
+        return jsonResponse(404, { error: { code: "not_found", message: "x" } });
+      }) as unknown as typeof fetch,
+    });
+
+    await client.payments.createEmbeddedCheckout("cart-1", {
+      returnUrl: "https://shop.example.com/checkout/success",
+    });
+
+    const attribution = JSON.parse(checkoutBody ?? "{}").attribution;
+    assert.deepEqual(
+      attribution.utm,
+      { source: "meta", campaign: "spring" },
+      "utm from the landing page, not the bare /checkout URL",
+    );
+    assert.equal(attribution.source_url, "https://shop.example.com/checkout");
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(globalThis, "window", descriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+  }
+});
+
+test("a returning visitor's warmup refreshes last_seen with the new journey's utm_*, once per tab", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const sessionDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "sessionStorage",
+  );
+  const storage = new MemoryStorage();
+  Object.defineProperty(globalThis, "sessionStorage", {
+    value: new MemoryStorage(),
+    configurable: true,
+  });
+  const setHref = (href: string) =>
+    Object.defineProperty(globalThis, "window", {
+      value: { location: { href } },
+      configurable: true,
+    });
+  try {
+    // Day 1: landed via ad A, session created, token persisted.
+    setHref("https://shop.example.com/?utm_source=A");
+    const day1 = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      baseUrl: "https://shop.example.com/api/v1",
+      storage,
+      fetch: (async (url: string) => {
+        if (url.includes("/shopper/sessions")) {
+          return jsonResponse(201, { data: { shopper_token: "tok" } });
+        }
+        return jsonResponse(200, { data: { id: "c1", lines: [] } });
+      }) as unknown as typeof fetch,
+    });
+    await day1.cart.warmup();
+
+    // Day 3: same browser (token in storage), back through ad B.
+    setHref("https://shop.example.com/?utm_source=B&utm_campaign=summer");
+    const touched: URL[] = [];
+    const day3 = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      baseUrl: "https://shop.example.com/api/v1",
+      storage,
+      fetch: (async (url: string) => {
+        const parsed = new URL(String(url));
+        if (parsed.pathname.endsWith("/shopper/sessions/touch")) {
+          touched.push(parsed);
+          return jsonResponse(204, {});
+        }
+        if (parsed.pathname.endsWith("/carts")) {
+          return jsonResponse(200, { data: { id: "c1", lines: [] } });
+        }
+        if (parsed.pathname.includes("/carts/")) {
+          return jsonResponse(200, { data: { id: "c1", lines: [] } });
+        }
+        return jsonResponse(200, { data: { id: "c1", lines: [] } });
+      }) as unknown as typeof fetch,
+    });
+    await day3.cart.warmup();
+    // Second warmup in the same tab must not touch again.
+    await day3.cart.warmup();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(touched.length, 1, "exactly one last_seen refresh per tab");
+    assert.equal(touched[0]!.searchParams.get("utm_source"), "B");
+    assert.equal(touched[0]!.searchParams.get("utm_campaign"), "summer");
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(globalThis, "window", descriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+    if (sessionDescriptor) {
+      Object.defineProperty(globalThis, "sessionStorage", sessionDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "sessionStorage");
+    }
+  }
+});
+
 test("cart line mutations report the resulting quantity delta to analytics", async () => {
   const mutations: unknown[] = [];
   const client = new ChaosStorefrontClient({

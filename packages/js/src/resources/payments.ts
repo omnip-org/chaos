@@ -78,7 +78,10 @@ export class PaymentsResource {
     cart: Cart,
     options: EmbeddedCheckoutOptions,
   ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
-    const body = toEmbeddedCheckoutRequest(options);
+    const body = toEmbeddedCheckoutRequest(
+      options,
+      this.client.attributionStorage,
+    );
     const response = await this.client.request<unknown>(
       `/carts/${encodeURIComponent(cart.id)}/checkout`,
       {
@@ -125,12 +128,13 @@ function isEmbeddedCheckoutSession(
 
 function toEmbeddedCheckoutRequest(
   options: EmbeddedCheckoutOptions,
+  storage: Pick<Storage, "getItem" | "setItem"> | null,
 ): EmbeddedCheckoutRequest {
   const body: EmbeddedCheckoutRequest = {
     payment_provider: "stripe",
     return_url: options.returnUrl,
   };
-  const attribution = options.attribution ?? defaultAdAttribution();
+  const attribution = options.attribution ?? defaultAdAttribution(storage);
   if (hasAdAttribution(attribution)) {
     body.attribution = attribution;
   }
