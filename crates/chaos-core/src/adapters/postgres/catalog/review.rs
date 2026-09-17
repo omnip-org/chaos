@@ -15,7 +15,7 @@ use chaos_domain::{
     store::StoreId,
 };
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
-use time::{Date, OffsetDateTime};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Clone, FromRow)]
@@ -34,7 +34,7 @@ struct ReviewRow {
     origin: String,
     source_channel: Option<String>,
     source_reference: Option<String>,
-    reviewed_on: Option<Date>,
+    reviewed_at: Option<OffsetDateTime>,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
 }
@@ -59,7 +59,7 @@ struct ReviewInsertRecord {
     origin: ReviewOrigin,
     source_channel: Option<String>,
     source_reference: Option<String>,
-    reviewed_on: Option<Date>,
+    reviewed_at: Option<OffsetDateTime>,
     created_by_user_id: Option<chaos_domain::identity::UserId>,
     created_at: OffsetDateTime,
 }
@@ -79,7 +79,7 @@ struct PublicReviewRow {
     origin: String,
     source_channel: Option<String>,
     source_reference: Option<String>,
-    reviewed_on: Option<Date>,
+    reviewed_at: Option<OffsetDateTime>,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
 }
@@ -138,7 +138,7 @@ impl PostgresReviewRepository {
                 origin: record.origin,
                 source_channel: record.source_channel,
                 source_reference: record.source_reference,
-                reviewed_on: None,
+                reviewed_at: None,
                 created_by_user_id: record.created_by_user_id,
                 created_at: record.created_at,
             },
@@ -164,7 +164,7 @@ impl PostgresReviewRepository {
                 origin: ReviewOrigin::Manual,
                 source_channel: Some(record.source_channel),
                 source_reference: record.source_reference,
-                reviewed_on: record.reviewed_on,
+                reviewed_at: record.reviewed_at,
                 created_by_user_id: record.created_by_user_id,
                 created_at: record.created_at,
             },
@@ -189,7 +189,7 @@ impl PostgresReviewRepository {
         let rows = sqlx::query_as::<_, ReviewRow>(
             "SELECT id, product_id, parent_review_id, rating, title, content, author_name, \
                     author_email::text, status::text, is_staff_reply, verified_buyer, \
-                    origin::text, source_channel, source_reference, reviewed_on, created_at, updated_at \
+                    origin::text, source_channel, source_reference, reviewed_at, created_at, updated_at \
              FROM chaos_commerce.reviews \
              WHERE store_id=$1 AND status=$2::chaos_commerce.review_status \
                AND ($3::uuid IS NULL OR id < $3) \
@@ -322,7 +322,7 @@ impl PostgresReviewRepository {
         let top_level = sqlx::query_as::<_, PublicReviewRow>(
             "SELECT id, product_id, parent_review_id, rating, title, content, author_name, \
 	                status::text, is_staff_reply, verified_buyer, origin::text, \
-	                source_channel, source_reference, reviewed_on, created_at, updated_at \
+	                source_channel, source_reference, reviewed_at, created_at, updated_at \
              FROM chaos_commerce.reviews \
              WHERE store_id=$1 AND product_id=$2 \
                AND status='approved' AND parent_review_id IS NULL \
@@ -343,7 +343,7 @@ impl PostgresReviewRepository {
             sqlx::query_as::<_, PublicReviewRow>(
                 "SELECT id, product_id, parent_review_id, rating, title, content, author_name, \
 	                    status::text, is_staff_reply, verified_buyer, origin::text, \
-	                    source_channel, source_reference, reviewed_on, created_at, updated_at \
+	                    source_channel, source_reference, reviewed_at, created_at, updated_at \
                  FROM chaos_commerce.reviews \
                  WHERE store_id=$1 AND status='approved' \
                    AND parent_review_id = ANY($2::uuid[]) \
@@ -405,7 +405,7 @@ fn public_row_to_summary(
             origin: row.origin,
             source_channel: row.source_channel,
             source_reference: row.source_reference,
-            reviewed_on: row.reviewed_on,
+            reviewed_at: row.reviewed_at,
             created_at: row.created_at,
             updated_at: row.updated_at,
         },
@@ -421,7 +421,7 @@ async fn insert_review(
         "INSERT INTO chaos_commerce.reviews \
          (id, store_id, product_id, rating, title, content, author_name, author_email, \
           status, is_staff_reply, verified_buyer, origin, source_channel, source_reference, \
-          reviewed_on, created_by_user_id, created_at, updated_at) \
+          reviewed_at, created_by_user_id, created_at, updated_at) \
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',false,false,$9::chaos_commerce.review_origin,\
                  $10,$11,$12,$13,$14,$14)",
     )
@@ -436,7 +436,7 @@ async fn insert_review(
     .bind(record.origin.as_str())
     .bind(record.source_channel)
     .bind(record.source_reference)
-    .bind(record.reviewed_on)
+    .bind(record.reviewed_at)
     .bind(record.created_by_user_id.map(|id| id.as_uuid()))
     .bind(record.created_at)
     .execute(&mut **tx)
@@ -540,7 +540,7 @@ fn row_to_summary(
         origin,
         source_channel: row.source_channel,
         source_reference: row.source_reference,
-        reviewed_on: row.reviewed_on,
+        reviewed_at: row.reviewed_at,
         images,
         created_at: row.created_at,
         updated_at: row.updated_at,

@@ -390,7 +390,7 @@ mod list_reviews {
         is_staff_reply: bool,
         verified_buyer: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
-        reviewed_on: Option<String>,
+        reviewed_at: Option<ApiDateTime>,
         created_at: ApiDateTime,
         updated_at: ApiDateTime,
         #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -462,7 +462,7 @@ mod list_reviews {
             status: item.status.as_str(),
             is_staff_reply: item.is_staff_reply,
             verified_buyer: item.verified_buyer,
-            reviewed_on: item.reviewed_on.map(|date| date.to_string()),
+            reviewed_at: item.reviewed_at.map(Into::into),
             created_at: item.created_at.into(),
             updated_at: item.updated_at.into(),
             replies: Vec::new(),

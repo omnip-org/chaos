@@ -5,7 +5,7 @@ use chaos_domain::{
     },
     store::StoreId,
 };
-use time::{Date, OffsetDateTime};
+use time::OffsetDateTime;
 
 #[derive(Clone)]
 pub struct ReviewMediaSummary {
@@ -33,7 +33,7 @@ pub struct ReviewSummary {
     pub origin: ReviewOrigin,
     pub source_channel: Option<String>,
     pub source_reference: Option<String>,
-    pub reviewed_on: Option<Date>,
+    pub reviewed_at: Option<OffsetDateTime>,
     pub images: Vec<ReviewMediaSummary>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -58,7 +58,7 @@ pub struct CreateManualReviewRecord {
     pub content: ReviewContent,
     pub source_channel: String,
     pub source_reference: Option<String>,
-    pub reviewed_on: Option<Date>,
+    pub reviewed_at: Option<OffsetDateTime>,
     pub created_by_user_id: Option<chaos_domain::identity::UserId>,
     pub created_at: OffsetDateTime,
 }

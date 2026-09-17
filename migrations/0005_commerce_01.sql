@@ -272,7 +272,7 @@ CREATE TABLE chaos_commerce.reviews (
     origin                        chaos_commerce.review_origin  NOT NULL DEFAULT 'storefront',
     source_channel                TEXT,
     source_reference              TEXT,
-    reviewed_on                   DATE,
+    reviewed_on                   TIMESTAMPTZ,
     created_by_user_id            UUID,
     approved_at                   TIMESTAMPTZ,
     created_at                    TIMESTAMPTZ                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
