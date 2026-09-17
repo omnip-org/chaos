@@ -1404,16 +1404,28 @@ mod tests {
         // Approved rating 4 and 5 average to 4.5; a pending review is
         // excluded despite outweighing them, and a reply carries no rating
         // to average in the first place.
-        for (rating, status, parent) in [
-            (5_i16, "approved", None::<Uuid>),
-            (4_i16, "approved", None::<Uuid>),
-            (1_i16, "pending", None::<Uuid>),
+        for (rating, status, parent, approved_at) in [
+            (
+                5_i16,
+                "approved",
+                None::<Uuid>,
+                Some(time::OffsetDateTime::now_utc()),
+            ),
+            (
+                4_i16,
+                "approved",
+                None::<Uuid>,
+                Some(time::OffsetDateTime::now_utc()),
+            ),
+            (1_i16, "pending", None::<Uuid>, None),
         ] {
             let review_id = Uuid::now_v7();
             sqlx::query(
                 "INSERT INTO chaos_commerce.reviews \
-                 (id, store_id, product_id, parent_review_id, rating, content, author_name, status) \
-                 VALUES ($1, $2, $3, $4, $5, 'Solid shirt', 'Tester', $6::chaos_commerce.review_status)",
+                 (id, store_id, product_id, parent_review_id, rating, content, author_name, \
+                  status, approved_at) \
+                 VALUES ($1, $2, $3, $4, $5, 'Solid shirt', 'Tester', \
+                         $6::chaos_commerce.review_status, $7)",
             )
             .bind(review_id)
             .bind(store_id.as_uuid())
@@ -1421,6 +1433,7 @@ mod tests {
             .bind(parent)
             .bind(rating)
             .bind(status)
+            .bind(approved_at)
             .execute(&owner_pool)
             .await
             .unwrap();
