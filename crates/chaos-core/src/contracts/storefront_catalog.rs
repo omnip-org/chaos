@@ -64,6 +64,16 @@ pub struct StorefrontCatalogProduct {
     pub media: Vec<StorefrontMediaAsset>,
     pub collections: Vec<StorefrontProductCollection>,
     pub metadata: Option<serde_json::Value>,
+    pub rating: Option<StorefrontRatingSummary>,
+}
+
+/// Approved, top-level (non-reply) review rating for a Product — average
+/// rounded to one decimal, count of rated reviews. `None` when the Product
+/// has no approved reviews yet.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StorefrontRatingSummary {
+    pub average: f64,
+    pub count: i64,
 }
 
 #[derive(Clone)]

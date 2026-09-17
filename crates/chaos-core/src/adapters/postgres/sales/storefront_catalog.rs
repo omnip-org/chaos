@@ -5,7 +5,8 @@ use crate::{
     contracts::{
         MachineActor, StorefrontCatalogProduct, StorefrontCatalogRepository,
         StorefrontCatalogVariant, StorefrontMediaAsset, StorefrontProductCollection,
-        StorefrontProductOption, StorefrontProductOptionValue, StorefrontSelectedOption,
+        StorefrontProductOption, StorefrontProductOptionValue, StorefrontRatingSummary,
+        StorefrontSelectedOption,
     },
     error::database_error,
 };
@@ -320,6 +321,28 @@ impl PostgresStorefrontCatalogRepository {
                 })
             })
             .collect()
+    }
+
+    async fn rating(
+        transaction: &mut Transaction<'_, Postgres>,
+        actor: &MachineActor,
+        product_id: ProductId,
+    ) -> Result<Option<StorefrontRatingSummary>, ApplicationError> {
+        let row = sqlx::query_as::<_, (f64, i64)>(
+            "SELECT ROUND(AVG(rating)::numeric, 1)::float8 AS average, COUNT(*) AS count \
+             FROM chaos_commerce.reviews \
+             WHERE store_id = $1 \
+               AND product_id = $2 \
+               AND status = 'approved' \
+               AND parent_review_id IS NULL \
+             HAVING COUNT(*) > 0",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        Ok(row.map(|(average, count)| StorefrontRatingSummary { average, count }))
     }
 
     async fn metadata(
@@ -783,6 +806,40 @@ impl PostgresStorefrontCatalogRepository {
         Ok(collections_by_product)
     }
 
+    /// Approved, top-level review rating per Product, for a batch listing.
+    /// The `reviews_rating_shape_check` constraint guarantees every row this
+    /// query matches (non-reply) has a non-null rating between 1 and 5.
+    async fn rating_for_products(
+        transaction: &mut Transaction<'_, Postgres>,
+        actor: &MachineActor,
+        product_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, StorefrontRatingSummary>, ApplicationError> {
+        if product_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = sqlx::query_as::<_, (Uuid, f64, i64)>(
+            "SELECT product_id, ROUND(AVG(rating)::numeric, 1)::float8 AS average, \
+                    COUNT(*) AS count \
+             FROM chaos_commerce.reviews \
+             WHERE store_id = $1 \
+               AND product_id = ANY($2::uuid[]) \
+               AND status = 'approved' \
+               AND parent_review_id IS NULL \
+             GROUP BY product_id",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(product_ids)
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|(product_id, average, count)| {
+                (product_id, StorefrontRatingSummary { average, count })
+            })
+            .collect())
+    }
+
     async fn metadata_for_products(
         transaction: &mut Transaction<'_, Postgres>,
         actor: &MachineActor,
@@ -965,6 +1022,8 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             let mut collections_by_product =
                 Self::collections_for_products(&mut transaction, actor, &display_product_ids)
                     .await?;
+            let mut rating_by_product =
+                Self::rating_for_products(&mut transaction, actor, &display_product_ids).await?;
             let metadata_inputs: Vec<(Uuid, Option<serde_json::Value>)> = rows
                 .iter()
                 .filter(|row| display_product_ids.contains(&row.0))
@@ -988,6 +1047,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                         .remove(&id.as_uuid())
                         .flatten()
                         .or(metadata);
+                    let rating = rating_by_product.remove(&id.as_uuid());
                     products.push(StorefrontCatalogProduct {
                         id,
                         handle,
@@ -998,6 +1058,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                         media,
                         collections,
                         metadata,
+                        rating,
                     });
                     if products.len() == usize::from(limit) {
                         break;
@@ -1054,6 +1115,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         let media = Self::media(&mut transaction, actor, id).await?;
         let collections = Self::collections(&mut transaction, actor, id).await?;
         let metadata = Self::metadata(&mut transaction, actor, id, metadata).await?;
+        let rating = Self::rating(&mut transaction, actor, id).await?;
         transaction.commit().await.map_err(database_error)?;
         if variants.is_empty() {
             return Ok(None);
@@ -1068,6 +1130,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             media,
             collections,
             metadata,
+            rating,
         }))
     }
 }
@@ -1338,6 +1401,31 @@ mod tests {
             .unwrap();
         }
 
+        // Approved rating 4 and 5 average to 4.5; a pending review is
+        // excluded despite outweighing them, and a reply carries no rating
+        // to average in the first place.
+        for (rating, status, parent) in [
+            (5_i16, "approved", None::<Uuid>),
+            (4_i16, "approved", None::<Uuid>),
+            (1_i16, "pending", None::<Uuid>),
+        ] {
+            let review_id = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO chaos_commerce.reviews \
+                 (id, store_id, product_id, parent_review_id, rating, content, author_name, status) \
+                 VALUES ($1, $2, $3, $4, $5, 'Solid shirt', 'Tester', $6::chaos_commerce.review_status)",
+            )
+            .bind(review_id)
+            .bind(store_id.as_uuid())
+            .bind(visible_product_id.as_uuid())
+            .bind(parent)
+            .bind(rating)
+            .bind(status)
+            .execute(&owner_pool)
+            .await
+            .unwrap();
+        }
+
         let actor = MachineActor {
             publishable_key_id: PublishableKeyId::new(),
             store_id,
@@ -1360,6 +1448,13 @@ mod tests {
         assert_eq!(products[0].id, visible_product_id);
         assert_eq!(products[0].variants.len(), 1);
         assert_eq!(products[0].variants[0].amount_minor, 2500);
+        assert_eq!(
+            products[0].rating,
+            Some(StorefrontRatingSummary {
+                average: 4.5,
+                count: 2
+            })
+        );
         let searched = repository
             .list_products(&actor, None, Some("visible"), None, None, 20)
             .await
@@ -1388,6 +1483,18 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(indexed, 2);
+        let visible = repository
+            .get_product_by_handle(&actor, None, "visible-shirt")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            visible.rating,
+            Some(StorefrontRatingSummary {
+                average: 4.5,
+                count: 2
+            })
+        );
         assert!(
             repository
                 .get_product_by_handle(&actor, None, "draft-shirt")

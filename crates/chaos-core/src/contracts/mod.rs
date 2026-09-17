@@ -77,8 +77,8 @@ pub use store_administration::{SalesChannelAdminItem, ShippingCountryAdminItem, 
 pub use storefront_catalog::{
     StorefrontCatalogProduct, StorefrontCatalogRepository, StorefrontCatalogVariant,
     StorefrontContext, StorefrontMediaAsset, StorefrontMediaScope, StorefrontProductCollection,
-    StorefrontProductOption, StorefrontProductOptionValue, StorefrontSelectedOption,
-    resolve_storefront_media,
+    StorefrontProductOption, StorefrontProductOptionValue, StorefrontRatingSummary,
+    StorefrontSelectedOption, resolve_storefront_media,
 };
 pub use stripe::{
     OrderMetadataContext, PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction,

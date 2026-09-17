@@ -62,6 +62,14 @@ export interface ProductMedia {
   url: string;
 }
 
+/** Approved, top-level review rating for a Product — average rounded to
+ * one decimal, count of rated reviews. Absent when the Product has no
+ * approved reviews yet. */
+export interface ProductRating {
+  average: number;
+  count: number;
+}
+
 export interface Product {
   id: UUID;
   handle: string;
@@ -72,6 +80,7 @@ export interface Product {
   variants: ProductVariant[];
   collections: ProductCollectionReference[];
   metadata?: unknown;
+  rating?: ProductRating;
 }
 
 export interface Collection {

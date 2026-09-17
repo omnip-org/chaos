@@ -8,7 +8,7 @@ use axum::{
 use chaos_core::contracts::{
     StorefrontCatalogProduct, StorefrontCatalogVariant, StorefrontMediaAsset, StorefrontMediaScope,
     StorefrontProductCollection, StorefrontProductOption, StorefrontProductOptionValue,
-    StorefrontSelectedOption,
+    StorefrontRatingSummary, StorefrontSelectedOption,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -83,6 +83,14 @@ struct StorefrontProductData {
     collections: Vec<StorefrontProductCollectionData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rating: Option<StorefrontRatingData>,
+}
+
+#[derive(Serialize)]
+struct StorefrontRatingData {
+    average: f64,
+    count: i64,
 }
 
 #[derive(Serialize)]
@@ -124,6 +132,14 @@ fn product_data(product: StorefrontCatalogProduct) -> StorefrontProductData {
             .map(collection_ref_data)
             .collect(),
         metadata: product.metadata,
+        rating: product.rating.map(rating_data),
+    }
+}
+
+fn rating_data(rating: StorefrontRatingSummary) -> StorefrontRatingData {
+    StorefrontRatingData {
+        average: rating.average,
+        count: rating.count,
     }
 }
 
