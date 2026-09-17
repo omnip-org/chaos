@@ -411,6 +411,7 @@ CREATE INDEX reviews_store_status_id_idx ON chaos_commerce.reviews (store_id, st
 CREATE INDEX reviews_created_by_user_idx ON chaos_commerce.reviews (created_by_user_id, id) WHERE created_by_user_id IS NOT NULL;
 CREATE INDEX reviews_parent_product_idx ON chaos_commerce.reviews (store_id, product_id, parent_review_id) WHERE parent_review_id IS NOT NULL;
 CREATE INDEX reviews_parent_idx ON chaos_commerce.reviews (store_id, parent_review_id) WHERE parent_review_id IS NOT NULL;
+CREATE INDEX reviews_public_sort_idx ON chaos_commerce.reviews (store_id, product_id, (COALESCE(reviewed_at, created_at)) DESC, id DESC) WHERE status = 'approved' AND parent_review_id IS NULL;
 CREATE UNIQUE INDEX review_media_assets_position_active_idx ON chaos_commerce.review_media_assets (store_id, review_id, position) WHERE archived_at IS NULL;
 CREATE INDEX review_media_assets_review_idx ON chaos_commerce.review_media_assets (store_id, review_id, position, media_asset_id);
 CREATE INDEX review_media_assets_media_asset_idx ON chaos_commerce.review_media_assets (store_id, media_asset_id, review_id);

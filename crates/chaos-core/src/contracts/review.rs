@@ -39,6 +39,12 @@ pub struct ReviewSummary {
     pub updated_at: OffsetDateTime,
 }
 
+#[derive(Clone, Copy)]
+pub struct ReviewPageCursor {
+    pub sort_at: OffsetDateTime,
+    pub id: ReviewId,
+}
+
 pub struct SubmitReviewRecord {
     pub id: ReviewId,
     pub store_id: StoreId,

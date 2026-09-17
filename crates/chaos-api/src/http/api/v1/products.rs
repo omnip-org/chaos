@@ -6,15 +6,16 @@ use axum::{
     routing::{get, post},
 };
 use chaos_core::contracts::{
-    StorefrontCatalogProduct, StorefrontCatalogVariant, StorefrontMediaAsset, StorefrontMediaScope,
-    StorefrontProductCollection, StorefrontProductOption, StorefrontProductOptionValue,
-    StorefrontRatingSummary, StorefrontSelectedOption,
+    ReviewPageCursor, StorefrontCatalogProduct, StorefrontCatalogVariant, StorefrontMediaAsset,
+    StorefrontMediaScope, StorefrontProductCollection, StorefrontProductOption,
+    StorefrontProductOptionValue, StorefrontRatingSummary, StorefrontSelectedOption,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::http::shared::pagination::{
-    CursorKind, decode_cursor, encode_cursor, page_limit, page_meta,
+    CursorKind, decode_cursor, decode_review_cursor, encode_cursor, encode_review_cursor,
+    page_limit, page_meta,
 };
 use crate::http::{
     ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, PublishableChannel,
@@ -407,9 +408,8 @@ mod list_reviews {
         let after = query
             .cursor
             .as_deref()
-            .map(|value| decode_cursor(value, CursorKind::Review))
-            .transpose()?
-            .map(ReviewId::from_uuid);
+            .map(decode_review_cursor)
+            .transpose()?;
         let page = state
             .storefront_reviews
             .list_for_product(&actor, ProductId::from_uuid(path.product_id), after, limit)
@@ -421,7 +421,12 @@ mod list_reviews {
                     .iter()
                     .rev()
                     .find(|item| item.parent_review_id.is_none())
-                    .map(|item| encode_cursor(item.id.as_uuid(), CursorKind::Review))
+                    .map(|item| {
+                        encode_review_cursor(ReviewPageCursor {
+                            sort_at: item.reviewed_at.unwrap_or(item.created_at),
+                            id: item.id,
+                        })
+                    })
             })
             .flatten();
         Ok(ApiResponse::ok(nest_replies(page.items))

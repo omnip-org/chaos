@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use crate::{
     ApplicationError,
     contracts::{
-        AdminActor, CreateManualReviewRecord, MachineActor, ReviewMediaSummary, ReviewSummary,
+        AdminActor, CreateManualReviewRecord, MachineActor, ReviewMediaSummary, ReviewPageCursor,
+        ReviewSummary,
     },
     error::database_error,
 };
@@ -315,7 +316,7 @@ impl PostgresReviewRepository {
         &self,
         actor: &MachineActor,
         product_id: ProductId,
-        after: Option<ReviewId>,
+        after: Option<ReviewPageCursor>,
         limit: u16,
     ) -> Result<Vec<ReviewSummary>, ApplicationError> {
         let mut tx = self.begin_machine(actor).await?;
@@ -326,12 +327,13 @@ impl PostgresReviewRepository {
              FROM chaos_commerce.reviews \
              WHERE store_id=$1 AND product_id=$2 \
                AND status='approved' AND parent_review_id IS NULL \
-               AND ($3::uuid IS NULL OR id < $3) \
-             ORDER BY id DESC LIMIT $4",
+               AND ($3::timestamptz IS NULL OR (COALESCE(reviewed_at, created_at), id) < ($3, $4)) \
+             ORDER BY COALESCE(reviewed_at, created_at) DESC, id DESC LIMIT $5",
         )
         .bind(actor.store_id.as_uuid())
         .bind(product_id.as_uuid())
-        .bind(after.map(ReviewId::as_uuid))
+        .bind(after.map(|cursor| cursor.sort_at))
+        .bind(after.map(|cursor| cursor.id.as_uuid()))
         .bind(i64::from(limit))
         .fetch_all(&mut *tx)
         .await

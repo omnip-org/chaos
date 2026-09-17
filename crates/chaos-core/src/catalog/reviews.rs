@@ -13,7 +13,7 @@ use time::OffsetDateTime;
 use crate::{
     ApplicationError,
     adapters::postgres::PostgresReviewRepository,
-    contracts::{AdminActor, MachineActor, ReviewSummary},
+    contracts::{AdminActor, MachineActor, ReviewPageCursor, ReviewSummary},
     store::Page,
 };
 
@@ -265,7 +265,7 @@ impl StorefrontReviews {
         &self,
         actor: &MachineActor,
         product_id: ProductId,
-        after: Option<ReviewId>,
+        after: Option<ReviewPageCursor>,
         limit: u16,
     ) -> Result<Page<ReviewSummary>, ApplicationError> {
         actor.require_sales_channel()?;

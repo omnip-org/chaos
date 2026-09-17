@@ -65,7 +65,10 @@ pub use media::{
 pub use pricing::{PriceListDetail, PriceListMutationSnapshot, PriceListReadItem, PriceReadItem};
 pub use provider_secret::{IntegrationSecretResolver, ProviderSecretKind, ProviderSecretWriter};
 pub use publishable_key::{GeneratedPublishableKey, MachineActor, PublishableKeyListItem};
-pub use review::{CreateManualReviewRecord, ReviewMediaSummary, ReviewSummary, SubmitReviewRecord};
+pub use review::{
+    CreateManualReviewRecord, ReviewMediaSummary, ReviewPageCursor, ReviewSummary,
+    SubmitReviewRecord,
+};
 pub use sales::{
     CartDetail, CartLineItem, CheckoutDraft, OrderDetail, OrderFulfillmentItem, OrderLineItem,
     OrderListFilter, OrderPage, OrderPaymentAttemptItem, OrderRefundItem,
