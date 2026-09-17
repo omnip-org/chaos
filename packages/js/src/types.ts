@@ -118,6 +118,8 @@ export interface Review {
   status: "approved";
   is_staff_reply: boolean;
   verified_buyer: boolean;
+  /** Original calendar date for an imported review, when supplied by its source. */
+  reviewed_on?: string;
   created_at: string;
   updated_at: string;
   replies?: Review[];

@@ -61,6 +61,9 @@ pub struct CreateManualReviewParams {
     /// An internal conversation or ticket reference. Do not put the full private message here.
     #[serde(default)]
     pub source_reference: Option<String>,
+    /// Original calendar date of the customer review (YYYY-MM-DD). Omit when unknown.
+    #[serde(default)]
+    pub reviewed_on: Option<String>,
     /// Must be explicitly set to true. This creates a pending review.
     pub confirm: bool,
 }
@@ -132,6 +135,10 @@ impl ChaosMcp {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
         };
+        let reviewed_on = match parse_review_date(params.reviewed_on.as_deref()) {
+            Ok(date) => date,
+            Err(result) => return Ok(result),
+        };
         let store_id = actor.store_id();
         match self
             .state
@@ -147,6 +154,7 @@ impl ChaosMcp {
                 author_email: params.author_email,
                 source_channel: params.source_channel,
                 source_reference: params.source_reference,
+                reviewed_on,
                 now: self.state.clock.now(),
             })
             .await
@@ -380,6 +388,7 @@ fn review_summary(item: chaos_core::contracts::ReviewSummary) -> serde_json::Val
         "origin": item.origin.as_str(),
         "source_channel": item.source_channel,
         "source_reference": item.source_reference,
+        "reviewed_on": item.reviewed_on.map(|date| date.to_string()),
         "images": item.images.into_iter().map(review_image).collect::<Vec<_>>(),
         "created_at": format_time(item.created_at),
         "updated_at": format_time(item.updated_at),
@@ -400,4 +409,33 @@ fn review_image(item: chaos_core::contracts::ReviewMediaSummary) -> serde_json::
 
 fn parse_uuid_cursor(value: &str) -> Result<uuid::Uuid, CallToolResult> {
     parse_uuid_field(value, "cursor")
+}
+
+fn parse_review_date(value: Option<&str>) -> Result<Option<time::Date>, CallToolResult> {
+    let format = time::format_description::parse_borrowed::<2>("[year]-[month]-[day]")
+        .expect("valid review date format");
+    value
+        .map(|value| {
+            time::Date::parse(value, &format[..]).map_err(|_| {
+                CallToolResult::structured_error(json!({
+                    "code": "invalid_params",
+                    "message": "reviewed_on must be a calendar date in YYYY-MM-DD format",
+                }))
+            })
+        })
+        .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_review_date;
+
+    #[test]
+    fn manual_review_date_keeps_the_source_calendar_day() {
+        let date = parse_review_date(Some("2026-09-10")).unwrap().unwrap();
+        assert_eq!(date.to_string(), "2026-09-10");
+        assert!(parse_review_date(Some("2026-02-30")).is_err());
+        assert!(parse_review_date(Some("2026-09-10T00:00:00Z")).is_err());
+        assert!(parse_review_date(None).unwrap().is_none());
+    }
 }

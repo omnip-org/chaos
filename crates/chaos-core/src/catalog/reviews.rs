@@ -8,7 +8,7 @@ use chaos_domain::{
     identity::Email,
     store::StoreId,
 };
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 
 use crate::{
     ApplicationError,
@@ -39,6 +39,7 @@ pub struct CreateManualReviewInput {
     pub author_email: Option<String>,
     pub source_channel: String,
     pub source_reference: Option<String>,
+    pub reviewed_on: Option<Date>,
     pub now: OffsetDateTime,
 }
 
@@ -112,6 +113,12 @@ impl ReviewAdministration {
         input: CreateManualReviewInput,
     ) -> Result<ReviewId, ApplicationError> {
         input.actor.require_human()?;
+        if input
+            .reviewed_on
+            .is_some_and(|date| date > input.now.date())
+        {
+            return Err(validation("reviewed_on", "must not be in the future"));
+        }
         let source_channel = input.source_channel.trim().to_owned();
         validate_bounded_text(&source_channel, "source_channel", 80)?;
         let source_reference = input.source_reference.map(|value| value.trim().to_owned());
@@ -137,6 +144,7 @@ impl ReviewAdministration {
                     content,
                     source_channel,
                     source_reference,
+                    reviewed_on: input.reviewed_on,
                     created_by_user_id: input.actor.audit_user_id(),
                     created_at: input.now,
                 },
