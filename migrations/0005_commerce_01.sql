@@ -272,7 +272,7 @@ CREATE TABLE chaos_commerce.reviews (
     origin                        chaos_commerce.review_origin  NOT NULL DEFAULT 'storefront',
     source_channel                TEXT,
     source_reference              TEXT,
-    reviewed_on                   TIMESTAMPTZ,
+    reviewed_at                   TIMESTAMPTZ,
     created_by_user_id            UUID,
     approved_at                   TIMESTAMPTZ,
     created_at                    TIMESTAMPTZ                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -290,7 +290,7 @@ CREATE TABLE chaos_commerce.reviews (
     CONSTRAINT reviews_verified_buyer_requires_approval_check CHECK (NOT verified_buyer OR status = 'approved'),
     CONSTRAINT reviews_source_channel_check                   CHECK (source_channel IS NULL OR (length(trim(source_channel)) BETWEEN 1 AND 80 AND source_channel !~ '[[:cntrl:]]')),
     CONSTRAINT reviews_source_reference_check                 CHECK (source_reference IS NULL OR (length(trim(source_reference)) BETWEEN 1 AND 255 AND source_reference !~ '[[:cntrl:]]')),
-    CONSTRAINT reviews_reviewed_on_manual_check               CHECK (reviewed_on IS NULL OR (origin = 'manual' AND NOT is_staff_reply)),
+    CONSTRAINT reviews_reviewed_on_manual_check               CHECK (reviewed_at IS NULL OR (origin = 'manual' AND NOT is_staff_reply)),
     CONSTRAINT reviews_created_by_user_fkey                   FOREIGN KEY (created_by_user_id) REFERENCES chaos_identity.users (id),
     CONSTRAINT reviews_origin_provenance_check                CHECK (
         (
