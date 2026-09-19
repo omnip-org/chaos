@@ -98,6 +98,8 @@ export class ChaosStorefrontClient {
   readonly now: () => number;
   private shopperTokenCache: string | null = null;
   private pendingShopperSession: Promise<string> | null = null;
+  /** See `warnIfAnalyticsUnreachable`. */
+  private analyticsUnreachableWarned = false;
   /** True once this client mints its own session, so the `last_seen` refresh
    * (which only makes sense for a session that predates this page load) is
    * suppressed — the new session already recorded `last_seen == first_seen`. */
@@ -342,6 +344,7 @@ export class ChaosStorefrontClient {
 
   /** @internal Used by CartResource after a successful line mutation. */
   recordCartMutation(mutation: CartLineMutation): void {
+    this.warnIfAnalyticsUnreachable("recordCartMutation");
     try {
       this.analytics?.recordCartMutation(mutation);
     } catch {
@@ -351,6 +354,7 @@ export class ChaosStorefrontClient {
 
   /** @internal Used by PaymentsResource after a successful checkout creation. */
   recordCheckoutCreation(creation: EmbeddedCheckoutCreation): void {
+    this.warnIfAnalyticsUnreachable("recordCheckoutCreation");
     try {
       this.analytics?.recordCheckoutCreation(creation);
     } catch {
@@ -369,6 +373,7 @@ export class ChaosStorefrontClient {
       "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines"
     >,
   ): void {
+    this.warnIfAnalyticsUnreachable("recordConfirmedPurchase");
     try {
       this.analytics?.recordConfirmedPurchase(order);
     } catch {
@@ -376,8 +381,16 @@ export class ChaosStorefrontClient {
     }
   }
 
-  /** @internal Used by CatalogResource.listProducts when `q` is set. */
+  /**
+   * Projects a search to Meta Pixel/GA4. `CatalogResource.listProducts`
+   * calls this automatically when `q` is set. Call it again from a
+   * browser-hydrated component for a search-results page that resolves `q`
+   * server-side (e.g. an SSR-rendered `/products?q=...` route) — that
+   * automatic call runs with no browser present and can never reach Pixel/GA4
+   * from there.
+   */
   recordSearch(input: { query: string }): void {
+    this.warnIfAnalyticsUnreachable("recordSearch");
     try {
       this.analytics?.search(input);
     } catch {
@@ -393,11 +406,34 @@ export class ChaosStorefrontClient {
    * variant-level ids AddToCart/Purchase already report.
    */
   recordViewContent(input: ViewContentAnalyticsInput): void {
+    this.warnIfAnalyticsUnreachable("recordViewContent");
     try {
       this.analytics?.viewContent(input);
     } catch {
       // The product already loaded; analytics must remain best-effort.
     }
+  }
+
+  /**
+   * Warns once per client instance the first time a `record*` projection
+   * runs with no `document` and no `events` configured — a call from SSR
+   * (or any non-browser environment) can structurally never reach Meta
+   * Pixel/GA4, unlike a browser call with `events` simply left unset (a
+   * legitimate choice not to track), which never warns. This exists because
+   * every `record*` method is best-effort and silently no-ops otherwise —
+   * `catalog.getProduct`'s automatic ViewContent going unreported from an
+   * Astro/Next-style SSR data fetch is exactly the failure mode this catches.
+   */
+  private warnIfAnalyticsUnreachable(method: string): void {
+    if (this.analytics || typeof document !== "undefined" || this.analyticsUnreachableWarned) {
+      return;
+    }
+    this.analyticsUnreachableWarned = true;
+    console.warn(
+      `[chaos-js] ChaosStorefrontClient.${method}() ran with no \`document\` present, so it can ` +
+        "never reach Meta Pixel/GA4 from here (this is normal during SSR). Call the matching " +
+        "record* method again from a browser-hydrated component instead of relying on this call.",
+    );
   }
 
   private async requestWithShopperTokenRetry<

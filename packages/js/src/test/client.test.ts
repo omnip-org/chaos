@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { mock } from "node:test";
 
 import { ChaosStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
@@ -51,6 +51,49 @@ test("defers shopper session creation until a browser request needs it", async (
     assert.equal(requests.length, 2);
     assert.match(requests[0]!, /\/shopper\/sessions$/);
   } finally {
+    if (descriptor) {
+      Object.defineProperty(globalThis, "document", descriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "document");
+    }
+  }
+});
+
+test("warns once per client when a record* projection runs with no document", () => {
+  const warn = mock.method(console, "warn", () => {});
+  try {
+    const client = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      storage: null,
+      fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+    });
+
+    client.recordSearch({ query: "shoes" });
+    client.recordSearch({ query: "boots" });
+
+    assert.equal(warn.mock.callCount(), 1);
+    assert.match(String(warn.mock.calls[0]?.arguments[0]), /recordSearch/);
+  } finally {
+    warn.mock.restore();
+  }
+});
+
+test("does not warn when a browser document is present, even with no events configured", () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", { value: {}, configurable: true });
+  const warn = mock.method(console, "warn", () => {});
+  try {
+    const client = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      storage: null,
+      fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+    });
+
+    client.recordSearch({ query: "shoes" });
+
+    assert.equal(warn.mock.callCount(), 0);
+  } finally {
+    warn.mock.restore();
     if (descriptor) {
       Object.defineProperty(globalThis, "document", descriptor);
     } else {
