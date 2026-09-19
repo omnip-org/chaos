@@ -284,16 +284,16 @@ fn render_tracking_html(
     let muted_text_color = escape_html(&brand.muted_text_color);
     let text_color = escape_html(&brand.text_color);
     let number = escape_html(number);
-    let button = match url {
+    let number_html = match url {
         Some(url) => format!(
-            "<p style=\"margin:12px 0 0\"><a href=\"{}\" style=\"display:inline-block;background:{};color:#ffffff;text-decoration:none;border-radius:8px;padding:10px 16px\">Track your shipment</a></p>",
+            "<a href=\"{}\" style=\"color:{};font-weight:600;text-decoration:underline\">{number}</a>",
             escape_html(url),
             escape_html(&brand.primary_color),
         ),
-        None => String::new(),
+        None => format!("<span style=\"font-weight:600\">{number}</span>"),
     };
     format!(
-        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:0 0 24px;border:1px solid {border_color};border-radius:8px\"><tr><td style=\"padding:12px 16px;color:{muted_text_color};border-bottom:1px solid {border_color};font-weight:600\">Tracking</td></tr><tr><td style=\"padding:12px 16px;color:{text_color};font-size:14px\">{number}{button}</td></tr></table>"
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:0 0 24px;border-top:1px solid {border_color}\"><tr><td style=\"padding:16px 0 4px;color:{muted_text_color};font-size:12px;font-weight:600\">Tracking</td></tr><tr><td style=\"padding:0;color:{text_color};font-size:14px\">{number_html}</td></tr></table>"
     )
 }
 
@@ -325,13 +325,13 @@ fn render_brand_header_html(brand: &EmailBrandConfiguration) -> String {
     let brand_name = escape_html(&brand.brand_name);
     match brand.logo_url.as_deref() {
         Some(logo_url) => format!(
-            "<img src=\"{}\" alt=\"{}\" width=\"48\" height=\"48\" style=\"display:inline-block;vertical-align:middle;border:0;border-radius:12px;object-fit:contain;\" /><span style=\"display:inline-block;margin-left:12px;vertical-align:middle;line-height:48px;\">{}</span>",
+            "<img src=\"{}\" alt=\"{}\" width=\"36\" height=\"36\" style=\"display:inline-block;vertical-align:middle;border:0;border-radius:9px;object-fit:contain;\" /><span style=\"display:inline-block;margin-left:10px;vertical-align:middle;line-height:36px;\">{}</span>",
             escape_html(logo_url),
             brand_name,
             brand_name,
         ),
         None => format!(
-            "<span style=\"display:inline-block;line-height:48px;\">{}</span>",
+            "<span style=\"display:inline-block;line-height:36px;\">{}</span>",
             brand_name
         ),
     }
@@ -346,32 +346,31 @@ fn render_line_items_html(
     let muted_text_color = escape_html(&brand.muted_text_color);
     let text_color = escape_html(&brand.text_color);
     let mut rendered = format!(
-        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse:collapse;\"><thead><tr><th align=\"left\" style=\"padding:0 0 10px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Item</th><th align=\"center\" style=\"padding:0 8px 10px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Qty</th><th align=\"right\" style=\"padding:0 0 10px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Amount</th></tr></thead><tbody>"
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse:collapse;\"><thead><tr><th colspan=\"2\" align=\"left\" style=\"padding:0 0 8px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Item</th><th align=\"center\" style=\"padding:0 8px 8px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Qty</th><th align=\"right\" style=\"padding:0 0 8px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Amount</th></tr></thead><tbody>"
     );
     if items.is_empty() {
         rendered.push_str(&format!(
-            "<tr><td colspan=\"3\" style=\"padding:16px 0;color:{muted_text_color};font-size:14px;\">No item details available.</td></tr>"
+            "<tr><td colspan=\"4\" style=\"padding:12px 0;color:{muted_text_color};font-size:14px;\">No item details available.</td></tr>"
         ));
     } else {
         for item in items {
             let product_title = escape_html(&item.product_title);
             let variant_title = escape_html(&item.variant_title);
             let subtotal = escape_html(&format_money(item.subtotal_amount_minor, currency));
-            let sku = item
-                .sku
-                .as_deref()
-                .map(|sku| {
-                    format!(
-                        "<br /><span style=\"color:{muted_text_color};font-size:12px;\">SKU {}</span>",
-                        escape_html(sku),
-                    )
-                })
-                .unwrap_or_default();
+            let thumbnail = match item.image_url.as_deref() {
+                Some(image_url) => format!(
+                    "<img src=\"{}\" alt=\"\" width=\"44\" height=\"44\" style=\"display:block;border:0;border-radius:6px;object-fit:cover;\" />",
+                    escape_html(image_url),
+                ),
+                None => format!(
+                    "<div style=\"width:44px;height:44px;border-radius:6px;background:{border_color};\"></div>"
+                ),
+            };
             rendered.push_str(&format!(
-                "<tr><td style=\"padding:14px 0;border-bottom:1px solid {border_color};font-size:14px;color:{text_color};\"><strong>{}</strong><br /><span style=\"color:{muted_text_color};font-size:12px;\">{}{}</span></td><td align=\"center\" style=\"padding:14px 8px;border-bottom:1px solid {border_color};font-size:14px;color:{text_color};\">{}</td><td align=\"right\" style=\"padding:14px 0;border-bottom:1px solid {border_color};font-size:14px;color:{text_color};white-space:nowrap;\">{} {}</td></tr>",
+                "<tr><td width=\"44\" style=\"padding:12px 12px 12px 0;border-bottom:1px solid {border_color};\">{}</td><td style=\"padding:12px 0;border-bottom:1px solid {border_color};font-size:14px;color:{text_color};\"><div style=\"margin:0 0 4px;font-size:14px;font-weight:600;line-height:1.35;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;\">{}</div><span style=\"color:{muted_text_color};font-size:12px;\">{}</span></td><td align=\"center\" style=\"padding:12px 8px;border-bottom:1px solid {border_color};font-size:14px;color:{text_color};\">{}</td><td align=\"right\" style=\"padding:12px 0;border-bottom:1px solid {border_color};font-size:14px;color:{text_color};white-space:nowrap;\">{} {}</td></tr>",
+                thumbnail,
                 product_title,
                 variant_title,
-                sku,
                 item.quantity,
                 subtotal,
                 escape_html(currency),
@@ -446,7 +445,7 @@ fn render_discount_row_html(
     let amount = escape_html(&format!("-{amount}"));
     let currency = escape_html(currency);
     format!(
-        "<tr><td style=\"padding:8px 16px;color:{muted_text_color}\">Discount</td><td align=\"right\" style=\"padding:8px 16px;color:{text_color}\">{amount} {currency}</td></tr>"
+        "<tr><td style=\"padding:8px 0;color:{muted_text_color};font-size:14px\">Discount</td><td align=\"right\" style=\"padding:8px 0;color:{text_color};font-size:14px\">{amount} {currency}</td></tr>"
     )
 }
 
@@ -470,7 +469,7 @@ fn render_shipping_address_html(
     lines.push(escape_html(&address_locality_line(address)));
     lines.push(escape_html(address.country_code()));
     format!(
-        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:0 0 24px;border:1px solid {border_color};border-radius:8px\"><tr><td style=\"padding:12px 16px;color:{muted_text_color};border-bottom:1px solid {border_color};font-weight:600\">Shipping address</td></tr><tr><td style=\"padding:12px 16px;color:{text_color};font-size:14px;\">{}</td></tr></table>",
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:0 0 24px; solid {border_color}\"><tr><td style=\"padding:16px 0 4px;color:{muted_text_color};font-size:12px;font-weight:600\">Shipping address</td></tr><tr><td style=\"padding:0;color:{text_color};font-size:14px;\">{}</td></tr></table>",
         lines.join("<br />")
     )
 }
@@ -636,6 +635,7 @@ mod tests {
                     quantity: 2,
                     unit_price_amount_minor: 650,
                     subtotal_amount_minor: 1300,
+                    image_url: Some("https://cdn.example/tshirt.png?a=1&b=2".into()),
                 }],
                 shipping_address: Some(&shipping_address),
             },
@@ -660,6 +660,11 @@ mod tests {
         assert!(rendered.html.contains("0.99 USD"));
         assert!(rendered.html.contains("0.50 USD"));
         assert!(rendered.html.contains("Shipping address"));
+        assert!(
+            rendered
+                .html
+                .contains("https://cdn.example/tshirt.png?a=1&amp;b=2")
+        );
         assert!(rendered.html.contains("Buyer &amp; Co."));
         assert!(rendered.html.contains("1 Market &lt;Street&gt;"));
         assert!(
@@ -728,6 +733,7 @@ mod tests {
                     quantity: 1,
                     unit_price_amount_minor: 1234,
                     subtotal_amount_minor: 1234,
+                    image_url: None,
                 }],
                 shipping_address: None,
             },

@@ -345,7 +345,7 @@ impl PostgresEmailRepository {
             .configuration;
         let line_items = sqlx::query_as::<_, EmailOrderLineRow>(
             "SELECT product_title, variant_title, sku, quantity, \
-                    unit_price_amount_minor, subtotal_amount_minor \
+                    unit_price_amount_minor, subtotal_amount_minor, image_url \
              FROM chaos_commerce.order_lines \
              WHERE store_id = $1 AND order_id = $2 \
              ORDER BY position",
@@ -533,7 +533,7 @@ struct EmailFulfillmentUpdateRow {
     account_configuration: Value,
 }
 
-type EmailOrderLineRow = (String, String, Option<String>, i32, i64, i64);
+type EmailOrderLineRow = (String, String, Option<String>, i32, i64, i64, Option<String>);
 
 type EmailBrandRow = (String, Value);
 
@@ -676,6 +676,7 @@ fn email_order_line_item(row: EmailOrderLineRow) -> EmailOrderLineItem {
         quantity: row.3,
         unit_price_amount_minor: row.4,
         subtotal_amount_minor: row.5,
+        image_url: row.6,
     }
 }
 

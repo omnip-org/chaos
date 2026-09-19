@@ -82,6 +82,7 @@ pub struct EmailOrderLineItem {
     pub quantity: i32,
     pub unit_price_amount_minor: i64,
     pub subtotal_amount_minor: i64,
+    pub image_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
