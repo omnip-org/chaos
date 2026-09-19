@@ -99,6 +99,7 @@ impl MetaCapiWorker {
     async fn deliver(&self, payload: &Value) -> Result<(), ApplicationError> {
         let store_id = topic_uuid(payload, "store_id")?;
         let Some(account) = self.repository.resolve_meta_account(store_id).await? else {
+            tracing::info!(%store_id, "capi delivery skipped: no enabled meta destination");
             return Ok(());
         };
         // Every analytics topic payload carries an explicit event_id: for the
@@ -130,10 +131,18 @@ impl MetaCapiWorker {
             shopper_id,
             properties,
         };
-        self.destination
+        let receipt = self
+            .destination
             .send(&command)
             .await
             .map_err(|error| ApplicationError::Unexpected(anyhow::anyhow!(error.message)))?;
+        tracing::info!(
+            %store_id,
+            %event_id,
+            event_name = %command.event_name,
+            provider_reference = ?receipt.provider_reference,
+            "capi delivery sent"
+        );
         Ok(())
     }
 }
