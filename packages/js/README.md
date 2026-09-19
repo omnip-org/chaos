@@ -146,11 +146,15 @@ ignore both.
 There are exactly six events — `page_view`, `view_content`, `search`,
 `add_to_cart`, `initiate_checkout`, `purchase` — and this SDK is the only
 thing that ever emits them client-side; there is no store-facing
-custom-event API. All six project straight to the configured Meta Pixel and
-GA4 as they happen — there is no queue, no batching, and no chaos-owned
-analytics ledger; provider scripts are optional and load immediately when
-configured. GA4 automatic PageView collection stays disabled; Chaos maps
-semantic events to GA4 ecommerce names.
+custom-event API. Five of the six project straight to the configured Meta
+Pixel and GA4 as they happen — there is no queue, no batching, and no
+chaos-owned analytics ledger; provider scripts are optional and load
+immediately when configured. `page_view` is GA4-only: it is not one of
+Meta's Standard Events (the base Pixel snippet fires it for traffic
+counting, but it isn't part of the commerce funnel Meta optimizes ads
+against the way `view_content`/`add_to_cart`/`purchase` are), so this SDK
+never sends it to Meta Pixel. GA4 automatic PageView collection stays
+disabled; Chaos maps semantic events to GA4 ecommerce names.
 
 `chaos.cart`/`chaos.catalog`/`chaos.payments` project `AddToCart`/
 `Search`/`ViewContent`/`InitiateCheckout` automatically after the matching
@@ -163,6 +167,27 @@ variant is supplied. For `AddToCart` and `InitiateCheckout` the Pixel copy
 reuses the server-minted event id chaos-rust returns (in the cart-mutation
 response and `checkout.event_id`), so Meta deduplicates it against the
 server-side CAPI copy; the other four events mint their id in the browser.
+
+`catalog.getProduct`'s automatic `ViewContent` only knows the product's
+*first* variant — it has no way to know which one the shopper will actually
+see, since picking a different variant on the page (a color swatch, a size
+selector) is a local UI state change with no further request for the SDK to
+hook into. Call `chaos.recordViewContent` again once the shopper picks one:
+
+```ts
+chaos.recordViewContent({
+  productId: product.id,
+  productVariantId: selectedVariant.id,
+  priceMinor: selectedVariant.price.amount_minor,
+  currency: selectedVariant.price.currency,
+});
+```
+
+Skipping this leaves every `ViewContent` at the product level while
+`AddToCart`/`Purchase` report at the variant level, which breaks Meta's
+catalog matching for dynamic ads and "viewed but not bought" retargeting on
+any product with more than one variant. `priceMinor`/`currency` are required
+on every call, validated the same way `AddToCart`/`Purchase` already are.
 
 `purchase` is a projection, not a first-party fact: the SDK never infers it
 from browser activity, only from a confirmed, paid order the storefront
@@ -199,6 +224,12 @@ await chaos.payments.createEmbeddedCheckoutWithCart(cart.data.id, {
 `chaos-rust` re-validates and bounds whatever it stores, and drops anything
 malformed rather than failing the checkout over it — attribution is
 enrichment for ad platforms, never a condition of a successful purchase.
+
+`view_content` and `page_view` never reach CAPI — only the browser
+Pixel/GA4 projections above carry them. That is a deliberate scope decision
+(catalog-browsing signals stay client-side; the funnel events that need
+server-side resilience against ad blockers and Safari ITP are the three
+above), not a gap to route around by adding them here.
 
 ### Guest order lookup
 

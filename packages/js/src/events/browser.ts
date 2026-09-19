@@ -10,6 +10,7 @@ import {
   addToCartEventData,
   initiateCheckoutEventData,
   purchaseEventData,
+  viewContentEventData,
   type MetaCommerceEventData,
 } from "./meta-payload.js";
 import type {
@@ -17,6 +18,7 @@ import type {
   AnalyticsCommerceItem,
   InitiateCheckoutAnalyticsInput,
   PurchaseAnalyticsInput,
+  ViewContentAnalyticsInput,
 } from "./types.js";
 
 /**
@@ -33,6 +35,11 @@ import type {
  * share their Meta `custom_data` shape via `./meta-payload.js`; GA4's field
  * names differ enough per event that they stay inlined below instead of
  * adding a second shared mapper for one caller each.
+ *
+ * page_view is GA4-only: it is not one of Meta's Standard Events (the base
+ * Pixel snippet fires it for traffic counting, but Meta's ads/optimization
+ * surfaces don't recognize it as a standard event the way ViewContent is), so
+ * it is never projected to Meta Pixel here.
  */
 
 const META_FBC_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
@@ -139,7 +146,6 @@ export class ChaosStorefrontAnalytics {
     const path = input.path ?? this.documentRef.location?.pathname ?? "/";
     const title = input.title ?? nonEmpty(this.documentRef.title);
     const eventId = this.randomUUID();
-    this.destinations.pixel("PageView", eventId, { page_path: path });
     this.destinations.ga4(
       "page_view",
       compact({ event_id: eventId, page_path: path, page_title: title }),
@@ -258,22 +264,23 @@ export class ChaosStorefrontAnalytics {
     );
   }
 
-  viewContent({
-    productId,
-    productVariantId,
-  }: {
-    productId: string;
-    productVariantId?: string;
-  }): string {
-    const contentId = productVariantId ?? productId;
+  /**
+   * Records a product view. Pass `productVariantId` once the shopper has
+   * picked a specific variant (e.g. a color swatch) — otherwise ViewContent's
+   * `content_ids` stay at the product level, while AddToCart/Purchase report
+   * variant-level ids, breaking Meta's catalog matching for dynamic ads and
+   * "viewed but not bought" retargeting.
+   */
+  viewContent(input: ViewContentAnalyticsInput): string {
+    validateMoney(input.priceMinor, input.currency);
     const eventId = this.randomUUID();
-    this.destinations.pixel("ViewContent", eventId, {
-      content_ids: [contentId],
-      content_type: "product",
-    });
+    const eventData = viewContentEventData(input);
+    this.destinations.pixel("ViewContent", eventId, eventData);
     this.destinations.ga4("view_item", {
       event_id: eventId,
-      items: [{ item_id: contentId }],
+      value: eventData.value,
+      currency: eventData.currency,
+      items: toGa4Items(eventData.contents),
     });
     return eventId;
   }

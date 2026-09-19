@@ -16,6 +16,7 @@ import { OrdersResource } from "./resources/orders.js";
 import { PaymentsResource } from "./resources/payments.js";
 import { ReviewsResource } from "./resources/reviews.js";
 import { ShopperSessionResource } from "./resources/shopper-session.js";
+import type { ViewContentAnalyticsInput } from "./events/types.js";
 import type {
   CartLineMutation,
   EmbeddedCheckoutCreation,
@@ -384,8 +385,14 @@ export class ChaosStorefrontClient {
     }
   }
 
-  /** @internal Used by CatalogResource.getProduct. */
-  recordViewContent(input: { productId: string; productVariantId?: string }): void {
+  /**
+   * Projects a product view to Meta Pixel/GA4. `CatalogResource.getProduct`
+   * calls this automatically with the product's first variant's price; call
+   * it again with the shopper's actual `productVariantId` once they pick one
+   * (e.g. a color swatch) so ViewContent's `content_ids` line up with the
+   * variant-level ids AddToCart/Purchase already report.
+   */
+  recordViewContent(input: ViewContentAnalyticsInput): void {
     try {
       this.analytics?.viewContent(input);
     } catch {

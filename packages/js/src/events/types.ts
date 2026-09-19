@@ -41,3 +41,17 @@ export interface InitiateCheckoutAnalyticsInput {
   currency: CurrencyCode;
   items: AnalyticsCommerceItem[];
 }
+
+/**
+ * Canonical browser projection of a product view. `productVariantId` is
+ * optional because the first, automatic call (from `CatalogResource.getProduct`)
+ * only knows the product, not which variant the shopper will pick — pass it
+ * on a later, explicit call once they choose one, so `content_ids` lines up
+ * with the variant-level ids AddToCart/Purchase already report.
+ */
+export interface ViewContentAnalyticsInput {
+  productId: UUID;
+  productVariantId?: UUID;
+  priceMinor: number;
+  currency: CurrencyCode;
+}

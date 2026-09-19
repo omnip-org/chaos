@@ -4,6 +4,7 @@ import type {
   AnalyticsCommerceItem,
   InitiateCheckoutAnalyticsInput,
   PurchaseAnalyticsInput,
+  ViewContentAnalyticsInput,
 } from "./types.js";
 
 /**
@@ -71,6 +72,24 @@ export function purchaseEventData(
   input: PurchaseAnalyticsInput,
 ): MetaCommerceEventData {
   return commerceEventData(input);
+}
+
+/** @internal */
+export function viewContentEventData(
+  input: ViewContentAnalyticsInput,
+): MetaCommerceEventData {
+  return commerceEventData({
+    valueMinor: input.priceMinor,
+    currency: input.currency,
+    items: [
+      {
+        productId: input.productId,
+        productVariantId: input.productVariantId ?? input.productId,
+        quantity: 1,
+        priceMinor: input.priceMinor,
+      },
+    ],
+  });
 }
 
 function commerceEventData(

@@ -189,6 +189,8 @@ test("keeps one stable provider event identity", () => {
   const eventId = environment.analytics.viewContent({
     productId: "00000000-0000-4000-8000-000000000200",
     productVariantId: "00000000-0000-4000-8000-000000000100",
+    priceMinor: 1999,
+    currency: "USD",
   });
   const metaTrack = fbqCalls(environment.window).find(
     (call) => call[1] === "ViewContent",
@@ -414,25 +416,32 @@ test("maps browser Meta standard event payloads", () => {
   const environment = harness({
     providers: { metaPixel: { pixelId: "12345" } },
   });
-  const pageViewId = environment.analytics.pageView({
+  environment.analytics.pageView({
     path: "/products",
     title: "Shoes",
   });
   const viewContentId = environment.analytics.viewContent({
     productId: "product-1",
     productVariantId: "variant-1",
+    priceMinor: 1999,
+    currency: "USD",
   });
   const searchId = environment.analytics.search({ query: "shoes" });
   const calls = fbqCalls(environment.window);
   const findCall = (name: string) => calls.find((call) => call[1] === name);
 
-  assert.deepEqual(findCall("PageView")?.[2], { page_path: "/products" });
+  // page_view is GA4-only: it is not a Meta Standard Event, so it never
+  // reaches fbq (see the class doc comment on ChaosStorefrontAnalytics).
+  assert.equal(findCall("PageView"), undefined);
   assert.deepEqual(findCall("ViewContent")?.[2], {
+    value: 19.99,
+    currency: "USD",
     content_ids: ["variant-1"],
     content_type: "product",
+    contents: [{ id: "variant-1", quantity: 1, item_price: 19.99 }],
+    num_items: 1,
   });
   assert.deepEqual(findCall("Search")?.[2], { search_string: "shoes" });
-  assert.deepEqual(findCall("PageView")?.[3], { eventID: pageViewId });
   assert.deepEqual(findCall("ViewContent")?.[3], { eventID: viewContentId });
   assert.deepEqual(findCall("Search")?.[3], { eventID: searchId });
 });

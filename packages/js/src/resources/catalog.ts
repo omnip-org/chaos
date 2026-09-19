@@ -35,12 +35,24 @@ export class CatalogResource {
     return response;
   }
 
+  /**
+   * Fires ViewContent for the product's first variant — a placeholder until
+   * the shopper picks one. Call `client.recordViewContent` again with the
+   * chosen `productVariantId` once they do (see events/types.ts).
+   */
   async getProduct(handle: string, params: GetProductParams = {}): Promise<DataEnvelope<Product>> {
     const response = await this.client.request<DataEnvelope<Product>, GetProductParams>(
       `/products/${encodeURIComponent(handle)}`,
       { method: "GET", query: params },
     );
-    this.client.recordViewContent({ productId: response.data.id });
+    const [defaultVariant] = response.data.variants;
+    if (defaultVariant) {
+      this.client.recordViewContent({
+        productId: response.data.id,
+        priceMinor: defaultVariant.price.amount_minor,
+        currency: defaultVariant.price.currency,
+      });
+    }
     return response;
   }
 
