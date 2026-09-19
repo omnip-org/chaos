@@ -113,9 +113,22 @@ function ga4Calls(window: unknown): unknown[][] {
   );
 }
 
+function ga4SetCalls(window: unknown): unknown[][] {
+  return (window as { dataLayer: unknown[][] }).dataLayer.filter(
+    (call) => call[0] === "set",
+  );
+}
+
 function fbqCalls(window: unknown): unknown[][] {
   return (window as { fbq: { queue: unknown[][] } }).fbq.queue.filter(
     (call) => call[0] === "track",
+  );
+}
+
+/** Advanced-matching re-inits only — excludes the plain `init(pixelId)` from `startMeta`. */
+function fbqAdvancedMatchingCalls(window: unknown): unknown[][] {
+  return (window as { fbq: { queue: unknown[][] } }).fbq.queue.filter(
+    (call) => call[0] === "init" && call.length > 2,
   );
 }
 
@@ -504,5 +517,47 @@ test("uses the zero-decimal MGA currency scale in browser Meta payloads", () => 
     currency: "MGA",
     contents: [{ id: "variant-1", quantity: 1, item_price: 1_299 }],
     num_items: 1,
+  });
+});
+
+test("setShopperId hashes the shopper id into Meta's external_id", async () => {
+  const environment = harness({
+    providers: { metaPixel: { pixelId: "12345" } },
+  });
+  environment.analytics.setShopperId(
+    "01a0b983-9909-7990-a021-01afc9aab9c8",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const calls = fbqAdvancedMatchingCalls(environment.window);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0]?.[1], "12345");
+  assert.deepEqual(calls[0]?.[2], {
+    // sha256("01a0b983-9909-7990-a021-01afc9aab9c8"), matching chaos-rust's
+    // `sha256_hex(shopper_id.to_string())` in adapters/integrations/analytics/meta.rs
+    external_id:
+      "40a1c55e0d9ff00791dbd957c2505a2ba85be3e4af228393ae7ae06e7caa9dbd",
+  });
+});
+
+test("setShopperId ignores a repeated call for the same shopper id", async () => {
+  const environment = harness({
+    providers: { metaPixel: { pixelId: "12345" } },
+  });
+  environment.analytics.setShopperId("01a0b983-9909-7990-a021-01afc9aab9c8");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  environment.analytics.setShopperId("01a0b983-9909-7990-a021-01afc9aab9c8");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(fbqAdvancedMatchingCalls(environment.window).length, 1);
+});
+
+test("setShopperId sets GA4's User-ID synchronously with the raw shopper id", () => {
+  const environment = harness({
+    providers: { ga4: { measurementId: "G-TEST1234" } },
+  });
+  environment.analytics.setShopperId("01a0b983-9909-7990-a021-01afc9aab9c8");
+  const calls = ga4SetCalls(environment.window);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0]?.[1], {
+    user_id: "01a0b983-9909-7990-a021-01afc9aab9c8",
   });
 });

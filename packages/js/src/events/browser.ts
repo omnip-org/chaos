@@ -5,6 +5,7 @@ import {
   isValidMetaBrowserId,
   MAX_META_BROWSER_ID_LENGTH,
 } from "../internal/meta.js";
+import { sha256Hex } from "../internal/sha256.js";
 import type { CartLineMutation, EmbeddedCheckoutCreation, OrderLookup } from "../types.js";
 import {
   addToCartEventData,
@@ -90,6 +91,8 @@ export class ChaosStorefrontAnalytics {
   private running = false;
   private readonly onRouteChange = () => this.pageView();
   private restoreHistory: (() => void) | null = null;
+  /** The shopper id currently being (or last) hashed for `setShopperId`. */
+  private externalIdSource: string | null = null;
 
   constructor(options: AnalyticsOptions) {
     if (!options?.publishableKey) {
@@ -139,6 +142,32 @@ export class ChaosStorefrontAnalytics {
     this.windowRef.removeEventListener("popstate", this.onRouteChange);
     this.restoreHistory?.();
     this.restoreHistory = null;
+  }
+
+  /**
+   * Feeds the shopper id to both providers' cross-session identity features.
+   * GA4's User-ID takes the raw id directly — unlike Meta, it's an opaque
+   * join key, not hashed PII, so it's set synchronously with no extra work.
+   * Meta CAPI hashes the same canonical `shopper_id` into `external_id` (see
+   * `meta_user_data` in `adapters/integrations/analytics/meta.rs`); this
+   * hashes it the same way for Pixel's Advanced Matching so the browser and
+   * server copies of an event resolve to the same Meta identity. Both are
+   * best-effort: a missing/unavailable Web Crypto API just leaves Pixel
+   * without its half.
+   */
+  setShopperId(shopperId: string | undefined): void {
+    if (!shopperId || shopperId === this.externalIdSource) return;
+    this.externalIdSource = shopperId;
+    this.destinations.setGa4UserId(shopperId);
+    sha256Hex(shopperId)
+      .then((hash) => {
+        if (this.externalIdSource === shopperId) {
+          this.destinations.setExternalId(hash);
+        }
+      })
+      .catch(() => {
+        // Web Crypto unavailable or hashing failed; Pixel just runs without it.
+      });
   }
 
   pageView(input: PageViewInput = {}): string {
@@ -472,6 +501,38 @@ class AnalyticsDestinations {
       this.windowRef.fbq?.("track", eventName, params, { eventID: eventId });
     } catch (error) {
       this.reportError(error, eventName, eventId);
+    }
+  }
+
+  /**
+   * Re-issues Meta's `fbq("init", ...)` with Advanced Matching's
+   * `external_id`, which Meta documents as safe to call again to update
+   * matching info — it does not re-fire an automatic PageView the way the
+   * full base snippet's init would, since this SDK never uses that snippet.
+   */
+  setExternalId(hash: string): void {
+    if (!this.metaStarted || !this.options?.metaPixel) return;
+    try {
+      this.windowRef.fbq?.("init", this.options.metaPixel.pixelId, {
+        external_id: hash,
+      });
+    } catch (error) {
+      this.reportError(error, "AdvancedMatching", undefined);
+    }
+  }
+
+  /**
+   * Sets GA4's User-ID for cross-session/cross-device reporting. Requires
+   * the User-ID feature to be turned on for the GA4 property (a dashboard
+   * setting, not something this SDK can flip) — sending it without that
+   * enabled is harmless, GA4 just won't use it for reporting.
+   */
+  setGa4UserId(shopperId: string): void {
+    if (!this.ga4Started) return;
+    try {
+      this.windowRef.gtag?.("set", { user_id: shopperId });
+    } catch (error) {
+      this.reportError(error, "UserId", undefined);
     }
   }
 

@@ -29,6 +29,22 @@ const CART_ID_STORAGE_PREFIX = "chaos.storefront.cart_id";
 const DEFAULT_CART_SNAPSHOT_TTL_MS = 30_000;
 
 /**
+ * The shopper token is `shopper.<shopper_id as a simple, undashed UUID>.<hmac>`
+ * (see `HmacShopperCredentialCodec::issue` in chaos-rust) — the id is right
+ * there, so there is no need for a separate response field or storage key.
+ * Re-dashed into canonical form to match `Uuid::to_string()`, the exact
+ * string chaos-rust hashes into Meta CAPI's `external_id`.
+ */
+function shopperIdFromToken(token: string): string | undefined {
+  const parts = token.split(".");
+  const simple = parts[1];
+  if (parts.length !== 3 || parts[0] !== "shopper" || !simple || !/^[0-9a-f]{32}$/.test(simple)) {
+    return undefined;
+  }
+  return `${simple.slice(0, 8)}-${simple.slice(8, 12)}-${simple.slice(12, 16)}-${simple.slice(16, 20)}-${simple.slice(20)}`;
+}
+
+/**
  * Meta Pixel/GA4 event delivery, keyed by destination: pass `metaPixel` to
  * turn on Pixel, `ga4` to turn on GA4, omit either to leave it off — there
  * is no separate enable flag.
@@ -163,6 +179,9 @@ export class ChaosStorefrontClient {
     } catch {
       this.shopperTokenCache = null;
     }
+    if (this.shopperTokenCache) {
+      this.analytics?.setShopperId(shopperIdFromToken(this.shopperTokenCache));
+    }
 
     // One capture per page load: first touch (once) and last touch (every
     // load that carries utm_*). Later checkout / AddToCart / session-refresh
@@ -195,6 +214,9 @@ export class ChaosStorefrontClient {
       }
     } catch {
       // Storage is optional; the in-memory token remains usable.
+    }
+    if (token) {
+      this.analytics?.setShopperId(shopperIdFromToken(token));
     }
   }
 
