@@ -533,7 +533,15 @@ struct EmailFulfillmentUpdateRow {
     account_configuration: Value,
 }
 
-type EmailOrderLineRow = (String, String, Option<String>, i32, i64, i64, Option<String>);
+type EmailOrderLineRow = (
+    String,
+    String,
+    Option<String>,
+    i32,
+    i64,
+    i64,
+    Option<String>,
+);
 
 type EmailBrandRow = (String, Value);
 
