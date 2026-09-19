@@ -293,7 +293,7 @@ fn render_tracking_html(
         None => format!("<span style=\"font-weight:600\">{number}</span>"),
     };
     format!(
-        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:0 0 24px;border-top:1px solid {border_color}\"><tr><td style=\"padding:16px 0 4px;color:{muted_text_color};font-size:12px;font-weight:600\">Tracking</td></tr><tr><td style=\"padding:0;color:{text_color};font-size:14px\">{number_html}</td></tr></table>"
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:0 0 24px;font-family:Arial,Helvetica,sans-serif;border-top:1px solid {border_color}\"><tr><td style=\"padding:16px 0 4px;color:{muted_text_color};font-size:12px;font-weight:600\">Tracking</td></tr><tr><td style=\"padding:0;color:{text_color};font-size:14px\">{number_html}</td></tr></table>"
     )
 }
 
@@ -346,7 +346,7 @@ fn render_line_items_html(
     let muted_text_color = escape_html(&brand.muted_text_color);
     let text_color = escape_html(&brand.text_color);
     let mut rendered = format!(
-        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse:collapse;\"><thead><tr><th colspan=\"2\" align=\"left\" style=\"padding:0 0 8px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Item</th><th align=\"center\" style=\"padding:0 8px 8px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Qty</th><th align=\"right\" style=\"padding:0 0 8px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Amount</th></tr></thead><tbody>"
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse:collapse;font-family:Arial,Helvetica,sans-serif;\"><thead><tr><th colspan=\"2\" align=\"left\" style=\"padding:0 0 8px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Item</th><th align=\"center\" style=\"padding:0 8px 8px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Qty</th><th align=\"right\" style=\"padding:0 0 8px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Amount</th></tr></thead><tbody>"
     );
     if items.is_empty() {
         rendered.push_str(&format!(
@@ -469,7 +469,7 @@ fn render_shipping_address_html(
     lines.push(escape_html(&address_locality_line(address)));
     lines.push(escape_html(address.country_code()));
     format!(
-        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:0 0 24px; solid {border_color}\"><tr><td style=\"padding:16px 0 4px;color:{muted_text_color};font-size:12px;font-weight:600\">Shipping address</td></tr><tr><td style=\"padding:0;color:{text_color};font-size:14px;\">{}</td></tr></table>",
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:0 0 24px;font-family:Arial,Helvetica,sans-serif;border-top:1px solid {border_color}\"><tr><td style=\"padding:16px 0 4px;color:{muted_text_color};font-size:12px;font-weight:600\">Shipping address</td></tr><tr><td style=\"padding:0;color:{text_color};font-size:14px;\">{}</td></tr></table>",
         lines.join("<br />")
     )
 }
