@@ -279,15 +279,19 @@ export interface EmbeddedCheckoutSession {
   event_id: string;
 }
 
-/** Browser-facing result of creating or recovering a checkout by Cart. */
-export interface EmbeddedCheckoutCreation {
+/** The payment handoff created from an already loaded Cart snapshot. */
+export interface EmbeddedCheckoutStart {
   checkout: EmbeddedCheckoutSession;
   /** The immutable source Cart snapshot used to create this checkout. */
   source_cart: Cart;
-  /** The newly obtained active Cart for subsequent shopping. */
-  cart: Cart;
   /** Reserved for a caller-supplied dedup id; unset by every SDK code path today. */
   event_id?: string;
+}
+
+/** Browser-facing result of creating or recovering a checkout by Cart. */
+export interface EmbeddedCheckoutCreation extends EmbeddedCheckoutStart {
+  /** The newly obtained active Cart for subsequent shopping. */
+  cart: Cart;
 }
 
 /** The provider-neutral client handoff needed to mount the payment form. */

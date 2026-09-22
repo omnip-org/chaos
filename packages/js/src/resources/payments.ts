@@ -11,6 +11,7 @@ import type {
   DataEnvelope,
   EmbeddedCheckoutOptions,
   EmbeddedCheckoutCreation,
+  EmbeddedCheckoutStart,
   EmbeddedCheckoutSession,
 } from "../types.js";
 
@@ -46,9 +47,34 @@ export class PaymentsResource {
     options: EmbeddedCheckoutOptions,
   ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
     return this.client.cart.runExclusive(cartId, async () => {
-      const cart = await this.client.cart.get(cartId);
-      return this.createEmbeddedCheckoutForCart(cart.data, options);
+      const cart = await this.client.cart.snapshot(cartId);
+      return this.createEmbeddedCheckoutForCart(cart, options);
     });
+  }
+
+  /**
+   * Starts checkout from a Cart body the caller just loaded. This removes the
+   * redundant pre-checkout GET and returns as soon as the provider handoff is
+   * ready. Callers can create the shopper's next Cart in parallel with
+   * mounting the payment UI via `cart.getOrCreate()`.
+   *
+   * The server remains authoritative: it revalidates and atomically locks the
+   * Cart, reserves inventory, and applies the idempotency key before returning.
+   */
+  async createEmbeddedCheckoutFromCart(
+    cart: Cart,
+    options: EmbeddedCheckoutOptions,
+  ): Promise<DataEnvelope<EmbeddedCheckoutStart>> {
+    const checkout = await this.client.cart.runExclusive(cart.id, () =>
+      this.createEmbeddedCheckoutForCart(cart, options),
+    );
+    const start: EmbeddedCheckoutStart = {
+      checkout: checkout.data,
+      source_cart: cart,
+      event_id: checkout.data.event_id,
+    };
+    this.client.recordCheckoutCreation(start);
+    return { data: start };
   }
 
   async createEmbeddedCheckoutWithCart(
@@ -58,9 +84,9 @@ export class PaymentsResource {
     const { checkout, sourceCart } = await this.client.cart.runExclusive(
       cartId,
       async () => {
-        const cart = await this.client.cart.get(cartId);
-        const result = await this.createEmbeddedCheckoutForCart(cart.data, options);
-        return { checkout: result, sourceCart: cart.data };
+        const cart = await this.client.cart.snapshot(cartId);
+        const result = await this.createEmbeddedCheckoutForCart(cart, options);
+        return { checkout: result, sourceCart: cart };
       },
     );
     const nextCart = await this.client.cart.getOrCreate();

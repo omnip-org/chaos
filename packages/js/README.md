@@ -96,6 +96,19 @@ const creation = await chaos.payments.createEmbeddedCheckoutWithCart(cart.data.i
 // (`recordCheckoutCreation`, called internally above) so Meta deduplicates
 // the two; reach for it yourself only if you fire InitiateCheckout by hand.
 
+// Latency-sensitive checkout pages can reuse the Cart body they just loaded
+// and move creation of the next active Cart off the payment-UI critical path:
+const start = await chaos.payments.createEmbeddedCheckoutFromCart(cart.data, {
+  returnUrl: "https://shop.example.com/checkout/return",
+});
+const nextCart = chaos.cart.getOrCreate();
+const mounted = await mountEmbeddedCheckout(
+  start.data.checkout.client_action,
+  document.querySelector("#checkout")!,
+);
+// Keep recovery observable without delaying the mounted payment form.
+await nextCart;
+
 // Stripe Embedded Checkout — Chaos reserves inventory, locks the Cart, and
 // creates the pending Order before Stripe collects the remaining details.
 // The return URL must be HTTPS outside local loopback development.

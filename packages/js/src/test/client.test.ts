@@ -1081,6 +1081,74 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
   assert.deepEqual(recordedCreations, [creation.data]);
 });
 
+test("checkout can hand off directly from a fresh Cart without another read or Cart rotation", async () => {
+  const sourceCart = {
+    id: "cart-1",
+    currency: "USD",
+    status: "active" as const,
+    subtotal_amount_minor: 2_000,
+    created_at: "2026-08-30T00:00:00Z",
+    updated_at: "2026-08-30T00:00:00Z",
+    lines: [
+      {
+        product_id: "product-1",
+        product_variant_id: "variant-1",
+        product_title: "Trail pack",
+        variant_title: "One size",
+        quantity: 1,
+        unit_price_amount_minor: 2_000,
+        subtotal_amount_minor: 2_000,
+        media: [],
+      },
+    ],
+  };
+  const requests: Array<{ url: string; method: string | undefined }> = [];
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async (url: string, init: RequestInit) => {
+      requests.push({ url, method: init.method });
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+      }
+      if (url.endsWith("/carts/cart-1/checkout")) {
+        return jsonResponse(201, {
+          data: {
+            order_number: "W-20260830-00000001",
+            event_id: "W-20260830-00000001",
+            client_action: {
+              type: "stripe_checkout_embedded",
+              public_key: "pk_test_stripe",
+              client_token: "cs_test_secret",
+            },
+          },
+        });
+      }
+      return jsonResponse(404, {
+        error: { code: "not_found", message: "not found" },
+      });
+    }) as unknown as typeof fetch,
+  });
+  await client.acquireShopperToken();
+  requests.length = 0;
+  const recordedStarts: unknown[] = [];
+  client.recordCheckoutCreation = (input) => recordedStarts.push(input);
+
+  const start = await client.payments.createEmbeddedCheckoutFromCart(sourceCart, {
+    returnUrl: "https://shop.example.com/checkout/success",
+  });
+
+  assert.deepEqual(requests, [
+    {
+      url: "/api/v1/carts/cart-1/checkout",
+      method: "POST",
+    },
+  ]);
+  assert.deepEqual(start.data.source_cart, sourceCart);
+  assert.equal(start.data.checkout.client_action.client_token, "cs_test_secret");
+  assert.deepEqual(recordedStarts, [start.data]);
+});
+
 test("payments reject a checkout response that is missing required fields", async () => {
   let sequence = 0;
   const client = new ChaosStorefrontClient({

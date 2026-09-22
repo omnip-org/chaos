@@ -69,8 +69,8 @@ export class CartResource {
     }
   }
 
-  /** The remembered cart body while still within the TTL, otherwise a fresh `GET`. */
-  private async snapshot(cartId: string): Promise<Cart> {
+  /** @internal The remembered Cart while still within the TTL, otherwise a fresh `GET`. */
+  async snapshot(cartId: string): Promise<Cart> {
     const hit = this.snapshots.get(cartId);
     if (hit && this.client.now() - hit.at < this.snapshotTtlMs) {
       return hit.cart;

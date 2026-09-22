@@ -97,44 +97,58 @@ function loadStripeJs(): Promise<StripeConstructor | null> {
     );
     const script = existing ?? document.createElement("script");
 
-    // Guards against a script tag (ours or one already on the page) whose
-    // load/error event fired before these listeners were attached, which
-    // would otherwise leave this promise pending forever.
-    const timeoutId = setTimeout(() => {
-      stripeJs = null;
-      reject(new Error("Timed out waiting for Stripe.js to load"));
-    }, STRIPE_JS_LOAD_TIMEOUT_MS);
-
-    script.addEventListener("load", () => {
+    let settled = false;
+    const cleanup = () => {
       clearTimeout(timeoutId);
+      script.removeEventListener("load", handleLoad);
+      script.removeEventListener("error", handleError);
+    };
+    const fail = (message: string) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      stripeJs = null;
+      reject(new Error(message));
+    };
+    const finish = () => {
+      if (settled) return;
       const loaded = readStripeGlobal();
       if (loaded) {
+        settled = true;
+        cleanup();
         resolve(loaded);
       } else {
-        stripeJs = null;
-        reject(new Error("Stripe.js loaded but window.Stripe is unavailable"));
+        fail("Stripe.js loaded but window.Stripe is unavailable");
       }
-    });
-    script.addEventListener("error", () => {
-      clearTimeout(timeoutId);
-      stripeJs = null;
-      reject(new Error("Failed to load Stripe.js"));
-    });
+    };
+    const handleLoad = () => finish();
+    const handleError = () => fail("Failed to load Stripe.js");
+    const timeoutId = setTimeout(
+      () => fail("Timed out waiting for Stripe.js to load"),
+      STRIPE_JS_LOAD_TIMEOUT_MS,
+    );
+
+    script.addEventListener("load", handleLoad);
+    script.addEventListener("error", handleError);
 
     if (existing) {
-      // A script tag is already present; if it has finished loading the guard
-      // above returned, otherwise the listeners (and the timeout) handle it.
+      // Close the race where an eager script finishes after the first global
+      // read but before the listeners above are attached. Stripe installs its
+      // global synchronously before dispatching `load`, so a microtask recheck
+      // catches that state without polling or a second network request.
+      queueMicrotask(() => {
+        if (readStripeGlobal()) finish();
+      });
       return;
     }
 
     const parent = document.head ?? document.body;
     if (!parent) {
-      clearTimeout(timeoutId);
-      stripeJs = null;
-      reject(new Error("Cannot load Stripe.js before <head> or <body> exists"));
+      fail("Cannot load Stripe.js before <head> or <body> exists");
       return;
     }
     script.src = STRIPE_JS_URL;
+    script.async = true;
     parent.appendChild(script);
   });
 

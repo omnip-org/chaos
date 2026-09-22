@@ -20,6 +20,7 @@ import type { ViewContentAnalyticsInput } from "./events/types.js";
 import type {
   CartLineMutation,
   EmbeddedCheckoutCreation,
+  EmbeddedCheckoutStart,
   OrderLookup,
   ShopperSession,
 } from "./types.js";
@@ -375,7 +376,9 @@ export class ChaosStorefrontClient {
   }
 
   /** @internal Used by PaymentsResource after a successful checkout creation. */
-  recordCheckoutCreation(creation: EmbeddedCheckoutCreation): void {
+  recordCheckoutCreation(
+    creation: EmbeddedCheckoutStart | EmbeddedCheckoutCreation,
+  ): void {
     this.warnIfAnalyticsUnreachable("recordCheckoutCreation");
     try {
       this.analytics?.recordCheckoutCreation(creation);

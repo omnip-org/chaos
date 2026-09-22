@@ -6,7 +6,12 @@ import {
   MAX_META_BROWSER_ID_LENGTH,
 } from "../internal/meta.js";
 import { sha256Hex } from "../internal/sha256.js";
-import type { CartLineMutation, EmbeddedCheckoutCreation, OrderLookup } from "../types.js";
+import type {
+  CartLineMutation,
+  EmbeddedCheckoutCreation,
+  EmbeddedCheckoutStart,
+  OrderLookup,
+} from "../types.js";
 import {
   addToCartEventData,
   initiateCheckoutEventData,
@@ -275,7 +280,9 @@ export class ChaosStorefrontAnalytics {
    * Records checkout initiation from the exact cart snapshot used by Chaos.
    * Reuses `input.event_id` — see `recordCartMutation`.
    */
-  recordCheckoutCreation(input: EmbeddedCheckoutCreation): string | null {
+  recordCheckoutCreation(
+    input: EmbeddedCheckoutStart | EmbeddedCheckoutCreation,
+  ): string | null {
     return this.recordInitiateCheckout(
       {
         cartId: input.source_cart.id,
