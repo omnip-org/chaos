@@ -1,28 +1,23 @@
 // Cart product resolution, pricing context, line management, and cart reads.
 
-/// Resolves the Store's single active Price List for a Sales Channel. A
-/// Store trades in exactly one currency (`stores.currency`), so a Cart or
-/// Order never chooses a currency — it inherits whichever Price List is
-/// active, and every Price List row already carries the Store's currency.
+/// Resolves the Store's effective Price List when a new Cart is created. The
+/// Cart then retains this price_list_id for its lifetime. A Store trades in
+/// exactly one currency (`stores.currency`), and the shared resolver is also
+/// used by Storefront catalog reads.
 async fn select_price_list(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     channel_id: SalesChannelId,
 ) -> Result<Option<(Uuid, CurrencyCode)>, ApplicationError> {
     let row = sqlx::query_as::<_, (Uuid, String)>(
-        "SELECT price_list.id, price_list.currency::text \
-         FROM chaos_commerce.price_lists AS price_list \
-         INNER JOIN chaos_commerce.stores AS store \
-           ON store.id = price_list.store_id \
+        "SELECT selected.id, selected.currency::text \
+         FROM chaos_commerce.stores AS store \
          INNER JOIN chaos_commerce.channels AS channel \
            ON channel.store_id = store.id AND channel.id = $1 \
-         WHERE price_list.store_id = $2 \
-           AND store.status = 'active' AND channel.status = 'active' \
-           AND price_list.status = 'active' \
-           AND price_list.currency = store.currency \
-           AND (price_list.starts_at IS NULL OR price_list.starts_at <= CURRENT_TIMESTAMP) \
-           AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP) \
-         ORDER BY price_list.starts_at DESC NULLS LAST, price_list.id ASC LIMIT 1",
+         CROSS JOIN LATERAL chaos_commerce.resolve_price_list( \
+             store.id, store.currency, CURRENT_TIMESTAMP \
+         ) AS selected \
+         WHERE store.id = $2 AND channel.status = 'active'",
     )
     .bind(channel_id.as_uuid())
     .bind(actor.store_id.as_uuid())

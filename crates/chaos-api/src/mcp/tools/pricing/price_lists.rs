@@ -1,7 +1,11 @@
 use chaos_core::pricing::{
     ChangePriceListStatusInput, CreatePriceInput, CreatePriceListInput, UpdatePriceListInput,
+    UpsertPriceListPricesInput,
 };
-use chaos_domain::{catalog::ProductVariantId, pricing::PriceListId};
+use chaos_domain::{
+    catalog::ProductVariantId,
+    pricing::{PriceListId, PriceListStatus},
+};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -62,9 +66,10 @@ pub struct CreatePriceListParams {
     /// RFC 3339 timestamp; omit for no end boundary.
     #[serde(default)]
     pub ends_at: Option<String>,
-    /// Activate immediately on creation. Every priced variant must already be active.
+    /// Make the snapshot eligible now or at starts_at. Every priced variant must be active.
     #[serde(default)]
     pub activate: bool,
+    /// Complete Store snapshot. Variants omitted from this list have no price in the snapshot.
     pub prices: Vec<PriceEntryParams>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
@@ -90,6 +95,18 @@ pub struct UpdatePriceListParams {
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
+pub struct UpsertPriceListPricesParams {
+    /// The Store UUID containing the price list.
+    pub store_id: String,
+    /// The price list's UUID.
+    pub price_list_id: String,
+    /// Add or update these Variant prices while retaining every other price.
+    pub prices: Vec<PriceEntryParams>,
+    /// Must be explicitly set to true. This action affects live store data.
+    pub confirm: bool,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct ChangePriceListStatusParams {
     /// The Store UUID containing the price list.
     pub store_id: String,
@@ -102,8 +119,13 @@ pub struct ChangePriceListStatusParams {
 #[tool_router(router = price_lists_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(
-        description = "List price lists in the selected Store, including draft \
-                        and archived lists. Paginated; use the returned next_cursor for more pages."
+        description = "List Store-level price snapshots, including draft and archived lists. \
+                        The response identifies the current snapshot and next scheduled selection. \
+                        It also marks active lists that will never be selected under their schedules. \
+                        Active status alone does not mean a list prices the Storefront. The latest \
+                        starts_at wins; no start ranks last. If starts_at values match, the smallest \
+                        price list UUID wins. \
+                        Paginated; use next_cursor for more items."
     )]
     async fn list_price_lists(
         &self,
@@ -136,16 +158,30 @@ impl ChaosMcp {
             .await
         {
             Ok(page) => {
+                let current_id = page.selection.current.as_ref().map(|item| item.id);
+                let future_selected_ids = &page.selection.future_selected_ids;
                 let items = page
                     .items
                     .into_iter()
                     .map(|item| {
+                        let selection_state = match item.status {
+                            PriceListStatus::Draft => "draft",
+                            PriceListStatus::Archived => "archived",
+                            PriceListStatus::Active if current_id == Some(item.id) => {
+                                "effective_now"
+                            }
+                            PriceListStatus::Active if future_selected_ids.contains(&item.id) => {
+                                "scheduled"
+                            }
+                            PriceListStatus::Active => "active_unselected",
+                        };
                         json!({
                             "id": item.id.as_uuid(),
                             "code": item.code,
                             "name": item.name,
                             "currency": item.currency.as_str(),
                             "status": item.status.as_str(),
+                            "selection_state": selection_state,
                             "starts_at": item.starts_at.map(format_time),
                             "ends_at": item.ends_at.map(format_time),
                             "price_count": item.price_count,
@@ -164,6 +200,35 @@ impl ChaosMcp {
                     .flatten();
                 Ok(text_result(json!({
                     "items": items,
+                    "selection": {
+                        "policy": {
+                            "window": "[starts_at, ends_at)",
+                            "eligible_lists": "active lists matching the Store currency",
+                            "precedence": "latest starts_at first; a missing starts_at is last",
+                            "equal_starts_at_tie_breaker": "smallest price list UUID first",
+                        },
+                        "current": page.selection.current.as_ref().map(|item| json!({
+                            "id": item.id.as_uuid(),
+                            "code": item.code,
+                            "name": item.name,
+                            "starts_at": item.starts_at.map(format_time),
+                            "ends_at": item.ends_at.map(format_time),
+                        })),
+                        "next": page.selection.next.as_ref().map(|next| json!({
+                            "effective_at": format_time(next.effective_at),
+                            "price_list": next.item.as_ref().map(|item| json!({
+                                "id": item.id.as_uuid(),
+                                "code": item.code,
+                                "name": item.name,
+                                "starts_at": item.starts_at.map(format_time),
+                                "ends_at": item.ends_at.map(format_time),
+                            })),
+                        })),
+                        "future_selected_price_list_ids": page.selection.future_selected_ids
+                            .iter()
+                            .map(|id| id.as_uuid())
+                            .collect::<Vec<_>>(),
+                    },
                     "has_more": page.has_more,
                     "next_cursor": next_cursor,
                 })))
@@ -224,9 +289,13 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Create a price list in the selected Store. Set activate: \
-                        true to activate immediately (every priced variant must already be \
-                        active). Requires confirm: true."
+        description = "Create a Store-level price snapshot. Its prices apply together when this \
+                        snapshot is selected; they do not supplement another list by Variant. Set \
+                        activate: true to make it eligible immediately or at starts_at. Activation \
+                        validates active Variants and prevents new missing-price gaps for \
+                        published products. Check list_price_lists to see whether it is selected now \
+                        or scheduled. \
+                        Requires confirm: true."
     )]
     async fn create_price_list(
         &self,
@@ -276,15 +345,21 @@ impl ChaosMcp {
             })
             .await
         {
-            Ok(output) => Ok(text_result(json!({ "id": output.price_list_id.as_uuid() }))),
+            Ok(output) => Ok(text_result(json!({
+                "id": output.price_list_id.as_uuid(),
+                "is_currently_effective": output.is_currently_effective,
+                "price_set_semantics": "complete_store_snapshot",
+            }))),
             Err(error) => Ok(tool_error(error)),
         }
     }
 
     #[tool(
-        description = "Replace a price list's code, name, currency, schedule, and full price \
-                        set in the selected Store. Requires confirm: true and an \
-                        confirm: true."
+        description = "Replace a Store-level price snapshot's code, name, currency, schedule, and \
+                        complete price set. Every existing price omitted from prices is removed. \
+                        Read the full current list first and preserve every Variant price that \
+                        should remain. Use upsert_price_list_prices for incremental changes. \
+                        Requires confirm: true."
     )]
     async fn update_price_list(
         &self,
@@ -338,15 +413,78 @@ impl ChaosMcp {
             })
             .await
         {
-            Ok(id) => Ok(text_result(json!({ "id": id.as_uuid() }))),
+            Ok(output) => Ok(text_result(json!({
+                "id": output.price_list_id.as_uuid(),
+                "replacement_price_count": output.replacement_price_count,
+                "is_currently_effective": output.is_currently_effective,
+                "price_set_semantics": "complete_replacement",
+            }))),
             Err(error) => Ok(tool_error(error)),
         }
     }
 
     #[tool(
-        description = "Activate a draft price list in the selected Store. Every \
-                        priced variant must already be active. Requires confirm: true and an \
-                        true."
+        description = "Add or update Variant prices in an existing Store-level price snapshot. \
+                        Other Variant prices are retained, and repeating the same request is safe. \
+                        Active price lists accept only active Variants. The result reports the \
+                        entries processed, how many amounts changed, and whether this list is \
+                        currently selected for Storefront and new Carts. Requires confirm: true."
+    )]
+    async fn upsert_price_list_prices(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<UpsertPriceListPricesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let actor = match crate::mcp::auth::authenticate_mcp(
+            &self.state.mcp_oauth,
+            &self.state.store_queries,
+            &parts,
+            &params.store_id,
+        )
+        .await
+        {
+            Ok(actor) => actor,
+            Err(result) => return Ok(result),
+        };
+        if let Err(result) = require_confirmation(params.confirm) {
+            return Ok(result);
+        }
+        let price_list_id = match parse_uuid_field(&params.price_list_id, "price_list_id") {
+            Ok(id) => PriceListId::from_uuid(id),
+            Err(result) => return Ok(result),
+        };
+        let prices = match parse_prices(&params.prices) {
+            Ok(prices) => prices,
+            Err(result) => return Ok(result),
+        };
+        match self
+            .state
+            .pricing_management
+            .upsert_prices(UpsertPriceListPricesInput {
+                store_id: actor.store_id(),
+                actor,
+                price_list_id,
+                prices,
+            })
+            .await
+        {
+            Ok(output) => Ok(text_result(json!({
+                "id": output.price_list_id.as_uuid(),
+                "processed_count": output.processed_count,
+                "changed_count": output.changed_count,
+                "is_currently_effective": output.is_currently_effective,
+                "price_set_semantics": "incremental_upsert",
+            }))),
+            Err(error) => Ok(tool_error(error)),
+        }
+    }
+
+    #[tool(
+        description = "Mark a price snapshot active in the selected Store so its schedule can \
+                        participate in Storewide price-list selection. Every priced Variant must \
+                        be active. New missing-price gaps for published products are rejected. The \
+                        list may be scheduled or unselected; inspect list_price_lists for the \
+                        winner. Requires confirm: true."
     )]
     async fn activate_price_list(
         &self,
@@ -358,8 +496,9 @@ impl ChaosMcp {
 
     #[tool(
         description = "Archive a price list in the selected Store, removing it \
-                        from pricing resolution without deleting it. Requires confirm: true and \
-                        confirm: true."
+                        from current and future price resolution without deleting it. This may \
+                        select another snapshot, so inspect list_price_lists after the change. \
+                        Requires confirm: true."
     )]
     async fn archive_price_list(
         &self,

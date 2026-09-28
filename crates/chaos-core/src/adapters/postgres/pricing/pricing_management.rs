@@ -1,14 +1,20 @@
 use crate::{
     ApplicationError,
+    adapters::postgres::pricing_resolution::{
+        PriceCoverageIssue, PriceCoverageSnapshot, lock_store_price_context,
+        price_coverage_issues_at, price_coverage_snapshot, reject_new_price_coverage_issues,
+    },
     contracts::{
-        AdminActor, PriceListDetail, PriceListMutationSnapshot, PriceListReadItem, PriceReadItem,
+        AdminActor, PriceListDetail, PriceListListSnapshot, PriceListMutationSnapshot,
+        PriceListReadItem, PriceListSelection, PriceListSelectionItem, PriceReadItem,
+        ScheduledPriceListSelection,
     },
     error::database_error,
 };
 use chaos_domain::{
     CurrencyCode,
     catalog::ProductVariantId,
-    pricing::{PriceList, PriceListId, PriceListStatus},
+    pricing::{PriceId, PriceList, PriceListId, PriceListStatus},
     store::StoreId,
 };
 use sqlx::{PgPool, Postgres, Transaction};
@@ -65,7 +71,7 @@ impl PostgresPricingManagementRepository {
         store_id: StoreId,
         after: Option<PriceListId>,
         limit: u16,
-    ) -> Result<Option<Vec<PriceListReadItem>>, ApplicationError> {
+    ) -> Result<Option<PriceListListSnapshot>, ApplicationError> {
         let mut transaction = self.begin_read(actor).await?;
         let store_exists: bool =
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM chaos_commerce.stores WHERE id = $1)")
@@ -96,11 +102,13 @@ impl PostgresPricingManagementRepository {
         .fetch_all(&mut *transaction)
         .await
         .map_err(database_error)?;
+        let selection = read_price_list_selection(&mut transaction, store_id).await?;
         transaction.commit().await.map_err(database_error)?;
-        rows.into_iter()
+        let items = rows
+            .into_iter()
             .map(read_item)
-            .collect::<Result<Vec<_>, _>>()
-            .map(Some)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some(PriceListListSnapshot { items, selection }))
     }
 
     pub(crate) async fn get_price_list(
@@ -161,6 +169,7 @@ impl PostgresPricingManagementRepository {
     ) -> Result<PostgresPricingManagementTransaction, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         set_context(&mut transaction, actor).await?;
+        lock_store_price_context(&mut transaction, store_id).await?;
         Ok(PostgresPricingManagementTransaction {
             transaction,
             store_id,
@@ -170,6 +179,46 @@ impl PostgresPricingManagementRepository {
 }
 
 impl PostgresPricingManagementTransaction {
+    pub(crate) async fn price_coverage_snapshot(
+        &mut self,
+        additional_checkpoints: &[OffsetDateTime],
+    ) -> Result<PriceCoverageSnapshot, ApplicationError> {
+        price_coverage_snapshot(&mut self.transaction, self.store_id, additional_checkpoints).await
+    }
+
+    pub(crate) async fn price_coverage_issues_at(
+        &mut self,
+        checkpoints: &[OffsetDateTime],
+    ) -> Result<Vec<PriceCoverageIssue>, ApplicationError> {
+        price_coverage_issues_at(&mut self.transaction, self.store_id, checkpoints).await
+    }
+
+    pub(crate) fn reject_new_price_coverage_issues(
+        &self,
+        before: &PriceCoverageSnapshot,
+        after: &[PriceCoverageIssue],
+    ) -> Result<(), ApplicationError> {
+        reject_new_price_coverage_issues(before, after)
+    }
+
+    pub(crate) async fn current_price_list_id(
+        &mut self,
+    ) -> Result<Option<PriceListId>, ApplicationError> {
+        let row = sqlx::query_scalar::<_, Uuid>(
+            "SELECT selected.id \
+             FROM chaos_commerce.stores AS store \
+             CROSS JOIN LATERAL chaos_commerce.resolve_price_list( \
+                 store.id, store.currency, CURRENT_TIMESTAMP \
+             ) AS selected \
+             WHERE store.id = $1",
+        )
+        .bind(self.store_id.as_uuid())
+        .fetch_optional(&mut *self.transaction)
+        .await
+        .map_err(database_error)?;
+        Ok(row.map(PriceListId::from_uuid))
+    }
+
     pub(crate) async fn load_for_update(
         &mut self,
     ) -> Result<Option<PriceListMutationSnapshot>, ApplicationError> {
@@ -285,6 +334,48 @@ impl PostgresPricingManagementTransaction {
         Ok(())
     }
 
+    pub(crate) async fn upsert_prices(
+        &mut self,
+        prices: &[crate::pricing::CreatePriceInput],
+    ) -> Result<usize, ApplicationError> {
+        let mut changed = 0;
+        for price in prices {
+            let result = sqlx::query(
+                "INSERT INTO chaos_commerce.price_list_items AS current_price \
+                 (id, store_id, price_list_id, product_variant_id, amount_minor) \
+                 VALUES ($1, $2, $3, $4, $5) \
+                 ON CONFLICT (store_id, price_list_id, product_variant_id) \
+                 DO UPDATE SET amount_minor = EXCLUDED.amount_minor, \
+                               updated_at = CURRENT_TIMESTAMP \
+                 WHERE current_price.amount_minor IS DISTINCT FROM EXCLUDED.amount_minor",
+            )
+            .bind(PriceId::new().as_uuid())
+            .bind(self.store_id.as_uuid())
+            .bind(self.price_list_id.as_uuid())
+            .bind(price.product_variant_id.as_uuid())
+            .bind(price.amount_minor)
+            .execute(&mut *self.transaction)
+            .await
+            .map_err(map_write_error)?;
+            if result.rows_affected() > 0 {
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            sqlx::query(
+                "UPDATE chaos_commerce.price_lists \
+                 SET updated_at = CURRENT_TIMESTAMP \
+                 WHERE store_id = $1 AND id = $2",
+            )
+            .bind(self.store_id.as_uuid())
+            .bind(self.price_list_id.as_uuid())
+            .execute(&mut *self.transaction)
+            .await
+            .map_err(database_error)?;
+        }
+        Ok(changed)
+    }
+
     pub(crate) async fn set_status(
         &mut self,
         status: PriceListStatus,
@@ -331,6 +422,163 @@ fn read_item(row: PriceListRow) -> Result<PriceListReadItem, ApplicationError> {
         created_at,
         updated_at,
     })
+}
+
+async fn read_price_list_selection(
+    transaction: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+) -> Result<PriceListSelection, ApplicationError> {
+    type SelectionRow = (
+        Uuid,
+        String,
+        String,
+        Option<OffsetDateTime>,
+        Option<OffsetDateTime>,
+    );
+
+    let current = sqlx::query_as::<_, SelectionRow>(
+        "SELECT price_list.id, price_list.code::text, price_list.name, \
+                price_list.starts_at, price_list.ends_at \
+         FROM chaos_commerce.stores AS store \
+         CROSS JOIN LATERAL chaos_commerce.resolve_price_list( \
+             store.id, store.currency, CURRENT_TIMESTAMP \
+         ) AS selected \
+         INNER JOIN chaos_commerce.price_lists AS price_list \
+           ON price_list.store_id = store.id AND price_list.id = selected.id \
+         WHERE store.id = $1",
+    )
+    .bind(store_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .map(selection_item);
+
+    let future_selected_ids = sqlx::query_scalar::<_, Uuid>(
+        "WITH store_context AS ( \
+             SELECT id, currency FROM chaos_commerce.stores \
+             WHERE id = $1 AND status = 'active' \
+         ), event_points AS ( \
+             SELECT price_list.starts_at AS effective_at \
+             FROM chaos_commerce.price_lists AS price_list \
+             INNER JOIN store_context AS store ON store.id = price_list.store_id \
+             WHERE price_list.status = 'active' \
+               AND price_list.currency = store.currency \
+               AND price_list.starts_at > CURRENT_TIMESTAMP \
+             UNION \
+             SELECT price_list.ends_at AS effective_at \
+             FROM chaos_commerce.price_lists AS price_list \
+             INNER JOIN store_context AS store ON store.id = price_list.store_id \
+             WHERE price_list.status = 'active' \
+               AND price_list.currency = store.currency \
+               AND price_list.ends_at > CURRENT_TIMESTAMP \
+         ) \
+         SELECT DISTINCT selected.id \
+         FROM store_context AS store \
+         INNER JOIN event_points AS point ON true \
+         CROSS JOIN LATERAL chaos_commerce.resolve_price_list( \
+             store.id, store.currency, point.effective_at \
+         ) AS selected \
+         ORDER BY selected.id",
+    )
+    .bind(store_id.as_uuid())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .into_iter()
+    .map(PriceListId::from_uuid)
+    .collect();
+
+    let next = sqlx::query_as::<
+        _,
+        (
+            OffsetDateTime,
+            Option<Uuid>,
+            Option<String>,
+            Option<String>,
+            Option<OffsetDateTime>,
+            Option<OffsetDateTime>,
+        ),
+    >(
+        "WITH store_context AS ( \
+             SELECT id, currency FROM chaos_commerce.stores \
+             WHERE id = $1 AND status = 'active' \
+         ), current_selection AS ( \
+             SELECT selected.id \
+             FROM store_context AS store \
+             LEFT JOIN LATERAL chaos_commerce.resolve_price_list( \
+                 store.id, store.currency, CURRENT_TIMESTAMP \
+             ) AS selected ON true \
+         ), event_points AS ( \
+             SELECT price_list.starts_at AS effective_at \
+             FROM chaos_commerce.price_lists AS price_list \
+             INNER JOIN store_context AS store ON store.id = price_list.store_id \
+             WHERE price_list.status = 'active' \
+               AND price_list.currency = store.currency \
+               AND price_list.starts_at > CURRENT_TIMESTAMP \
+             UNION \
+             SELECT price_list.ends_at AS effective_at \
+             FROM chaos_commerce.price_lists AS price_list \
+             INNER JOIN store_context AS store ON store.id = price_list.store_id \
+             WHERE price_list.status = 'active' \
+               AND price_list.currency = store.currency \
+               AND price_list.ends_at > CURRENT_TIMESTAMP \
+         ), future_selections AS ( \
+             SELECT point.effective_at, selected.id \
+             FROM store_context AS store \
+             INNER JOIN event_points AS point ON true \
+             LEFT JOIN LATERAL chaos_commerce.resolve_price_list( \
+                 store.id, store.currency, point.effective_at \
+             ) AS selected ON true \
+         ) \
+         SELECT future.effective_at, price_list.id, price_list.code::text, price_list.name, \
+                price_list.starts_at, price_list.ends_at \
+         FROM future_selections AS future \
+         CROSS JOIN current_selection AS current_price_selection \
+         LEFT JOIN chaos_commerce.price_lists AS price_list \
+           ON price_list.store_id = $1 AND price_list.id = future.id \
+         WHERE future.id IS DISTINCT FROM current_price_selection.id \
+         ORDER BY future.effective_at ASC LIMIT 1",
+    )
+    .bind(store_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .map(
+        |(effective_at, id, code, name, starts_at, ends_at)| ScheduledPriceListSelection {
+            effective_at,
+            item: id.map(|id| PriceListSelectionItem {
+                id: PriceListId::from_uuid(id),
+                code: code.unwrap_or_default(),
+                name: name.unwrap_or_default(),
+                starts_at,
+                ends_at,
+            }),
+        },
+    );
+
+    Ok(PriceListSelection {
+        current,
+        next,
+        future_selected_ids,
+    })
+}
+
+fn selection_item(
+    (id, code, name, starts_at, ends_at): (
+        Uuid,
+        String,
+        String,
+        Option<OffsetDateTime>,
+        Option<OffsetDateTime>,
+    ),
+) -> PriceListSelectionItem {
+    PriceListSelectionItem {
+        id: PriceListId::from_uuid(id),
+        code,
+        name,
+        starts_at,
+        ends_at,
+    }
 }
 
 async fn set_context(

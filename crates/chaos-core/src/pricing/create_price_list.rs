@@ -33,6 +33,7 @@ pub struct CreatePriceListInput {
 #[derive(Debug)]
 pub struct CreatePriceListOutput {
     pub price_list_id: PriceListId,
+    pub is_currently_effective: bool,
 }
 
 pub struct CreatePriceList {
@@ -64,6 +65,19 @@ impl CreatePriceList {
         let mut transaction = self.repository.begin(input.actor, input.store_id).await?;
         transaction.require_writable_store().await?;
         transaction.require_store_currency(currency).await?;
+        let candidate_checkpoints = [price_list.starts_at(), price_list.ends_at()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        let coverage_before = if input.activate {
+            Some(
+                transaction
+                    .price_coverage_snapshot(&candidate_checkpoints)
+                    .await?,
+            )
+        } else {
+            None
+        };
         let requested_ids = input
             .prices
             .iter()
@@ -83,9 +97,17 @@ impl CreatePriceList {
             price_list.activate(&active_ids)?;
         }
         transaction.insert_price_list(&price_list).await?;
+        if let Some(coverage_before) = coverage_before {
+            let coverage_after = transaction
+                .price_coverage_issues_at(&coverage_before.checkpoints)
+                .await?;
+            transaction.reject_new_price_coverage_issues(&coverage_before, &coverage_after)?;
+        }
+        let current_price_list_id = transaction.current_price_list_id().await?;
         transaction.commit().await?;
         Ok(CreatePriceListOutput {
             price_list_id: price_list.id(),
+            is_currently_effective: current_price_list_id == Some(price_list.id().as_uuid()),
         })
     }
 }

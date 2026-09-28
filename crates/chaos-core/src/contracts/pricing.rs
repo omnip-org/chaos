@@ -28,6 +28,30 @@ pub struct PriceListDetail {
     pub prices: Vec<PriceReadItem>,
 }
 
+pub struct PriceListSelectionItem {
+    pub id: PriceListId,
+    pub code: String,
+    pub name: String,
+    pub starts_at: Option<OffsetDateTime>,
+    pub ends_at: Option<OffsetDateTime>,
+}
+
+pub struct ScheduledPriceListSelection {
+    pub effective_at: OffsetDateTime,
+    pub item: Option<PriceListSelectionItem>,
+}
+
+pub struct PriceListSelection {
+    pub current: Option<PriceListSelectionItem>,
+    pub next: Option<ScheduledPriceListSelection>,
+    pub future_selected_ids: Vec<PriceListId>,
+}
+
+pub struct PriceListListSnapshot {
+    pub items: Vec<PriceListReadItem>,
+    pub selection: PriceListSelection,
+}
+
 pub struct PriceListMutationSnapshot {
     pub status: PriceListStatus,
     pub priced_variant_ids: Vec<ProductVariantId>,

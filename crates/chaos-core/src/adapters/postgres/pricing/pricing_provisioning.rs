@@ -1,6 +1,15 @@
-use crate::{ApplicationError, contracts::AdminActor, error::database_error};
+use crate::{
+    ApplicationError,
+    adapters::postgres::pricing_resolution::{
+        PriceCoverageIssue, PriceCoverageSnapshot, lock_store_price_context,
+        price_coverage_issues_at, price_coverage_snapshot, reject_new_price_coverage_issues,
+    },
+    contracts::AdminActor,
+    error::database_error,
+};
 use chaos_domain::{CurrencyCode, catalog::ProductVariantId, pricing::PriceList, store::StoreId};
 use sqlx::{PgPool, Postgres, Transaction};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -33,6 +42,7 @@ impl PostgresPricingProvisioningRepository {
         )
         .await
         .map_err(database_error)?;
+        lock_store_price_context(&mut transaction, store_id).await?;
         Ok(PostgresPricingProvisioningTransaction {
             transaction,
             store_id,
@@ -41,6 +51,45 @@ impl PostgresPricingProvisioningRepository {
 }
 
 impl PostgresPricingProvisioningTransaction {
+    pub(crate) async fn price_coverage_snapshot(
+        &mut self,
+        additional_checkpoints: &[OffsetDateTime],
+    ) -> Result<PriceCoverageSnapshot, ApplicationError> {
+        price_coverage_snapshot(&mut self.transaction, self.store_id, additional_checkpoints).await
+    }
+
+    pub(crate) async fn price_coverage_issues_at(
+        &mut self,
+        checkpoints: &[OffsetDateTime],
+    ) -> Result<Vec<PriceCoverageIssue>, ApplicationError> {
+        price_coverage_issues_at(&mut self.transaction, self.store_id, checkpoints).await
+    }
+
+    pub(crate) fn reject_new_price_coverage_issues(
+        &self,
+        before: &PriceCoverageSnapshot,
+        after: &[PriceCoverageIssue],
+    ) -> Result<(), ApplicationError> {
+        reject_new_price_coverage_issues(before, after)
+    }
+
+    pub(crate) async fn current_price_list_id(
+        &mut self,
+    ) -> Result<Option<uuid::Uuid>, ApplicationError> {
+        sqlx::query_scalar::<_, uuid::Uuid>(
+            "SELECT selected.id \
+             FROM chaos_commerce.stores AS store \
+             CROSS JOIN LATERAL chaos_commerce.resolve_price_list( \
+                 store.id, store.currency, CURRENT_TIMESTAMP \
+             ) AS selected \
+             WHERE store.id = $1",
+        )
+        .bind(self.store_id.as_uuid())
+        .fetch_optional(&mut *self.transaction)
+        .await
+        .map_err(database_error)
+    }
+
     pub(crate) async fn require_writable_store(&mut self) -> Result<(), ApplicationError> {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM chaos_commerce.stores WHERE id = $1 AND status = 'active')",

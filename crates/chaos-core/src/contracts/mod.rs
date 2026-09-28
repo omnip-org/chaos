@@ -62,7 +62,10 @@ pub use media::{
     ProductVariantMediaAssetLinkRecord, ProductVariantMediaAssetMutation, ReviewMediaAssetItem,
     ReviewMediaAssetLinkRecord, ReviewMediaAssetMutation, StoredMediaObject,
 };
-pub use pricing::{PriceListDetail, PriceListMutationSnapshot, PriceListReadItem, PriceReadItem};
+pub use pricing::{
+    PriceListDetail, PriceListListSnapshot, PriceListMutationSnapshot, PriceListReadItem,
+    PriceListSelection, PriceListSelectionItem, PriceReadItem, ScheduledPriceListSelection,
+};
 pub use provider_secret::{IntegrationSecretResolver, ProviderSecretKind, ProviderSecretWriter};
 pub use publishable_key::{GeneratedPublishableKey, MachineActor, PublishableKeyListItem};
 pub use review::{

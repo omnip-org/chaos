@@ -1,5 +1,6 @@
 use crate::{
     ApplicationError,
+    adapters::postgres::pricing_resolution::{ensure_product_is_priced, lock_store_price_context},
     contracts::{AdminActor, ProductLifecycleSnapshot},
     error::database_error,
 };
@@ -54,6 +55,23 @@ impl PostgresCatalogManagementRepository {
 }
 
 impl PostgresCatalogManagementTransaction {
+    pub(crate) async fn lock_price_context(&mut self) -> Result<(), ApplicationError> {
+        lock_store_price_context(&mut self.transaction, self.store_id).await
+    }
+
+    pub(crate) async fn ensure_product_is_priced(
+        &mut self,
+        channel_id: Option<SalesChannelId>,
+    ) -> Result<(), ApplicationError> {
+        ensure_product_is_priced(
+            &mut self.transaction,
+            self.store_id,
+            self.product_id,
+            channel_id.map(SalesChannelId::as_uuid),
+        )
+        .await
+    }
+
     pub(crate) async fn load_lifecycle(
         &mut self,
     ) -> Result<Option<ProductLifecycleSnapshot>, ApplicationError> {

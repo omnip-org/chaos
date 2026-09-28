@@ -6,4 +6,5 @@ pub use create_price_list::{
 };
 pub use management::{
     ChangePriceListStatusInput, PriceListPage, PricingManagement, UpdatePriceListInput,
+    UpdatePriceListOutput, UpsertPriceListPricesInput, UpsertPriceListPricesOutput,
 };

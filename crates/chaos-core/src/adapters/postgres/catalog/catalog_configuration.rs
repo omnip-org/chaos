@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use crate::{
     ApplicationError,
+    adapters::postgres::pricing_resolution::{ensure_product_is_priced, lock_store_price_context},
     catalog::{
         ProductConfigurationDraft, ProductConfigurationOptionInput,
         ProductConfigurationOptionValueInput, ProductConfigurationVariantInput,
@@ -41,6 +42,7 @@ impl PostgresCatalogConfigurationRepository {
         )
         .await
         .map_err(database_error)?;
+        lock_store_price_context(&mut transaction, store_id).await?;
 
         let (status, current_revision) = sqlx::query_as::<_, (String, i64)>(
             "SELECT status::text, revision FROM chaos_commerce.products \
@@ -139,6 +141,10 @@ impl PostgresCatalogConfigurationRepository {
             changed_at,
         )
         .await?;
+
+        if status == "active" {
+            ensure_product_is_priced(&mut transaction, store_id, product_id, None).await?;
+        }
 
         let revision = sqlx::query_scalar::<_, i64>(
             "UPDATE chaos_commerce.products \

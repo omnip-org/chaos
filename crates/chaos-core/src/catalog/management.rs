@@ -266,6 +266,7 @@ impl CatalogManagement {
             .repository
             .begin(input.actor, input.store_id, input.product_id)
             .await?;
+        transaction.lock_price_context().await?;
         let snapshot = transaction
             .load_lifecycle()
             .await?
@@ -279,6 +280,9 @@ impl CatalogManagement {
                 id: input.channel_id.as_uuid().to_string(),
             });
         }
+        transaction
+            .ensure_product_is_priced(Some(input.channel_id))
+            .await?;
         transaction.publish(input.channel_id).await?;
         let revision = transaction.product_revision().await?;
         transaction.commit().await?;
@@ -321,6 +325,9 @@ impl CatalogManagement {
             .repository
             .begin(input.actor, input.store_id, input.product_id)
             .await?;
+        if activate {
+            transaction.lock_price_context().await?;
+        }
         let snapshot = transaction
             .load_lifecycle()
             .await?
@@ -334,6 +341,9 @@ impl CatalogManagement {
             lifecycle.archive();
         }
         transaction.set_status(lifecycle.status()).await?;
+        if activate {
+            transaction.ensure_product_is_priced(None).await?;
+        }
         let revision = transaction.product_revision().await?;
         transaction.commit().await?;
         Ok(ProductMutationOutput {

@@ -9,6 +9,7 @@ mod inventory;
 mod maintenance;
 mod payments;
 mod pricing;
+pub(crate) mod pricing_resolution;
 mod sales;
 mod search;
 mod store;

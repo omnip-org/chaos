@@ -1,5 +1,8 @@
 use crate::{
     ApplicationError,
+    adapters::postgres::pricing_resolution::{
+        lock_store_price_context, price_coverage_snapshot, reject_any_price_coverage_issues,
+    },
     contracts::{AdminActor, SalesChannelAdminItem, ShippingCountryAdminItem, StoreAdminItem},
     error::database_error,
 };
@@ -169,8 +172,11 @@ impl PostgresStoreAdministrationRepository {
         status: StoreStatus,
     ) -> Result<StoreId, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
-        sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM chaos_commerce.stores WHERE id = $1 FOR UPDATE",
+        if status == StoreStatus::Active {
+            lock_store_price_context(&mut transaction, store_id).await?;
+        }
+        let current_status = sqlx::query_scalar::<_, String>(
+            "SELECT status::text FROM chaos_commerce.stores WHERE id = $1 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
         .fetch_optional(&mut *transaction)
@@ -188,6 +194,22 @@ impl PostgresStoreAdministrationRepository {
             .await
             .map_err(database_error)?;
             Store::validate_activation(active_channel_exists)?;
+            if current_status != "active" {
+                sqlx::query(
+                    "UPDATE chaos_commerce.stores \
+                     SET status = 'active'::chaos_commerce.store_status, \
+                         updated_at = CURRENT_TIMESTAMP \
+                     WHERE id = $1",
+                )
+                .bind(store_id.as_uuid())
+                .execute(&mut *transaction)
+                .await
+                .map_err(database_error)?;
+                let coverage = price_coverage_snapshot(&mut transaction, store_id, &[]).await?;
+                reject_any_price_coverage_issues(&coverage.issues)?;
+                transaction.commit().await.map_err(database_error)?;
+                return Ok(store_id);
+            }
         }
         sqlx::query(
             "UPDATE chaos_commerce.stores SET status = $2::chaos_commerce.store_status, \
@@ -311,6 +333,9 @@ impl PostgresStoreAdministrationRepository {
         status: SalesChannelStatus,
     ) -> Result<SalesChannelId, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
+        if status == SalesChannelStatus::Active {
+            lock_store_price_context(&mut transaction, store_id).await?;
+        }
         let current_status = sqlx::query_scalar::<_, String>(
             "SELECT status::text FROM chaos_commerce.channels \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
@@ -350,6 +375,10 @@ impl PostgresStoreAdministrationRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
+        if status == SalesChannelStatus::Active && current_status != "active" {
+            let coverage = price_coverage_snapshot(&mut transaction, store_id, &[]).await?;
+            reject_any_price_coverage_issues(&coverage.issues)?;
+        }
         transaction.commit().await.map_err(database_error)?;
         Ok(channel_id)
     }

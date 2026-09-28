@@ -68,22 +68,12 @@ impl PostgresStorefrontCatalogRepository {
             ),
         >(
             "WITH selected_price_list AS ( \
-                 SELECT price_list.id, price_list.currency::text \
-                 FROM chaos_commerce.price_lists AS price_list \
-                 INNER JOIN chaos_commerce.stores AS store \
-                   ON store.id = price_list.store_id \
-                 INNER JOIN chaos_commerce.channels AS channel \
-                   ON channel.store_id = store.id \
-                  AND channel.id = $2 \
-                 WHERE price_list.store_id = $1 \
-                   AND price_list.status = 'active' \
-                   AND store.status = 'active' \
-                   AND channel.status = 'active' \
-                   AND price_list.currency = COALESCE($4::char(3), store.currency) \
-                   AND (price_list.starts_at IS NULL OR price_list.starts_at <= CURRENT_TIMESTAMP) \
-                   AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP) \
-                 ORDER BY price_list.starts_at DESC NULLS LAST, price_list.id ASC \
-                 LIMIT 1 \
+                 SELECT selected.id, selected.currency::text \
+                 FROM chaos_commerce.stores AS store \
+                 CROSS JOIN LATERAL chaos_commerce.resolve_price_list( \
+                     store.id, COALESCE($3::char(3), store.currency), CURRENT_TIMESTAMP \
+                 ) AS selected \
+                 WHERE store.id = $1 \
              ) \
             SELECT variant.id, variant.title, variant.sku::text, \
                     variant.track_inventory, \
@@ -97,12 +87,11 @@ impl PostgresStorefrontCatalogRepository {
               AND price.price_list_id = selected.id \
               AND price.product_variant_id = variant.id \
              WHERE variant.store_id = $1 \
-               AND variant.product_id = $3 \
+               AND variant.product_id = $2 \
                AND variant.status = 'active' \
              ORDER BY variant.id ASC",
         )
         .bind(actor.store_id.as_uuid())
-        .bind(actor.channel_id.map(|id| id.as_uuid()))
         .bind(product_id.as_uuid())
         .bind(currency.map(|value| value.as_str().to_owned()))
         .fetch_all(&mut **transaction)
@@ -465,22 +454,12 @@ impl PostgresStorefrontCatalogRepository {
             ),
         >(
             "WITH selected_price_list AS ( \
-                 SELECT price_list.id, price_list.currency::text \
-                 FROM chaos_commerce.price_lists AS price_list \
-                 INNER JOIN chaos_commerce.stores AS store \
-                   ON store.id = price_list.store_id \
-                 INNER JOIN chaos_commerce.channels AS channel \
-                   ON channel.store_id = store.id \
-                  AND channel.id = $2 \
-                 WHERE price_list.store_id = $1 \
-                   AND price_list.status = 'active' \
-                   AND store.status = 'active' \
-                   AND channel.status = 'active' \
-                   AND price_list.currency = COALESCE($4::char(3), store.currency) \
-                   AND (price_list.starts_at IS NULL OR price_list.starts_at <= CURRENT_TIMESTAMP) \
-                   AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP) \
-                 ORDER BY price_list.starts_at DESC NULLS LAST, price_list.id ASC \
-                 LIMIT 1 \
+                 SELECT selected.id, selected.currency::text \
+                 FROM chaos_commerce.stores AS store \
+                 CROSS JOIN LATERAL chaos_commerce.resolve_price_list( \
+                     store.id, COALESCE($3::char(3), store.currency), CURRENT_TIMESTAMP \
+                 ) AS selected \
+                 WHERE store.id = $1 \
              ) \
             SELECT variant.product_id, variant.id, variant.title, variant.sku::text, \
                     variant.track_inventory, \
@@ -493,12 +472,11 @@ impl PostgresStorefrontCatalogRepository {
               AND price.price_list_id = selected.id \
               AND price.product_variant_id = variant.id \
              WHERE variant.store_id = $1 \
-               AND variant.product_id = ANY($3::uuid[]) \
+               AND variant.product_id = ANY($2::uuid[]) \
                AND variant.status = 'active' \
              ORDER BY variant.product_id ASC, variant.id ASC",
         )
         .bind(actor.store_id.as_uuid())
-        .bind(actor.channel_id.map(|id| id.as_uuid()))
         .bind(product_ids)
         .bind(currency.map(|value| value.as_str().to_owned()))
         .fetch_all(&mut **transaction)
