@@ -457,6 +457,7 @@ mod tests {
         let product_id = ProductId::new();
         let empty_product_id = ProductId::new();
         let variant_id = ProductVariantId::new();
+        let price_list_id = Uuid::now_v7();
         let channel_id = SalesChannelId::new();
         let other_channel_id = SalesChannelId::new();
         let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
@@ -651,6 +652,40 @@ mod tests {
             })
             .await
             .unwrap();
+        assert!(matches!(
+            service
+                .publish(ProductPublicationInput {
+                    actor: AdminActor::Store(owner),
+                    store_id,
+                    product_id,
+                    channel_id,
+                    expected_revision: None,
+                })
+                .await,
+            Err(ApplicationError::Validation { .. })
+        ));
+        sqlx::query(
+            "INSERT INTO chaos_commerce.price_lists \
+             (id, store_id, code, name, currency, status) \
+             VALUES ($1, $2, 'managed-retail', 'Managed Retail', 'USD', 'active')",
+        )
+        .bind(price_list_id)
+        .bind(store_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chaos_commerce.price_list_items \
+             (id, store_id, price_list_id, product_variant_id, amount_minor) \
+             VALUES ($1, $2, $3, $4, 2500)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(store_id.as_uuid())
+        .bind(price_list_id)
+        .bind(variant_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
         assert!(matches!(
             service
                 .publish(ProductPublicationInput {
