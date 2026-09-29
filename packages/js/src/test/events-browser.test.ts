@@ -132,6 +132,16 @@ function fbqAdvancedMatchingCalls(window: unknown): unknown[][] {
   );
 }
 
+async function waitForAdvancedMatchingCalls(window: unknown): Promise<unknown[][]> {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    const calls = fbqAdvancedMatchingCalls(window);
+    if (calls.length > 0) return calls;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return fbqAdvancedMatchingCalls(window);
+}
+
 test("keeps a fresh _fbc cookie in sync with the current fbclid", () => {
   const environment = harness({
     cookie: "_fbc=fb.1.1.old-click",
@@ -527,8 +537,7 @@ test("setShopperId hashes the shopper id into Meta's external_id", async () => {
   environment.analytics.setShopperId(
     "01a0b983-9909-7990-a021-01afc9aab9c8",
   );
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  const calls = fbqAdvancedMatchingCalls(environment.window);
+  const calls = await waitForAdvancedMatchingCalls(environment.window);
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0]?.[1], "12345");
   assert.deepEqual(calls[0]?.[2], {
@@ -544,7 +553,7 @@ test("setShopperId ignores a repeated call for the same shopper id", async () =>
     providers: { metaPixel: { pixelId: "12345" } },
   });
   environment.analytics.setShopperId("01a0b983-9909-7990-a021-01afc9aab9c8");
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitForAdvancedMatchingCalls(environment.window);
   environment.analytics.setShopperId("01a0b983-9909-7990-a021-01afc9aab9c8");
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(fbqAdvancedMatchingCalls(environment.window).length, 1);
