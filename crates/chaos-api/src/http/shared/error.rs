@@ -167,7 +167,7 @@ impl IntoResponse for ApiError {
                 ),
                 ApplicationError::NotFound { resource, id } => (
                     StatusCode::NOT_FOUND,
-                    "not_found".into(),
+                    resource_not_found_code(resource),
                     format!("{resource} {id} was not found"),
                     vec![],
                 ),
@@ -228,9 +228,31 @@ impl IntoResponse for ApiError {
     }
 }
 
+fn resource_not_found_code(resource: &str) -> String {
+    let mut code = String::with_capacity(resource.len() + "_not_found".len());
+    let mut separator = false;
+    for character in resource.chars() {
+        if character.is_ascii_alphanumeric() {
+            if separator && !code.is_empty() {
+                code.push('_');
+            }
+            code.push(character.to_ascii_lowercase());
+            separator = false;
+        } else {
+            separator = true;
+        }
+    }
+    code.push_str("_not_found");
+    code
+}
+
 #[cfg(test)]
 mod tests {
-    use axum::http::{StatusCode, header::RETRY_AFTER};
+    use axum::{
+        body::to_bytes,
+        http::{StatusCode, header::RETRY_AFTER},
+    };
+    use serde_json::Value;
 
     use super::*;
 
@@ -243,5 +265,23 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers()[RETRY_AFTER], "37");
+    }
+
+    #[tokio::test]
+    async fn resource_not_found_errors_expose_a_stable_resource_code() {
+        let response = ApiError::from(ApplicationError::NotFound {
+            resource: "cart",
+            id: "active".into(),
+        })
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), 2048).await.unwrap();
+        let json = serde_json::from_slice::<Value>(&body).unwrap();
+        assert_eq!(json["error"]["code"], "cart_not_found");
+        assert_eq!(
+            resource_not_found_code("Publishable Key"),
+            "publishable_key_not_found"
+        );
     }
 }

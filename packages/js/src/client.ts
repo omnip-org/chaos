@@ -1,4 +1,4 @@
-import { ChaosApiError, throwForResponse } from "./errors.js";
+import { ChaosApiError, apiErrorFromResponse } from "./errors.js";
 import {
   ChaosStorefrontAnalytics,
   type AnalyticsOptions,
@@ -14,12 +14,16 @@ import { CatalogResource } from "./resources/catalog.js";
 import { OrdersResource } from "./resources/orders.js";
 import { PaymentsResource } from "./resources/payments.js";
 import { ReviewsResource } from "./resources/reviews.js";
-import { ShopperSessionResource } from "./resources/shopper-session.js";
+import {
+  ShopperSessionResource,
+  requireShopperSession,
+} from "./resources/shopper-session.js";
 import type { ViewContentAnalyticsInput } from "./events/types.js";
 import type {
   CartLineMutation,
   ConfirmedPurchaseOrderInput,
   CheckoutUtm,
+  DataEnvelope,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutStart,
   OwnOrder,
@@ -27,25 +31,10 @@ import type {
 } from "./types.js";
 
 const SHOPPER_TOKEN_STORAGE_PREFIX = "chaos.storefront.shopper_token";
+const SHOPPER_ID_STORAGE_PREFIX = "chaos.storefront.shopper_id";
 const CHECKOUT_ORDER_STORAGE_PREFIX = "chaos.storefront.checkout_order";
 const CHECKOUT_ORDER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_CART_SNAPSHOT_TTL_MS = 30_000;
-
-/**
- * The shopper token is `shopper.<shopper_id as a simple, undashed UUID>.<hmac>`
- * (see `HmacShopperCredentialCodec::issue` in chaos-rust) — the id is right
- * there, so there is no need for a separate response field or storage key.
- * Re-dashed into canonical form to match `Uuid::to_string()`, the exact
- * string chaos-rust hashes into Meta CAPI's `external_id`.
- */
-function shopperIdFromToken(token: string): string | undefined {
-  const parts = token.split(".");
-  const simple = parts[1];
-  if (parts.length !== 3 || parts[0] !== "shopper" || !simple || !/^[0-9a-f]{32}$/.test(simple)) {
-    return undefined;
-  }
-  return `${simple.slice(0, 8)}-${simple.slice(8, 12)}-${simple.slice(12, 16)}-${simple.slice(16, 20)}-${simple.slice(20)}`;
-}
 
 /**
  * Meta Pixel/GA4 event delivery, keyed by destination: pass `metaPixel` to
@@ -69,9 +58,10 @@ export interface ClientOptions {
    */
   autoAcquireShopperToken?: boolean;
   /**
-   * Retries one 401/403 shopper request with a newly issued token. This is
-   * opt-in because changing shopper identity can orphan a cart or hide an
-   * order; use CartResource.getOrCreate for explicit cart recovery.
+   * Retries one request rejected with `shopper_token_invalid` using a newly
+   * issued token. This is opt-in because changing shopper identity can orphan
+   * a cart or hide an order; use CartResource.getOrCreate for explicit cart
+   * recovery.
    */
   retryInvalidShopperToken?: boolean;
   /** Turns on client-side Meta Pixel/GA4 event delivery; omit to leave it off. */
@@ -111,6 +101,7 @@ export class ChaosStorefrontClient {
     "getItem" | "setItem" | "removeItem"
   > | null;
   private readonly shopperTokenStorageKey: string;
+  private readonly shopperIdStorageKey: string;
   private readonly checkoutOrderStorageKey: string;
   private readonly checkoutStorage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
   private readonly autoAcquireShopperToken: boolean;
@@ -147,6 +138,11 @@ export class ChaosStorefrontClient {
         : (globalThis.localStorage ?? null);
     this.shopperTokenStorageKey = scopedStorageKey(
       SHOPPER_TOKEN_STORAGE_PREFIX,
+      this.baseUrl,
+      this.publishableKey,
+    );
+    this.shopperIdStorageKey = scopedStorageKey(
+      SHOPPER_ID_STORAGE_PREFIX,
       this.baseUrl,
       this.publishableKey,
     );
@@ -190,9 +186,7 @@ export class ChaosStorefrontClient {
     } catch {
       this.shopperTokenCache = null;
     }
-    if (this.shopperTokenCache) {
-      this.analytics?.setShopperId(shopperIdFromToken(this.shopperTokenCache));
-    }
+    if (this.shopperTokenCache) this.restoreShopperId();
 
     // One capture per page load: first touch (once) and last touch (every
     // load that carries utm_*). Later checkout and session-refresh
@@ -216,6 +210,7 @@ export class ChaosStorefrontClient {
   }
 
   setShopperToken(token: string | null): void {
+    const tokenChanged = token !== this.shopperTokenCache;
     this.shopperTokenCache = token;
     try {
       if (token) {
@@ -226,8 +221,32 @@ export class ChaosStorefrontClient {
     } catch {
       // Storage is optional; the in-memory token remains usable.
     }
-    if (token) {
-      this.analytics?.setShopperId(shopperIdFromToken(token));
+    if (!token || tokenChanged) {
+      try {
+        this.storage?.removeItem(this.shopperIdStorageKey);
+      } catch {
+        // Storage is optional; shopper authentication still works in memory.
+      }
+      this.analytics?.clearShopperId();
+    }
+  }
+
+  private installShopperSession(session: ShopperSession): void {
+    this.setShopperToken(session.shopper_token);
+    try {
+      this.storage?.setItem(this.shopperIdStorageKey, session.shopper_id);
+    } catch {
+      // Analytics identity persistence is optional.
+    }
+    this.analytics?.setShopperId(session.shopper_id);
+  }
+
+  private restoreShopperId(): void {
+    try {
+      const shopperId = this.storage?.getItem(this.shopperIdStorageKey);
+      if (shopperId) this.analytics?.setShopperId(shopperId);
+    } catch {
+      // Analytics identity persistence is optional.
     }
   }
 
@@ -267,9 +286,11 @@ export class ChaosStorefrontClient {
   async acquireShopperToken(): Promise<string> {
     if (this.shopperTokenCache) return this.shopperTokenCache;
     if (!this.pendingShopperSession) {
-      this.pendingShopperSession = this.createShopperSession().finally(() => {
-        this.pendingShopperSession = null;
-      });
+      this.pendingShopperSession = this.issueShopperSession()
+        .then((response) => response.data.shopper_token)
+        .finally(() => {
+          this.pendingShopperSession = null;
+        });
     }
     return this.pendingShopperSession;
   }
@@ -286,15 +307,22 @@ export class ChaosStorefrontClient {
     return this.acquireShopperToken();
   }
 
-  private async createShopperSession(): Promise<string> {
+  /** @internal Creates and installs a new shopper identity. */
+  async issueShopperSession(): Promise<DataEnvelope<ShopperSession>> {
     const utm = this.firstTouchUtm();
-    const envelope = await this.request<{ data: ShopperSession }>("/shopper/sessions", {
+    const response = await this.request<unknown>("/shopper/sessions", {
       method: "POST",
       body: utm ? { attribution: { utm } } : {},
     });
-    this.setShopperToken(envelope.data.shopper_token);
+    const envelope = requireShopperSession(response);
+    this.installShopperSession(envelope.data);
     this.sessionMintedHere = true;
-    return envelope.data.shopper_token;
+    return envelope;
+  }
+
+  /** @internal Whether this client created the current shopper identity. */
+  get shopperSessionWasMintedHere(): boolean {
+    return this.sessionMintedHere;
   }
 
   /**
@@ -503,18 +531,19 @@ export class ChaosStorefrontClient {
     }
     const response = await this.fetchImpl(requestUrl, init);
 
-    if (
-      !response.ok &&
-      retryShopperToken &&
-      options.requiresShopperToken &&
-      (response.status === 401 || response.status === 403) &&
-      this.shopperTokenCache
-    ) {
-      this.setShopperToken(null);
-      return this.requestWithShopperTokenRetry(path, options, false);
-    }
     if (!response.ok) {
-      await throwForResponse(response);
+      const error = await apiErrorFromResponse(response);
+      if (
+        retryShopperToken &&
+        options.requiresShopperToken &&
+        error.status === 401 &&
+        error.code === "shopper_token_invalid" &&
+        this.shopperTokenCache
+      ) {
+        this.setShopperToken(null);
+        return this.requestWithShopperTokenRetry(path, options, false);
+      }
+      throw error;
     }
     if (
       response.status === 204 ||

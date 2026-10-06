@@ -14,7 +14,9 @@ export class ChaosApiError extends Error {
   }
 }
 
-export async function throwForResponse(response: Response): Promise<never> {
+export async function apiErrorFromResponse(
+  response: Response,
+): Promise<ChaosApiError> {
   let code = "unknown_error";
   let message = `Store API request failed with HTTP ${response.status}`;
   let details: ErrorDetail[] = [];
@@ -28,5 +30,5 @@ export async function throwForResponse(response: Response): Promise<never> {
   } catch {
     // Response had no parseable JSON error body; fall back to the defaults above.
   }
-  throw new ChaosApiError(response.status, code, message, details);
+  return new ChaosApiError(response.status, code, message, details);
 }

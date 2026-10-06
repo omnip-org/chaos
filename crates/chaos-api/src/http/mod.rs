@@ -67,7 +67,9 @@ use tower_http::{
 pub(crate) use shared::error::invalid_value;
 pub use shared::error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use shared::extract::{ApiJson, ApiPath, ApiQuery, PublishableChannel, ShopperContext};
-pub use shared::response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
+pub use shared::response::{
+    ApiDateTime, ApiResponse, PageMeta, PrivateApiResponse, ResponseEnvelope, ResponseMeta,
+};
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -661,9 +663,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers()[axum::http::header::VARY],
+            "X-Chaos-Publishable-Key, X-Chaos-Shopper-Token"
+        );
         let body = to_bytes(response.into_body(), 2048).await.unwrap();
         let json = serde_json::from_slice::<Value>(&body).unwrap();
-        assert_eq!(json["error"]["code"], "unauthorized");
+        assert_eq!(json["error"]["code"], "publishable_key_required");
     }
 
     #[tokio::test]

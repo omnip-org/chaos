@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::http::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, ShopperContext, invalid_value,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, PrivateApiResponse,
+    ShopperContext, invalid_value,
 };
 
 use super::{
@@ -47,10 +48,6 @@ struct CartLinePath {
     cart_id: Uuid,
     product_variant_id: Uuid,
 }
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CreateCartRequest {}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -163,13 +160,12 @@ impl From<PaymentClientAction> for PaymentClientActionResponse {
 async fn create_cart(
     State(state): State<ApiState>,
     ShopperContext(actor): ShopperContext,
-    ApiJson(CreateCartRequest {}): ApiJson<CreateCartRequest>,
-) -> Result<ApiResponse<CartResponse>, ApiError> {
+) -> Result<PrivateApiResponse<CartResponse>, ApiError> {
     let cart = state
         .storefront_sales
         .create_cart(CreateCartInput { actor })
         .await?;
-    Ok(ApiResponse::created(CartResponse::from_detail(cart)))
+    Ok(ApiResponse::created(CartResponse::from_detail(cart)).private())
 }
 
 // ===== GET /carts =====
@@ -177,9 +173,9 @@ async fn create_cart(
 async fn get_active_cart(
     State(state): State<ApiState>,
     ShopperContext(actor): ShopperContext,
-) -> Result<ApiResponse<CartResponse>, ApiError> {
+) -> Result<PrivateApiResponse<CartResponse>, ApiError> {
     let cart = state.storefront_sales.get_active_cart(&actor).await?;
-    Ok(ApiResponse::ok(CartResponse::from_detail(cart)))
+    Ok(ApiResponse::ok(CartResponse::from_detail(cart)).private())
 }
 
 // ===== GET /carts/{cart_id} =====
@@ -188,12 +184,12 @@ async fn get_cart(
     State(state): State<ApiState>,
     ShopperContext(actor): ShopperContext,
     ApiPath(path): ApiPath<CartPath>,
-) -> Result<ApiResponse<CartResponse>, ApiError> {
+) -> Result<PrivateApiResponse<CartResponse>, ApiError> {
     let cart = state
         .storefront_sales
         .get_cart(&actor, CartId::from_uuid(path.cart_id))
         .await?;
-    Ok(ApiResponse::ok(CartResponse::from_detail(cart)))
+    Ok(ApiResponse::ok(CartResponse::from_detail(cart)).private())
 }
 
 // ===== PUT /carts/{cart_id}/lines/{product_variant_id} =====
@@ -203,7 +199,7 @@ async fn set_cart_line(
     ShopperContext(actor): ShopperContext,
     ApiPath(path): ApiPath<CartLinePath>,
     ApiJson(request): ApiJson<SetCartLineRequest>,
-) -> Result<ApiResponse<CartResponse>, ApiError> {
+) -> Result<PrivateApiResponse<CartResponse>, ApiError> {
     let cart = state
         .storefront_sales
         .set_cart_line(SetCartLineInput {
@@ -213,7 +209,7 @@ async fn set_cart_line(
             quantity: request.quantity,
         })
         .await?;
-    Ok(ApiResponse::ok(CartResponse::from_detail(cart)))
+    Ok(ApiResponse::ok(CartResponse::from_detail(cart)).private())
 }
 
 // ===== DELETE /carts/{cart_id}/lines/{product_variant_id} =====
@@ -222,7 +218,7 @@ async fn remove_cart_line(
     State(state): State<ApiState>,
     ShopperContext(actor): ShopperContext,
     ApiPath(path): ApiPath<CartLinePath>,
-) -> Result<ApiResponse<CartResponse>, ApiError> {
+) -> Result<PrivateApiResponse<CartResponse>, ApiError> {
     let cart = state
         .storefront_sales
         .remove_cart_line(RemoveCartLineInput {
@@ -231,7 +227,7 @@ async fn remove_cart_line(
             product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
         })
         .await?;
-    Ok(ApiResponse::ok(CartResponse::from_detail(cart)))
+    Ok(ApiResponse::ok(CartResponse::from_detail(cart)).private())
 }
 
 // ===== POST /carts/{cart_id}/checkout =====
@@ -273,16 +269,9 @@ async fn create_embedded_checkout(
         })
         .await?;
     Ok((
-        sensitive_response_headers(),
-        ApiResponse::created(EmbeddedCheckoutResponse::from(checkout)),
+        [(header::REFERRER_POLICY, "no-referrer")],
+        ApiResponse::created(EmbeddedCheckoutResponse::from(checkout)).private(),
     ))
-}
-
-fn sensitive_response_headers() -> [(header::HeaderName, &'static str); 2] {
-    [
-        (header::CACHE_CONTROL, "private, no-store"),
-        (header::REFERRER_POLICY, "no-referrer"),
-    ]
 }
 
 fn validate_return_url(value: &str) -> Result<(), ApiError> {

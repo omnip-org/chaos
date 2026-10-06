@@ -90,17 +90,13 @@ impl From<OrderFulfillmentItem> for OrderFulfillmentResponse {
 }
 
 #[derive(Serialize)]
-struct OrderLookupResponse {
+struct OrderResponse {
     id: Uuid,
     order_number: String,
     currency: String,
     status: OrderStatus,
     payment_status: OrderPaymentStatus,
     fulfillment_status: FulfillmentStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    shipping_locality: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    shipping_country_code: Option<String>,
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
     tax_amount_minor: i64,
@@ -113,13 +109,8 @@ struct OrderLookupResponse {
     updated_at: ApiDateTime,
 }
 
-impl From<OrderDetail> for OrderLookupResponse {
+impl From<OrderDetail> for OrderResponse {
     fn from(order: OrderDetail) -> Self {
-        let shipping_address = order.identity.shipping_address();
-        let shipping_locality = shipping_address.map(|address| address.locality().to_owned());
-        let shipping_country_code =
-            shipping_address.map(|address| address.country_code().to_owned());
-
         Self {
             id: order.id.as_uuid(),
             order_number: order.order_number.as_str().into(),
@@ -127,8 +118,6 @@ impl From<OrderDetail> for OrderLookupResponse {
             status: order.status.into(),
             payment_status: order.payment_status.into(),
             fulfillment_status: order.fulfillment_status.into(),
-            shipping_locality,
-            shipping_country_code,
             subtotal_amount_minor: order.subtotal_amount_minor,
             discount_amount_minor: order.discount_amount_minor,
             tax_amount_minor: order.tax_amount_minor,
@@ -144,27 +133,34 @@ impl From<OrderDetail> for OrderLookupResponse {
 }
 
 #[derive(Serialize)]
+struct OrderLookupResponse {
+    #[serde(flatten)]
+    order: OrderResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_locality: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_country_code: Option<String>,
+}
+
+impl From<OrderDetail> for OrderLookupResponse {
+    fn from(order: OrderDetail) -> Self {
+        let shipping_address = order.identity.shipping_address();
+        let shipping_locality = shipping_address.map(|address| address.locality().to_owned());
+        let shipping_country_code =
+            shipping_address.map(|address| address.country_code().to_owned());
+
+        Self {
+            order: order.into(),
+            shipping_locality,
+            shipping_country_code,
+        }
+    }
+}
+
+#[derive(Serialize)]
 struct OwnOrderResponse {
-    id: Uuid,
-    order_number: String,
-    store_id: Uuid,
-    channel_id: Uuid,
-    shopper_id: Uuid,
-    cart_id: Uuid,
-    currency: String,
-    status: OrderStatus,
-    payment_status: OrderPaymentStatus,
-    payment_provider_account_id: Uuid,
-    payment_provider_reference_id: Option<String>,
-    payment_failure_code: Option<String>,
-    fulfillment_status: FulfillmentStatus,
-    refunded_amount_minor: i64,
-    subtotal_amount_minor: i64,
-    discount_amount_minor: i64,
-    tax_amount_minor: i64,
-    shipping_amount_minor: i64,
-    total_amount_minor: i64,
-    amounts_finalized_at: Option<ApiDateTime>,
+    #[serde(flatten)]
+    order: OrderResponse,
     contact_email: Option<String>,
     contact_phone: Option<String>,
     billing_full_name: Option<String>,
@@ -181,17 +177,14 @@ struct OwnOrderResponse {
     shipping_administrative_area: Option<String>,
     shipping_postal_code: Option<String>,
     shipping_country_code: Option<String>,
-    lines: Vec<OrderLineResponse>,
-    fulfillments: Vec<OrderFulfillmentResponse>,
-    created_at: ApiDateTime,
-    updated_at: ApiDateTime,
 }
 
 impl From<ShopperOrderDetail> for OwnOrderResponse {
     fn from(order: ShopperOrderDetail) -> Self {
-        let contact_email = order.detail.identity.contact().email().map(str::to_owned);
-        let contact_phone = order.detail.identity.contact().phone().map(str::to_owned);
-        let billing_address = order.detail.identity.billing_address();
+        let detail = order.detail;
+        let contact_email = detail.identity.contact().email().map(str::to_owned);
+        let contact_phone = detail.identity.contact().phone().map(str::to_owned);
+        let billing_address = detail.identity.billing_address();
         let billing_full_name = billing_address.map(|address| address.full_name().to_owned());
         let billing_address_line1 =
             billing_address.map(|address| address.address_line1().to_owned());
@@ -206,7 +199,7 @@ impl From<ShopperOrderDetail> for OwnOrderResponse {
             .and_then(|address| address.postal_code())
             .map(str::to_owned);
         let billing_country_code = billing_address.map(|address| address.country_code().to_owned());
-        let shipping_address = order.detail.identity.shipping_address();
+        let shipping_address = detail.identity.shipping_address();
         let shipping_full_name = shipping_address.map(|address| address.full_name().to_owned());
         let shipping_address_line1 =
             shipping_address.map(|address| address.address_line1().to_owned());
@@ -224,26 +217,7 @@ impl From<ShopperOrderDetail> for OwnOrderResponse {
             shipping_address.map(|address| address.country_code().to_owned());
 
         Self {
-            id: order.detail.id.as_uuid(),
-            order_number: order.detail.order_number.as_str().to_owned(),
-            store_id: order.context.store_id,
-            channel_id: order.context.channel_id,
-            shopper_id: order.detail.shopper_id.as_uuid(),
-            cart_id: order.context.cart_id,
-            currency: order.detail.currency.as_str().to_owned(),
-            status: order.detail.status.into(),
-            payment_status: order.detail.payment_status.into(),
-            payment_provider_account_id: order.context.payment_provider_account_id,
-            payment_provider_reference_id: order.detail.payment_provider_reference_id,
-            payment_failure_code: order.context.payment_failure_code,
-            fulfillment_status: order.detail.fulfillment_status.into(),
-            refunded_amount_minor: order.detail.refunded_amount_minor,
-            subtotal_amount_minor: order.detail.subtotal_amount_minor,
-            discount_amount_minor: order.detail.discount_amount_minor,
-            tax_amount_minor: order.detail.tax_amount_minor,
-            shipping_amount_minor: order.detail.shipping_amount_minor,
-            total_amount_minor: order.detail.total_amount_minor,
-            amounts_finalized_at: order.detail.amounts_finalized_at.map(Into::into),
+            order: detail.into(),
             contact_email,
             contact_phone,
             billing_full_name,
@@ -260,15 +234,6 @@ impl From<ShopperOrderDetail> for OwnOrderResponse {
             shipping_administrative_area,
             shipping_postal_code,
             shipping_country_code,
-            lines: order.detail.lines.into_iter().map(Into::into).collect(),
-            fulfillments: order
-                .detail
-                .fulfillments
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-            created_at: order.detail.created_at.into(),
-            updated_at: order.detail.updated_at.into(),
         }
     }
 }
@@ -285,11 +250,8 @@ async fn lookup_order(
         .lookup_order(&actor, query.order_number.trim(), &query.email)
         .await?;
     Ok((
-        [
-            (header::CACHE_CONTROL, "private, no-store"),
-            (header::REFERRER_POLICY, "no-referrer"),
-        ],
-        ApiResponse::ok(OrderLookupResponse::from(order)),
+        [(header::REFERRER_POLICY, "no-referrer")],
+        ApiResponse::ok(OrderLookupResponse::from(order)).private(),
     ))
 }
 
@@ -304,10 +266,7 @@ async fn get_own_order(
         .storefront_sales
         .get_shopper_order(&shopper, OrderId::from_uuid(path.order_id))
         .await?;
-    Ok((
-        [(header::CACHE_CONTROL, "private, no-store")],
-        ApiResponse::ok(OwnOrderResponse::from(order)),
-    ))
+    Ok(ApiResponse::ok(OwnOrderResponse::from(order)).private())
 }
 
 #[cfg(test)]
@@ -376,21 +335,29 @@ mod tests {
         assert_eq!(json["status"], "confirmed");
         assert_eq!(json["payment_status"], "paid");
         assert_eq!(json["fulfillment_status"], "pending");
-        for field in [
-            "payment_provider_reference_id",
-            "payment_failure_code",
-            "amounts_finalized_at",
-            "contact_email",
-            "billing_full_name",
-            "shipping_locality",
-        ] {
+        for field in ["contact_email", "billing_full_name", "shipping_locality"] {
             assert_eq!(
                 json[field],
                 Value::Null,
                 "field {field} must remain nullable"
             );
         }
-        assert!(json.get("price_list_id").is_none());
-        assert!(json.get("payment_provider").is_none());
+        for internal in [
+            "store_id",
+            "channel_id",
+            "shopper_id",
+            "cart_id",
+            "price_list_id",
+            "payment_provider",
+            "payment_provider_account_id",
+            "payment_provider_reference_id",
+            "payment_failure_code",
+            "amounts_finalized_at",
+        ] {
+            assert!(
+                json.get(internal).is_none(),
+                "internal field {internal} must not cross the Storefront boundary"
+            );
+        }
     }
 }

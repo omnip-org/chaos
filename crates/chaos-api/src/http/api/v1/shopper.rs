@@ -1,12 +1,14 @@
 //! Anonymous shopper session issuance and last-touch refresh.
 
-use axum::http::HeaderMap;
-use axum::{Router, extract::State, routing::post};
+use axum::{Router, extract::State, http::HeaderMap, routing::post};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::http::{ApiError, ApiJson, ApiResponse, ApiState, PublishableChannel, ShopperContext};
+use crate::http::{
+    ApiError, ApiJson, ApiResponse, ApiState, PrivateApiResponse, PublishableChannel,
+    ShopperContext,
+};
 
 use super::attribution::{SessionAttributionRequest, shopper_session_context};
 
@@ -37,7 +39,7 @@ async fn create_session(
     headers: HeaderMap,
     PublishableChannel(actor): PublishableChannel,
     ApiJson(request): ApiJson<ShopperSessionRequest>,
-) -> Result<ApiResponse<ShopperSessionResponse>, ApiError> {
+) -> Result<PrivateApiResponse<ShopperSessionResponse>, ApiError> {
     let shopper_id = state
         .storefront_sales
         .create_shopper(
@@ -49,7 +51,8 @@ async fn create_session(
     Ok(ApiResponse::created(ShopperSessionResponse {
         shopper_id: shopper_id.as_uuid(),
         shopper_token: shopper_token.expose_secret().to_owned(),
-    }))
+    })
+    .private())
 }
 
 // ===== POST /shopper/sessions/touch =====

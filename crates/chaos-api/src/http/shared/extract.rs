@@ -12,6 +12,9 @@ use serde::de::DeserializeOwned;
 
 use crate::http::{ApiError, ApiState};
 
+const PUBLISHABLE_KEY_HEADER: &str = "x-chaos-publishable-key";
+const SHOPPER_TOKEN_HEADER: &str = "x-chaos-shopper-token";
+
 pub struct ApiJson<T>(pub T);
 pub struct ApiPath<T>(pub T);
 pub struct ApiQuery<T>(pub T);
@@ -79,7 +82,8 @@ impl FromRequestParts<ApiState> for PublishableChannel {
         let actor = state
             .publishable_key_authentication
             .authenticate(token.expose_secret())
-            .await?;
+            .await
+            .map_err(|error| invalid_credential(error, CredentialKind::PublishableKey))?;
         Ok(Self(actor))
     }
 }
@@ -95,9 +99,13 @@ impl FromRequestParts<ApiState> for ShopperContext {
         let machine = state
             .publishable_key_authentication
             .authenticate(token.expose_secret())
-            .await?;
+            .await
+            .map_err(|error| invalid_credential(error, CredentialKind::PublishableKey))?;
         let credential = shopper_credential(&parts.headers)?;
-        let shopper_id = state.shopper_credentials.verify(&machine, &credential)?;
+        let shopper_id = state
+            .shopper_credentials
+            .verify(&machine, &credential)
+            .map_err(|error| invalid_credential(error, CredentialKind::ShopperToken))?;
         Ok(Self(ShopperActor {
             machine,
             shopper_id,
@@ -107,20 +115,75 @@ impl FromRequestParts<ApiState> for ShopperContext {
 
 fn publishable_key(headers: &HeaderMap) -> Result<SecretString, ApiError> {
     let value = headers
-        .get("x-chaos-publishable-key")
+        .get(PUBLISHABLE_KEY_HEADER)
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.is_empty())
-        .ok_or(ApplicationError::Unauthorized)?;
+        .ok_or_else(|| missing_credential(CredentialKind::PublishableKey))?;
     Ok(SecretString::from(value.to_owned()))
 }
 
 fn shopper_credential(headers: &HeaderMap) -> Result<SecretString, ApiError> {
     let value = headers
-        .get("x-chaos-shopper-token")
+        .get(SHOPPER_TOKEN_HEADER)
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.is_empty())
-        .ok_or(ApplicationError::Unauthorized)?;
+        .ok_or_else(|| missing_credential(CredentialKind::ShopperToken))?;
     Ok(SecretString::from(value.to_owned()))
+}
+
+#[derive(Clone, Copy)]
+enum CredentialKind {
+    PublishableKey,
+    ShopperToken,
+}
+
+struct CredentialContract {
+    required_code: &'static str,
+    required_message: &'static str,
+    invalid_code: &'static str,
+    invalid_message: &'static str,
+}
+
+impl CredentialKind {
+    fn contract(self) -> CredentialContract {
+        match self {
+            Self::PublishableKey => CredentialContract {
+                required_code: "publishable_key_required",
+                required_message: "a publishable key is required",
+                invalid_code: "publishable_key_invalid",
+                invalid_message: "the publishable key is invalid",
+            },
+            Self::ShopperToken => CredentialContract {
+                required_code: "shopper_token_required",
+                required_message: "a shopper token is required",
+                invalid_code: "shopper_token_invalid",
+                invalid_message: "the shopper token is invalid",
+            },
+        }
+    }
+}
+
+fn missing_credential(kind: CredentialKind) -> ApiError {
+    let contract = kind.contract();
+    ApiError::Request {
+        status: axum::http::StatusCode::UNAUTHORIZED,
+        code: contract.required_code,
+        message: contract.required_message,
+    }
+}
+
+fn invalid_credential(error: ApplicationError, kind: CredentialKind) -> ApiError {
+    match error {
+        ApplicationError::Unauthorized => {
+            let contract = kind.contract();
+            ApiError::Request {
+                status: axum::http::StatusCode::UNAUTHORIZED,
+                code: contract.invalid_code,
+                message: contract.invalid_message,
+            }
+        }
+        error => error.into(),
+    }
 }
 
 #[cfg(test)]
@@ -130,8 +193,8 @@ mod tests {
     #[test]
     fn storefront_credentials_use_distinct_channel_and_shopper_headers() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-chaos-publishable-key", "pk_channel".parse().unwrap());
-        headers.insert("x-chaos-shopper-token", "shopper.token".parse().unwrap());
+        headers.insert(PUBLISHABLE_KEY_HEADER, "pk_channel".parse().unwrap());
+        headers.insert(SHOPPER_TOKEN_HEADER, "shopper.token".parse().unwrap());
 
         assert_eq!(
             publishable_key(&headers).unwrap().expose_secret(),
@@ -150,5 +213,33 @@ mod tests {
 
         assert!(publishable_key(&headers).is_err());
         assert!(shopper_credential(&headers).is_err());
+    }
+
+    #[test]
+    fn missing_and_invalid_credentials_have_distinct_error_codes() {
+        let missing_publishable_key = missing_credential(CredentialKind::PublishableKey);
+        let invalid_publishable_key = invalid_credential(
+            ApplicationError::Unauthorized,
+            CredentialKind::PublishableKey,
+        );
+        let missing_shopper_token = missing_credential(CredentialKind::ShopperToken);
+        let invalid_shopper_token =
+            invalid_credential(ApplicationError::Unauthorized, CredentialKind::ShopperToken);
+
+        for (error, expected) in [
+            (missing_publishable_key, "publishable_key_required"),
+            (invalid_publishable_key, "publishable_key_invalid"),
+            (missing_shopper_token, "shopper_token_required"),
+            (invalid_shopper_token, "shopper_token_invalid"),
+        ] {
+            assert!(matches!(
+                error,
+                ApiError::Request {
+                    status: axum::http::StatusCode::UNAUTHORIZED,
+                    code,
+                    ..
+                } if code == expected
+            ));
+        }
     }
 }

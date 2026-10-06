@@ -264,16 +264,8 @@ export type ConfirmedPurchaseOrderInput = Pick<
   "subtotal_amount_minor" | "discount_amount_minor" | "tax_amount_minor" | "shipping_amount_minor"
 >>;
 
-/** The shopper-owned `orders` row, with related lines and fulfillment progress. */
+/** Shopper-owned Order details used for confirmation UI and Purchase matching. */
 export interface OwnOrder extends OrderLookup {
-  store_id: UUID;
-  channel_id: UUID;
-  shopper_id: UUID;
-  cart_id: UUID;
-  payment_provider_account_id: UUID;
-  payment_provider_reference_id: string | null;
-  payment_failure_code: string | null;
-  amounts_finalized_at: string | null;
   contact_email: string | null;
   contact_phone: string | null;
   billing_full_name: string | null;

@@ -1,4 +1,8 @@
-use axum::{Json, http::StatusCode, response::IntoResponse};
+use axum::{
+    Json,
+    http::{StatusCode, header},
+    response::IntoResponse,
+};
 use serde::{Serialize, Serializer};
 use time::OffsetDateTime;
 
@@ -46,6 +50,9 @@ pub struct ApiResponse<T> {
     envelope: ResponseEnvelope<T>,
 }
 
+#[derive(Debug)]
+pub struct PrivateApiResponse<T>(ApiResponse<T>);
+
 impl<T> ApiResponse<T> {
     pub fn ok(data: T) -> Self {
         Self::new(StatusCode::OK, data)
@@ -66,11 +73,28 @@ impl<T> ApiResponse<T> {
         self.envelope.meta = Some(meta);
         self
     }
+
+    /// Marks shopper-owned or credential-bearing data as unsuitable for any
+    /// browser or intermediary cache.
+    pub fn private(self) -> PrivateApiResponse<T> {
+        PrivateApiResponse(self)
+    }
 }
 
 impl<T: Serialize> IntoResponse for ApiResponse<T> {
     fn into_response(self) -> axum::response::Response {
         (self.status, Json(self.envelope)).into_response()
+    }
+}
+
+impl<T: Serialize> IntoResponse for PrivateApiResponse<T> {
+    fn into_response(self) -> axum::response::Response {
+        let mut response = self.0.into_response();
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("private, no-store"),
+        );
+        response
     }
 }
 
@@ -86,6 +110,16 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&ApiDateTime::from(value)).unwrap(),
             "\"2026-08-15T12:34:56.123456Z\""
+        );
+    }
+
+    #[test]
+    fn private_responses_disable_browser_and_intermediary_caching() {
+        let response = ApiResponse::ok("secret").private().into_response();
+
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-store"
         );
     }
 }

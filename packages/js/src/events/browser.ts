@@ -177,6 +177,13 @@ export class ChaosStorefrontAnalytics {
       });
   }
 
+  clearShopperId(): void {
+    if (!this.externalIdSource) return;
+    this.externalIdSource = null;
+    this.destinations.setGa4UserId(null);
+    this.destinations.setExternalId(null);
+  }
+
   /** Adds the order identity already saved by Chaos to Meta Pixel matching. */
   async setMetaOrderIdentity(order: OwnOrder): Promise<void> {
     if (!this.destinations.hasPixel()) return;
@@ -570,7 +577,7 @@ class AnalyticsDestinations {
    * matching info — it does not re-fire an automatic PageView the way the
    * full base snippet's init would, since this SDK never uses that snippet.
    */
-  setExternalId(hash: string): void {
+  setExternalId(hash: string | null): void {
     this.externalIdHash = hash;
     this.updateMetaMatching();
   }
@@ -593,7 +600,7 @@ class AnalyticsDestinations {
    * setting, not something this SDK can flip) — sending it without that
    * enabled is harmless, GA4 just won't use it for reporting.
    */
-  setGa4UserId(shopperId: string): void {
+  setGa4UserId(shopperId: string | null): void {
     if (!this.ga4Started) return;
     try {
       this.windowRef.gtag?.("set", { user_id: shopperId });

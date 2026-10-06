@@ -7,12 +7,26 @@ import type {
 } from "../types.js";
 
 /**
- * A cart body counts as active — safe to reuse for a later mutation — when
- * the server says so, or when status is absent (older responses and test
- * doubles omit it).
+ * Only a server-confirmed active cart is safe to reuse for a later mutation.
  */
 function isActiveCart(cart: Cart): boolean {
-  return cart.status === undefined || cart.status === "active";
+  return cart.status === "active";
+}
+
+function isCartNotFound(error: unknown): error is ChaosApiError {
+  return (
+    error instanceof ChaosApiError &&
+    error.status === 404 &&
+    error.code === "cart_not_found"
+  );
+}
+
+function isShopperTokenInvalid(error: unknown): error is ChaosApiError {
+  return (
+    error instanceof ChaosApiError &&
+    error.status === 401 &&
+    error.code === "shopper_token_invalid"
+  );
 }
 
 /**
@@ -71,10 +85,9 @@ export class CartResource {
     return (await this.get(cartId)).data;
   }
 
-  async create(body: Record<string, never> = {}): Promise<DataEnvelope<Cart>> {
+  async create(): Promise<DataEnvelope<Cart>> {
     const response = await this.client.request<DataEnvelope<Cart>>("/carts", {
       method: "POST",
-      body,
       requiresShopperToken: true,
     });
     this.remember(response.data);
@@ -104,15 +117,7 @@ export class CartResource {
       this.remember(response.data);
       return response;
     } catch (error) {
-      if (
-        error instanceof ChaosApiError &&
-        (error.status === 401 || error.status === 403 || error.status === 404)
-      ) {
-        if (error.status === 401 || error.status === 403) {
-          this.client.setShopperToken(null);
-        }
-        return null;
-      }
+      if (isCartNotFound(error)) return null;
       throw error;
     }
   }
@@ -122,8 +127,8 @@ export class CartResource {
    * abandoned cart returns null without creating a replacement, and is
    * dropped from the snapshot cache.
    *
-   * Invalid shopper credentials are cleared from the configured token
-   * storage, but this method never mints a new identity as a side effect.
+   * Authentication and transport failures remain visible to the caller; this
+   * read never changes shopper identity as a side effect.
    */
   async getActive(cartId: string): Promise<DataEnvelope<Cart> | null> {
     if (!this.client.getShopperToken()) return null;
@@ -133,13 +138,7 @@ export class CartResource {
       this.forget(cartId);
       return null;
     } catch (error) {
-      if (
-        error instanceof ChaosApiError &&
-        (error.status === 401 || error.status === 403 || error.status === 404)
-      ) {
-        if (error.status === 401 || error.status === 403) {
-          this.client.setShopperToken(null);
-        }
+      if (isCartNotFound(error)) {
         this.forget(cartId);
         return null;
       }
@@ -155,6 +154,17 @@ export class CartResource {
    * active cart directly.
    */
   async getOrCreate(cartId?: string): Promise<DataEnvelope<Cart>> {
+    try {
+      return await this.resolveOrCreate(cartId);
+    } catch (error) {
+      if (!isShopperTokenInvalid(error)) throw error;
+      this.client.setShopperToken(null);
+      await this.client.acquireShopperToken();
+      return this.create();
+    }
+  }
+
+  private async resolveOrCreate(cartId?: string): Promise<DataEnvelope<Cart>> {
     if (cartId) {
       const current = await this.getActive(cartId);
       if (current) return current;
@@ -163,24 +173,15 @@ export class CartResource {
     const hadShopperToken = Boolean(this.client.getShopperToken());
     if (!hadShopperToken) {
       await this.client.acquireShopperToken();
-    } else {
-      const current = await this.getCurrent();
-      if (current) return current;
-    }
-
-    try {
-      return await this.create();
-    } catch (error) {
-      if (
-        !(error instanceof ChaosApiError) ||
-        (error.status !== 401 && error.status !== 403)
-      ) {
-        throw error;
-      }
-      this.client.setShopperToken(null);
-      await this.client.acquireShopperToken();
       return this.create();
     }
+
+    if (this.client.shopperSessionWasMintedHere) return this.create();
+
+    const current = await this.getCurrent();
+    if (current) return current;
+
+    return this.create();
   }
 
   /**

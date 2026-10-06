@@ -27,6 +27,14 @@ function jsonResponse(status: number, body: unknown): Response {
   } as unknown as Response;
 }
 
+const TEST_SHOPPER_ID = "00000000-0000-4000-8000-000000000099";
+
+function shopperSessionResponse(token: string): Response {
+  return jsonResponse(201, {
+    data: { shopper_id: TEST_SHOPPER_ID, shopper_token: token },
+  });
+}
+
 function shopperToken(headers: Headers): string | null {
   return headers.get("x-chaos-shopper-token");
 }
@@ -123,9 +131,7 @@ test("defers shopper session creation until a browser request needs it", async (
       storage: null,
       fetch: (async (url: string) => {
         requests.push(url);
-        return jsonResponse(201, {
-          data: { shopper_token: "browser-shopper-token" },
-        });
+        return shopperSessionResponse("browser-shopper-token");
       }) as unknown as typeof fetch,
     });
 
@@ -201,9 +207,7 @@ test("acquires a shopper session on the first shopper-scoped request and reuses 
       });
       requests.push({ url: String(url), headers });
       if (String(url).endsWith("/shopper/sessions")) {
-        return jsonResponse(201, {
-          data: { shopper_token: "shopper-token-abc" },
-        });
+        return shopperSessionResponse("shopper-token-abc");
       }
       return jsonResponse(201, { data: { id: "cart-1", lines: [] } });
     }) as unknown as typeof fetch,
@@ -263,14 +267,31 @@ test("explicit shopper sessions update the client token", async () => {
     publishableKey: "public_test",
     storage,
     fetch: (async () =>
-      jsonResponse(201, {
-        data: { shopper_token: "manual-token" },
-      })) as unknown as typeof fetch,
+      shopperSessionResponse("manual-token")) as unknown as typeof fetch,
   });
 
   await client.shopperSession.create();
 
   assert.equal(client.getShopperToken(), "manual-token");
+});
+
+test("does not persist a malformed shopper-session response", async () => {
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async () =>
+      jsonResponse(201, {
+        data: {},
+      })) as unknown as typeof fetch,
+  });
+
+  await assert.rejects(client.shopperSession.create(), (error: unknown) => {
+    return (
+      error instanceof ChaosApiError &&
+      error.code === "invalid_shopper_session_response"
+    );
+  });
+  assert.equal(client.getShopperToken(), null);
 });
 
 test("refreshes a stale shopper token once and retries the request", async () => {
@@ -288,10 +309,10 @@ test("refreshes a stale shopper token once and retries the request", async () =>
       });
       if (url.endsWith("/carts/cart-1")) {
         if (requests.at(-1)?.token === "stale-token")
-          return jsonResponse(401, { error: { code: "unauthorized" } });
+          return jsonResponse(401, { error: { code: "shopper_token_invalid" } });
         return jsonResponse(200, { data: { id: "cart-1", lines: [] } });
       }
-      return jsonResponse(201, { data: { shopper_token: "fresh-token" } });
+      return shopperSessionResponse("fresh-token");
     }) as unknown as typeof fetch,
   });
   client.setShopperToken("stale-token");
@@ -314,7 +335,7 @@ test("can fail on a stale shopper token without silently changing identity", asy
     retryInvalidShopperToken: false,
     fetch: (async (url: string) => {
       requests.push(url);
-      return jsonResponse(401, { error: { code: "unauthorized" } });
+      return jsonResponse(401, { error: { code: "shopper_token_invalid" } });
     }) as unknown as typeof fetch,
   });
   client.setShopperToken("stale-token");
@@ -325,6 +346,35 @@ test("can fail on a stale shopper token without silently changing identity", asy
 
   assert.equal(requests.length, 1);
   assert.equal(client.getShopperToken(), "stale-token");
+});
+
+test("does not rotate shopper identity for a publishable-key failure", async () => {
+  let requestCount = 0;
+  const client = new ChaosStorefrontClient({
+    publishableKey: "invalid_key",
+    storage: null,
+    retryInvalidShopperToken: true,
+    fetch: (async () => {
+      requestCount += 1;
+      return jsonResponse(401, {
+        error: {
+          code: "publishable_key_invalid",
+          message: "the publishable key is invalid",
+        },
+      });
+    }) as unknown as typeof fetch,
+  });
+  client.setShopperToken("stable-shopper-token");
+
+  await assert.rejects(client.cart.get("cart-1"), (error: unknown) => {
+    return (
+      error instanceof ChaosApiError &&
+      error.code === "publishable_key_invalid"
+    );
+  });
+
+  assert.equal(requestCount, 1);
+  assert.equal(client.getShopperToken(), "stable-shopper-token");
 });
 
 test("can require an explicitly seeded shopper token", async () => {
@@ -394,7 +444,7 @@ test("shares one shopper-session request across concurrent explicit acquisitions
       if (url.endsWith("/shopper/sessions")) {
         sessionRequests += 1;
         await new Promise((resolve) => setTimeout(resolve, 0));
-        return jsonResponse(201, { data: { shopper_token: "shared-token" } });
+        return shopperSessionResponse("shared-token");
       }
       return jsonResponse(200, { data: {} });
     }) as unknown as typeof fetch,
@@ -417,7 +467,7 @@ test("serializes concurrent addLine calls for one cart", async () => {
     randomUUID: () => "random-id",
     fetch: (async (url: string, init: RequestInit) => {
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+        return shopperSessionResponse("shopper-token");
       }
       if (init.method === "GET") {
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -518,7 +568,7 @@ test("payments create an embedded Checkout session with SDK-owned request detail
         body: typeof init.body === "string" ? init.body : undefined,
       });
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+        return shopperSessionResponse("shopper-token");
       }
       if (url.endsWith("/carts/cart-1")) {
         return jsonResponse(200, {
@@ -544,7 +594,7 @@ test("payments create an embedded Checkout session with SDK-owned request detail
         });
       }
       return jsonResponse(404, {
-        error: { code: "not_found", message: "not found" },
+        error: { code: "cart_not_found", message: "not found" },
       });
     }) as unknown as typeof fetch,
   });
@@ -581,7 +631,7 @@ test("checkout attaches explicit attribution and excludes it from the idempotenc
         body: typeof init.body === "string" ? init.body : undefined,
       });
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+        return shopperSessionResponse("shopper-token");
       }
       if (url.endsWith("/carts/cart-1")) {
         return jsonResponse(200, {
@@ -601,7 +651,7 @@ test("checkout attaches explicit attribution and excludes it from the idempotenc
           },
         });
       }
-      return jsonResponse(404, { error: { code: "not_found", message: "not found" } });
+      return jsonResponse(404, { error: { code: "cart_not_found", message: "not found" } });
     }) as unknown as typeof fetch,
   });
 
@@ -642,7 +692,7 @@ test("checkout defaults source_url to the current page in a browser", async () =
       storage: null,
       fetch: (async (url: string, init: RequestInit) => {
         if (url.endsWith("/shopper/sessions")) {
-          return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+          return shopperSessionResponse("shopper-token");
         }
         if (url.endsWith("/carts/cart-1")) {
           return jsonResponse(200, {
@@ -663,7 +713,7 @@ test("checkout defaults source_url to the current page in a browser", async () =
             },
           });
         }
-        return jsonResponse(404, { error: { code: "not_found", message: "not found" } });
+        return jsonResponse(404, { error: { code: "cart_not_found", message: "not found" } });
       }) as unknown as typeof fetch,
     });
 
@@ -700,7 +750,7 @@ test("checkout captures utm_* tags from the current page URL", async () => {
       storage: null,
       fetch: (async (url: string, init: RequestInit) => {
         if (url.includes("/shopper/sessions")) {
-          return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+          return shopperSessionResponse("shopper-token");
         }
         if (url.endsWith("/carts/cart-1")) {
           return jsonResponse(200, {
@@ -721,7 +771,7 @@ test("checkout captures utm_* tags from the current page URL", async () => {
             },
           });
         }
-        return jsonResponse(404, { error: { code: "not_found", message: "not found" } });
+        return jsonResponse(404, { error: { code: "cart_not_found", message: "not found" } });
       }) as unknown as typeof fetch,
     });
 
@@ -763,7 +813,7 @@ test("shopper session creation sends attribution in the JSON body", async () => 
           body: typeof init.body === "string" ? init.body : undefined,
         });
         if (String(url).includes("/shopper/sessions")) {
-          return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+          return shopperSessionResponse("shopper-token");
         }
         return jsonResponse(201, { data: { id: "cart-1", lines: [] } });
       }) as unknown as typeof fetch,
@@ -806,9 +856,7 @@ test("shopper session creation forwards the first-touch utm_* even after the URL
       baseUrl: "https://shop.example.com/api/v1",
       storage,
       fetch: (async () =>
-        jsonResponse(201, {
-          data: { shopper_token: "t" },
-        })) as unknown as typeof fetch,
+        shopperSessionResponse("t")) as unknown as typeof fetch,
     });
     await first.shopperSession.create();
 
@@ -825,7 +873,7 @@ test("shopper session creation forwards the first-touch utm_* even after the URL
           url: String(url),
           body: typeof init.body === "string" ? init.body : undefined,
         });
-        return jsonResponse(201, { data: { shopper_token: "t2" } });
+        return shopperSessionResponse("t2");
       }) as unknown as typeof fetch,
     });
     later.setShopperToken(null);
@@ -871,7 +919,7 @@ test("checkout keeps the last-touch utm_* after an MPA navigation drops them fro
       storage,
       fetch: (async (url: string, init: RequestInit) => {
         if (url.includes("/shopper/sessions")) {
-          return jsonResponse(201, { data: { shopper_token: "t" } });
+          return shopperSessionResponse("t");
         }
         if (url.endsWith("/carts/cart-1")) {
           return jsonResponse(200, {
@@ -892,7 +940,7 @@ test("checkout keeps the last-touch utm_* after an MPA navigation drops them fro
             },
           });
         }
-        return jsonResponse(404, { error: { code: "not_found", message: "x" } });
+        return jsonResponse(404, { error: { code: "cart_not_found", message: "x" } });
       }) as unknown as typeof fetch,
     });
 
@@ -941,7 +989,7 @@ test("a returning visitor's warmup refreshes last_seen with the new journey's ut
       storage,
       fetch: (async (url: string) => {
         if (url.includes("/shopper/sessions")) {
-          return jsonResponse(201, { data: { shopper_token: "tok" } });
+          return shopperSessionResponse("tok");
         }
         return jsonResponse(200, { data: { id: "c1", lines: [] } });
       }) as unknown as typeof fetch,
@@ -1004,7 +1052,7 @@ test("cart line mutations report the resulting quantity delta to analytics", asy
     storage: null,
     fetch: (async (url: string) => {
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+        return shopperSessionResponse("shopper-token");
       }
       if (url.endsWith("/carts/cart-1") ) {
         return jsonResponse(200, {
@@ -1055,7 +1103,7 @@ test("a quantity-raising line mutation sends only cart data to the server", asyn
     storage: null,
     fetch: (async (url: string, init: RequestInit) => {
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+        return shopperSessionResponse("shopper-token");
       }
       if (url.endsWith("/carts/cart-1")) {
         return jsonResponse(200, {
@@ -1122,7 +1170,7 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
     storage: null,
     fetch: (async (url: string, init: RequestInit) => {
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+        return shopperSessionResponse("shopper-token");
       }
       if (url.endsWith("/carts/cart-1")) {
         return jsonResponse(200, { data: sourceCart });
@@ -1144,7 +1192,7 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
         return jsonResponse(201, { data: nextCart });
       }
       return jsonResponse(404, {
-        error: { code: "not_found", message: "not found" },
+        error: { code: "cart_not_found", message: "not found" },
       });
     }) as unknown as typeof fetch,
   });
@@ -1190,7 +1238,7 @@ test("checkout can hand off directly from a fresh Cart without another read or C
     fetch: (async (url: string, init: RequestInit) => {
       requests.push({ url, method: init.method });
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+        return shopperSessionResponse("shopper-token");
       }
       if (url.endsWith("/carts/cart-1/checkout")) {
         return jsonResponse(201, {
@@ -1206,7 +1254,7 @@ test("checkout can hand off directly from a fresh Cart without another read or C
         });
       }
       return jsonResponse(404, {
-        error: { code: "not_found", message: "not found" },
+        error: { code: "cart_not_found", message: "not found" },
       });
     }) as unknown as typeof fetch,
   });
@@ -1238,7 +1286,7 @@ test("payments reject a checkout response that is missing required fields", asyn
     randomUUID: () => `id-${++sequence}`,
     fetch: (async (url: string) => {
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+        return shopperSessionResponse("shopper-token");
       }
       if (url.endsWith("/carts/cart-1")) {
         return jsonResponse(200, {
@@ -1278,7 +1326,7 @@ test("payments create an embedded Checkout session with no attribution outside a
         body: typeof init.body === "string" ? init.body : undefined,
       });
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+        return shopperSessionResponse("shopper-token");
       }
       if (url.endsWith("/carts/cart-1")) {
         return jsonResponse(200, {
@@ -1304,7 +1352,7 @@ test("payments create an embedded Checkout session with no attribution outside a
         });
       }
       return jsonResponse(404, {
-        error: { code: "not_found", message: "not found" },
+        error: { code: "cart_not_found", message: "not found" },
       });
     }) as unknown as typeof fetch,
   });
@@ -1329,7 +1377,7 @@ test("checkout reuses one idempotency key per cart so a retry cannot double-char
     randomUUID: () => `key-${++sequence}`,
     fetch: (async (url: string, init: RequestInit) => {
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+        return shopperSessionResponse("shopper-token");
       }
       if (url.endsWith("/carts/cart-1") || url.endsWith("/carts/cart-2")) {
         return jsonResponse(200, {
@@ -1393,7 +1441,7 @@ test("addLine after getOrCreate reuses the created cart without a GET", async ()
     fetch: (async (url: string, init: RequestInit) => {
       calls.push(`${init.method ?? "GET"} ${url}`);
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "tok" } });
+        return shopperSessionResponse("tok");
       }
       if (url.endsWith("/carts") && init.method === "POST") {
         return jsonResponse(201, {
@@ -1446,7 +1494,7 @@ test("a second addLine on the same cart skips the GET and stacks quantity", asyn
     storage: null,
     fetch: (async (url: string, init: RequestInit) => {
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "tok" } });
+        return shopperSessionResponse("tok");
       }
       if (init.method === "GET") {
         getCount += 1;
@@ -1506,7 +1554,7 @@ test("addLine re-reads the cart once the snapshot TTL has passed", async () => {
     now: () => clock,
     fetch: (async (url: string, init: RequestInit) => {
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "tok" } });
+        return shopperSessionResponse("tok");
       }
       if (init.method === "GET") getCount += 1;
       return jsonResponse(200, {
@@ -1538,7 +1586,7 @@ test("cartSnapshotTtlMs 0 makes every mutation re-read the cart", async () => {
     cartSnapshotTtlMs: 0,
     fetch: (async (url: string, init: RequestInit) => {
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "tok" } });
+        return shopperSessionResponse("tok");
       }
       if (init.method === "GET") getCount += 1;
       return jsonResponse(200, {
@@ -1568,7 +1616,7 @@ test("resume resolves a returning shopper's active cart from the server", async 
       fetch: (async (url: string, init: RequestInit) => {
         calls.push(`${init.method ?? "GET"} ${url}`);
         if (url.endsWith("/shopper/sessions")) {
-          return jsonResponse(201, { data: { shopper_token: "tok" } });
+          return shopperSessionResponse("tok");
         }
         return jsonResponse(init.method === "POST" ? 201 : 200, {
           data: {
@@ -1623,7 +1671,7 @@ test("resume creates a cart when a returning shopper has no active cart", async 
       calls.push(`${init.method ?? "GET"} ${url}`);
       if (url.endsWith("/carts") && init.method === "GET") {
         return jsonResponse(404, {
-          error: { code: "not_found", message: "active cart not found" },
+          error: { code: "cart_not_found", message: "active cart not found" },
         });
       }
       return jsonResponse(201, {
@@ -1643,6 +1691,26 @@ test("resume creates a cart when a returning shopper has no active cart", async 
   assert.deepEqual(calls, ["GET /api/v1/carts", "POST /api/v1/carts"]);
 });
 
+test("resume does not create a cart for an unrelated 404", async () => {
+  let requestCount = 0;
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async () => {
+      requestCount += 1;
+      return jsonResponse(404, {
+        error: { code: "not_found", message: "the route was not found" },
+      });
+    }) as unknown as typeof fetch,
+  });
+  client.setShopperToken("shopper-token");
+
+  await assert.rejects(client.cart.resume(), (error: unknown) => {
+    return error instanceof ChaosApiError && error.code === "not_found";
+  });
+  assert.equal(requestCount, 1);
+});
+
 test("concurrent warmup calls do one session and one cart round", async () => {
   let sessions = 0;
   let carts = 0;
@@ -1653,7 +1721,7 @@ test("concurrent warmup calls do one session and one cart round", async () => {
       if (url.endsWith("/shopper/sessions")) {
         sessions += 1;
         await new Promise((resolve) => setTimeout(resolve, 0));
-        return jsonResponse(201, { data: { shopper_token: "tok" } });
+        return shopperSessionResponse("tok");
       }
       if (url.endsWith("/carts") && init.method === "POST") {
         carts += 1;
@@ -1667,7 +1735,7 @@ test("concurrent warmup calls do one session and one cart round", async () => {
           },
         });
       }
-      return jsonResponse(404, { error: { code: "not_found", message: "x" } });
+      return jsonResponse(404, { error: { code: "cart_not_found", message: "x" } });
     }) as unknown as typeof fetch,
   });
 
@@ -1688,7 +1756,7 @@ test("addLine recovers from cart_not_active by rotating to a fresh cart", async 
     storage: new MemoryStorage(),
     fetch: (async (url: string, init: RequestInit) => {
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "tok" } });
+        return shopperSessionResponse("tok");
       }
       if (url.endsWith("/carts") && init.method === "POST") {
         return jsonResponse(201, {
@@ -1739,7 +1807,7 @@ test("addLine recovers from cart_not_active by rotating to a fresh cart", async 
           },
         });
       }
-      return jsonResponse(404, { error: { code: "not_found", message: "x" } });
+      return jsonResponse(404, { error: { code: "cart_not_found", message: "x" } });
     }) as unknown as typeof fetch,
   });
 
@@ -1760,7 +1828,7 @@ test("setLine surfaces cart_not_active if the fresh cart also rejects it", async
     storage: null,
     fetch: (async (url: string, init: RequestInit) => {
       if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "tok" } });
+        return shopperSessionResponse("tok");
       }
       if (url.endsWith("/carts") && init.method === "POST") {
         posts += 1;

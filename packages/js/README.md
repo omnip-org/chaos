@@ -81,32 +81,25 @@ const gallery = resolveProductMedia(product, selectedVariant);
 // the cart id has since been locked or completed by a checkout, the mutation
 // retries once against the shopper's current active cart — read the id back
 // from the response, it may have changed.
-await chaos.cart.addLine(cart.data.id, selectedVariant.id, 1);
+const { data: activeCart } = await chaos.cart.addLine(
+  cart.data.id,
+  selectedVariant.id,
+  1,
+);
 
 // Checkout: fbc/fbp and the current page URL are read automatically (pass
 // `attribution` explicitly to override, or `{}` to send none). Chaos sends
 // the attribution on the Cart and uses it for Meta CAPI `Purchase` once the
 // order is paid. InitiateCheckout is projected only by the browser SDK.
-const creation = await chaos.payments.createEmbeddedCheckoutWithCart(cart.data.id, {
+const creation = await chaos.payments.createEmbeddedCheckoutWithCart(activeCart.id, {
   returnUrl: "https://shop.example.com/checkout/return",
 });
-// Latency-sensitive checkout pages can reuse the Cart body they just loaded
-// and move creation of the next active Cart off the payment-UI critical path:
-const start = await chaos.payments.createEmbeddedCheckoutFromCart(cart.data, {
-  returnUrl: "https://shop.example.com/checkout/return",
-});
-const nextCart = chaos.cart.getOrCreate();
-const mounted = await mountEmbeddedCheckout(
-  start.data.checkout.client_action,
-  document.querySelector("#checkout")!,
-);
-// Keep recovery observable without delaying the mounted payment form.
-await nextCart;
 
 // Stripe Embedded Checkout — Chaos reserves inventory, locks the Cart, and
 // creates the pending Order before Stripe collects the remaining details.
 // The return URL must be HTTPS outside local loopback development.
 const action = creation.data.checkout.client_action;
+const nextCart = creation.data.cart;
 // The SDK's Stripe adapter has no extra dependencies: it loads Stripe.js from
 // https://js.stripe.com at runtime (Stripe does not allow bundling it).
 const mounted = await mountEmbeddedCheckout(action, document.querySelector("#checkout")!, {
@@ -119,6 +112,10 @@ const mounted = await mountEmbeddedCheckout(action, document.querySelector("#che
 });
 // `mounted.unmount()` hides the form (e.g. on `onComplete`); `mounted.destroy()`
 // disposes it. Direct Stripe accounts do not use a Stripe-Account header.
+
+// A latency-sensitive checkout page that already has a fresh Cart body can
+// call createEmbeddedCheckoutFromCart(activeCart, options), mount its returned
+// action immediately, and resolve chaos.cart.getOrCreate() in parallel.
 
 // On the return page, Stripe has appended order_id to the URL. Poll the
 // shopper-owned Order until Chaos's payment webhook marks it paid. Each read
@@ -139,6 +136,20 @@ payment and other high-risk response shapes before returning them. When the
 API contract changes, publish this package first, update the consumer's
 lockfile to that exact release, and run the SDK and consumer checks against
 the same version.
+
+Client recovery decisions use stable API error codes rather than broad HTTP
+statuses. Authentication distinguishes `publishable_key_required`,
+`publishable_key_invalid`, `shopper_token_required`, and
+`shopper_token_invalid`; a missing Cart is `cart_not_found`. Only
+`shopper_token_invalid` may rotate shopper identity, and only
+`cart_not_found` may trigger Cart creation. Other 401, 403, and 404 responses
+remain visible to the caller.
+
+Shopper-owned responses and issued credentials use `Cache-Control: private,
+no-store`. Storefront responses also vary on both Chaos credential headers so
+a shared HTTP cache cannot reuse one Channel or Shopper response for another.
+Treat `shopper_token` as opaque; `shopper_id` is the explicit analytics and
+identity value and may be stored beside it by this SDK.
 
 Event delivery starts as soon as `ChaosStorefrontClient` is constructed with
 an `events` option; a destination (Pixel, GA4) stays off until its config key
@@ -240,11 +251,11 @@ await chaos.payments.createEmbeddedCheckoutWithCart(cart.data.id, {
 malformed rather than failing the checkout over it — attribution is
 enrichment for ad platforms, never a condition of a successful purchase.
 
-`view_content` and `page_view` never reach CAPI — only the browser
-Pixel/GA4 projections above carry them. That is a deliberate scope decision
-(catalog-browsing signals stay client-side; the funnel events that need
-server-side resilience against ad blockers and Safari ITP are the three
-above), not a gap to route around by adding them here.
+`page_view`, `view_content`, `search`, `add_to_cart`, and
+`initiate_checkout` never reach CAPI; only their browser Pixel/GA4
+projections carry them. `Purchase` is the server-side event because payment
+confirmation is authoritative on the server and must survive a closed return
+page or blocked browser script.
 
 ### Guest order lookup
 
