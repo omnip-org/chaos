@@ -1,14 +1,15 @@
-//! Cart lifecycle and embedded checkout endpoints.
+//! Cart lifecycle and checkout endpoints.
 
 use axum::{
     Router,
     extract::State,
-    http::HeaderMap,
+    http::{HeaderMap, header},
+    response::IntoResponse,
     routing::{get, post, put},
 };
 use chaos_core::{
     contracts::{CartDetail, CartLineItem, PaymentClientAction},
-    payments::CreateEmbeddedCheckoutInput,
+    payments::{CreateEmbeddedCheckoutInput, EmbeddedCheckoutResult},
     sales::{
         CheckoutAttributionInput, CreateCartInput, CreateStripeCheckoutInput, RemoveCartLineInput,
         SetCartLineInput, UtmTags,
@@ -134,6 +135,20 @@ struct CartLineResponse {
     media: Vec<MediaResponse>,
 }
 
+#[derive(Serialize)]
+struct EmbeddedCheckoutResponse {
+    order_id: Uuid,
+    order_number: String,
+    client_action: PaymentClientActionResponse,
+}
+
+#[derive(Serialize)]
+struct PaymentClientActionResponse {
+    r#type: PaymentClientActionType,
+    public_key: String,
+    client_token: String,
+}
+
 impl CartResponse {
     fn from_detail(cart: CartDetail) -> Self {
         Self {
@@ -164,28 +179,14 @@ impl From<CartLineItem> for CartLineResponse {
     }
 }
 
-#[derive(Serialize)]
-struct EmbeddedCheckoutResponse {
-    order_id: Uuid,
-    order_number: String,
-    client_action: PaymentClientActionResponse,
-}
-
-impl EmbeddedCheckoutResponse {
-    fn from_result(checkout: chaos_core::payments::EmbeddedCheckoutResult, order_id: Uuid) -> Self {
+impl From<EmbeddedCheckoutResult> for EmbeddedCheckoutResponse {
+    fn from(checkout: EmbeddedCheckoutResult) -> Self {
         Self {
-            order_id,
+            order_id: checkout.order_id.as_uuid(),
             order_number: checkout.order_number,
             client_action: checkout.client_action.into(),
         }
     }
-}
-
-#[derive(Serialize)]
-struct PaymentClientActionResponse {
-    r#type: PaymentClientActionType,
-    public_key: String,
-    client_token: String,
 }
 
 impl From<PaymentClientAction> for PaymentClientActionResponse {
@@ -213,7 +214,7 @@ fn attribution_input(
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
     let client_user_agent = headers
-        .get(axum::http::header::USER_AGENT)
+        .get(header::USER_AGENT)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
     let meta = attribution.and_then(|value| value.meta.as_ref());
@@ -308,8 +309,9 @@ async fn create_embedded_checkout(
     ShopperContext(actor): ShopperContext,
     ApiPath(path): ApiPath<CartPath>,
     ApiJson(request): ApiJson<CreateEmbeddedCheckoutRequest>,
-) -> Result<ApiResponse<EmbeddedCheckoutResponse>, ApiError> {
+) -> Result<impl IntoResponse, ApiError> {
     validate_return_url(&request.return_url)?;
+    let now = state.clock.now();
     let idempotency_key = headers
         .get("idempotency-key")
         .and_then(|value| value.to_str().ok())
@@ -323,7 +325,7 @@ async fn create_embedded_checkout(
             cart_id: CartId::from_uuid(path.cart_id),
             return_url: request.return_url.clone(),
             payment_provider: request.payment_provider.into(),
-            now: state.clock.now(),
+            now,
             idempotency_key,
             attribution: attribution_input(request.attribution.as_ref(), &headers),
         })
@@ -334,13 +336,20 @@ async fn create_embedded_checkout(
             actor,
             order_id: draft.order_id,
             return_url: request.return_url,
-            now: state.clock.now(),
+            now,
         })
         .await?;
-    Ok(ApiResponse::created(EmbeddedCheckoutResponse::from_result(
-        checkout,
-        draft.order_id.as_uuid(),
-    )))
+    Ok((
+        sensitive_response_headers(),
+        ApiResponse::created(EmbeddedCheckoutResponse::from(checkout)),
+    ))
+}
+
+fn sensitive_response_headers() -> [(header::HeaderName, &'static str); 2] {
+    [
+        (header::CACHE_CONTROL, "private, no-store"),
+        (header::REFERRER_POLICY, "no-referrer"),
+    ]
 }
 
 fn validate_return_url(value: &str) -> Result<(), ApiError> {
@@ -376,14 +385,14 @@ mod tests {
 
     use super::*;
 
-    async fn decode_checkout_request(
-        ApiJson(_request): ApiJson<CreateEmbeddedCheckoutRequest>,
+    async fn decode_cart_line_request(
+        ApiJson(_request): ApiJson<SetCartLineRequest>,
     ) -> StatusCode {
         StatusCode::OK
     }
 
-    async fn decode_cart_line_request(
-        ApiJson(_request): ApiJson<SetCartLineRequest>,
+    async fn decode_checkout_request(
+        ApiJson(_request): ApiJson<CreateEmbeddedCheckoutRequest>,
     ) -> StatusCode {
         StatusCode::OK
     }

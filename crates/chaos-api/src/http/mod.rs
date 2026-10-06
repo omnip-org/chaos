@@ -506,6 +506,10 @@ mod tests {
             (Method::GET, "/api/v1/collections"),
             (Method::POST, "/api/v1/carts"),
             (
+                Method::POST,
+                "/api/v1/carts/00000000-0000-4000-8000-000000000001/checkout",
+            ),
+            (
                 Method::GET,
                 "/api/v1/orders/search?order_number=W-12345678&email=user@example.com",
             ),
@@ -558,6 +562,12 @@ mod tests {
                 .body(Body::empty())
                 .unwrap(),
             Request::post("/api/v1/orders/00000000-0000-0000-0000-000000000000/checkout")
+                .body(Body::empty())
+                .unwrap(),
+            Request::get("/api/v1/orders/00000000-0000-0000-0000-000000000000/checkout")
+                .body(Body::empty())
+                .unwrap(),
+            Request::get("/api/v1/checkouts/pending")
                 .body(Body::empty())
                 .unwrap(),
             Request::get("/api/v1/orders/00000000-0000-0000-0000-000000000000")

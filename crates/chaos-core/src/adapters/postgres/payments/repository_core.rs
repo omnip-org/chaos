@@ -21,7 +21,7 @@ use chaos_domain::{
         PaymentAttemptStatus, Refund, RefundId, RefundStatus,
     },
     pricing::Money,
-    sales::{CartId, Order, OrderId, OrderStatus},
+    sales::{Order, OrderId, OrderPaymentStatus, OrderStatus},
     stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
     store::{SalesChannelId, StoreId},
 };
@@ -64,12 +64,11 @@ pub struct PostgresStripeRepository {
 pub(crate) struct OrderCheckoutPayment {
     pub order_id: OrderId,
     pub order_number: String,
-    pub source_cart_id: CartId,
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub provider: String,
-    pub order_status: String,
-    pub payment_status: String,
+    pub order_status: OrderStatus,
+    pub payment_status: OrderPaymentStatus,
     pub client_action: Option<PaymentClientAction>,
 }
 
@@ -77,7 +76,6 @@ pub(crate) struct OrderCheckoutPayment {
 struct OrderCheckoutPaymentRow {
     id: Uuid,
     order_number: String,
-    cart_id: Uuid,
     amount_minor: i64,
     currency: String,
     order_status: String,
@@ -96,12 +94,13 @@ impl OrderCheckoutPaymentRow {
         Ok(OrderCheckoutPayment {
             order_id: OrderId::from_uuid(self.id),
             order_number: self.order_number,
-            source_cart_id: CartId::from_uuid(self.cart_id),
             amount_minor: self.amount_minor,
             currency: CurrencyCode::parse(&self.currency)?,
             provider: self.provider,
-            order_status: self.order_status,
-            payment_status: self.payment_status,
+            order_status: OrderStatus::parse(&self.order_status)
+                .ok_or_else(corrupt_checkout_state)?,
+            payment_status: OrderPaymentStatus::parse(&self.payment_status)
+                .ok_or_else(corrupt_checkout_state)?,
             client_action,
         })
     }
@@ -175,7 +174,6 @@ async fn load_order_checkout_payment(
     let channel_id = actor.channel_id.ok_or(ApplicationError::Forbidden)?;
     let row = sqlx::query_as::<_, OrderCheckoutPaymentRow>(
         "SELECT sales_order.id AS id, sales_order.order_number AS order_number, \
-                sales_order.cart_id AS cart_id, \
                 sales_order.subtotal_amount_minor AS amount_minor, \
                 sales_order.currency::text AS currency, \
                 sales_order.status::text AS order_status, \
@@ -406,7 +404,7 @@ fn corrupt_state() -> ApplicationError {
 
 fn corrupt_checkout_state() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!(
-        "database contains invalid payment client action state"
+        "database contains invalid embedded checkout state"
     ))
 }
 

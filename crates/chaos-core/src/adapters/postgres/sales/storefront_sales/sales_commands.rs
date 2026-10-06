@@ -434,9 +434,6 @@ impl PostgresStorefrontSalesRepository {
 
         let draft = CheckoutDraft {
             order_id,
-            source_cart_id: cart_id,
-            currency,
-            subtotal_amount_minor: subtotal,
         };
         transaction.commit().await.map_err(database_error)?;
         Ok(draft)
@@ -525,23 +522,11 @@ async fn existing_checkout_draft(
     cart_id: CartId,
     request: &StripeCheckoutRequest,
 ) -> Result<Option<CheckoutDraft>, ApplicationError> {
-    let row = sqlx::query_as::<
-        _,
-        (
-            Uuid,
-            String,
-            Option<Uuid>,
-            String,
-            String,
-            i64,
-            Option<Vec<u8>>,
-        ),
-    >(
+    let row = sqlx::query_as::<_, (Uuid, String, Option<Uuid>, String, Option<Vec<u8>>)>(
         // Checkout idempotency now lives on the Cart (one Order per Cart); the
         // Order still carries id/status/currency/subtotal for the draft.
         "SELECT sales_order.id, sales_order.status::text, \
                 cart.checkout_idempotency_key, sales_order.payment_status::text, \
-                sales_order.currency::text, sales_order.subtotal_amount_minor, \
                 cart.checkout_request_fingerprint \
          FROM chaos_commerce.orders AS sales_order \
          INNER JOIN chaos_commerce.carts AS cart \
@@ -563,7 +548,7 @@ async fn existing_checkout_draft(
     if row.2 != Some(request.idempotency_key) {
         return Err(checkout_cart_already_started());
     }
-    if let Some(stored_fingerprint) = row.6 {
+    if let Some(stored_fingerprint) = row.4 {
         let requested_fingerprint = checkout_request_fingerprint(actor, request);
         if stored_fingerprint.as_slice() != requested_fingerprint.as_slice() {
             return Err(idempotency_key_reused());
@@ -574,9 +559,6 @@ async fn existing_checkout_draft(
     }
     Ok(Some(CheckoutDraft {
         order_id: OrderId::from_uuid(row.0),
-        source_cart_id: cart_id,
-        currency: parse_currency(&row.4)?,
-        subtotal_amount_minor: row.5,
     }))
 }
 

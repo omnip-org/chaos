@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chaos_domain::integration::IntegrationCapability;
 use chaos_domain::{
-    sales::OrderId,
+    sales::{OrderId, OrderPaymentStatus, OrderStatus},
     store::{StoreId, StoreRole},
     stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
 };
@@ -29,8 +29,8 @@ pub struct CreateEmbeddedCheckoutInput {
 }
 
 pub struct EmbeddedCheckoutResult {
+    pub order_id: OrderId,
     pub order_number: String,
-    pub source_cart_id: chaos_domain::sales::CartId,
     pub client_action: PaymentClientAction,
 }
 
@@ -181,23 +181,13 @@ impl PaymentService {
         &self,
         input: CreateEmbeddedCheckoutInput,
     ) -> Result<EmbeddedCheckoutResult, ApplicationError> {
-        require_checkout_key(&input.actor.machine)?;
-        self.open_embedded_checkout(
-            input.actor,
-            input.order_id,
-            Some(input.return_url),
-            input.now,
-        )
-        .await
-    }
-
-    async fn open_embedded_checkout(
-        &self,
-        actor: ShopperActor,
-        order_id: OrderId,
-        return_url: Option<String>,
-        now: OffsetDateTime,
-    ) -> Result<EmbeddedCheckoutResult, ApplicationError> {
+        let CreateEmbeddedCheckoutInput {
+            actor,
+            order_id,
+            return_url,
+            now,
+        } = input;
+        require_checkout_key(&actor.machine)?;
         let payment = self
             .repository
             .get_order_checkout_payment(&actor, order_id)
@@ -206,13 +196,11 @@ impl PaymentService {
         ensure_order_payment_open(&payment)?;
         if let Some(client_action) = payment.client_action {
             return Ok(EmbeddedCheckoutResult {
+                order_id,
                 order_number: payment.order_number,
-                source_cart_id: payment.source_cart_id,
                 client_action,
             });
         }
-        let return_url = return_url.ok_or_else(checkout_return_url_required)?;
-
         let provider = self
             .payment_providers
             .get(&payment.provider)
@@ -245,8 +233,8 @@ impl PaymentService {
             return Err(checkout_client_action_missing());
         };
         Ok(EmbeddedCheckoutResult {
+            order_id,
             order_number: payment.order_number,
-            source_cart_id: payment.source_cart_id,
             client_action,
         })
     }
@@ -391,7 +379,9 @@ fn payment_provider_not_supported() -> ApplicationError {
 fn ensure_order_payment_open(
     payment: &crate::adapters::postgres::OrderCheckoutPayment,
 ) -> Result<(), ApplicationError> {
-    if payment.order_status == "pending" && payment.payment_status == "pending" {
+    if payment.order_status == OrderStatus::Pending
+        && payment.payment_status == OrderPaymentStatus::Pending
+    {
         return Ok(());
     }
     Err(ApplicationError::Conflict {
@@ -404,13 +394,6 @@ fn order_not_found(order_id: OrderId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "order",
         id: order_id.as_uuid().to_string(),
-    }
-}
-
-fn checkout_return_url_required() -> ApplicationError {
-    ApplicationError::Conflict {
-        code: "checkout_return_url_required",
-        message: "return_url is required when the payment handoff has not been created yet",
     }
 }
 

@@ -41,9 +41,6 @@ pub struct CartDetail {
 
 pub struct CheckoutDraft {
     pub order_id: OrderId,
-    pub source_cart_id: CartId,
-    pub currency: CurrencyCode,
-    pub subtotal_amount_minor: i64,
 }
 
 pub struct OrderLineItem {
