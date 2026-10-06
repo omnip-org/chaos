@@ -5,10 +5,9 @@ import {
 } from "./events/browser.js";
 import { fnv1a32 } from "./internal/hash.js";
 import {
-  firstTouchUtmParams,
-  lastTouchUtmParams,
+  firstTouchUtmTags,
+  lastTouchUtmTags,
   recordPageUtm,
-  type UtmRequestParams,
 } from "./internal/utm.js";
 import { CartResource } from "./resources/cart.js";
 import { CatalogResource } from "./resources/catalog.js";
@@ -20,6 +19,7 @@ import type { ViewContentAnalyticsInput } from "./events/types.js";
 import type {
   CartLineMutation,
   ConfirmedPurchaseOrderInput,
+  CheckoutUtm,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutStart,
   OwnOrder,
@@ -27,7 +27,6 @@ import type {
 } from "./types.js";
 
 const SHOPPER_TOKEN_STORAGE_PREFIX = "chaos.storefront.shopper_token";
-const CART_ID_STORAGE_PREFIX = "chaos.storefront.cart_id";
 const CHECKOUT_ORDER_STORAGE_PREFIX = "chaos.storefront.checkout_order";
 const CHECKOUT_ORDER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_CART_SNAPSHOT_TTL_MS = 30_000;
@@ -112,7 +111,6 @@ export class ChaosStorefrontClient {
     "getItem" | "setItem" | "removeItem"
   > | null;
   private readonly shopperTokenStorageKey: string;
-  private readonly cartIdStorageKey: string;
   private readonly checkoutOrderStorageKey: string;
   private readonly checkoutStorage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
   private readonly autoAcquireShopperToken: boolean;
@@ -149,11 +147,6 @@ export class ChaosStorefrontClient {
         : (globalThis.localStorage ?? null);
     this.shopperTokenStorageKey = scopedStorageKey(
       SHOPPER_TOKEN_STORAGE_PREFIX,
-      this.baseUrl,
-      this.publishableKey,
-    );
-    this.cartIdStorageKey = scopedStorageKey(
-      CART_ID_STORAGE_PREFIX,
       this.baseUrl,
       this.publishableKey,
     );
@@ -239,55 +232,27 @@ export class ChaosStorefrontClient {
   }
 
   /**
-   * The last active cart id this client persisted, or null. Read straight from
-   * storage (not cached) so another tab's change is visible. `cart.resume()`
-   * and `cart.warmup()` use it to skip re-creating a cart on reload.
-   * @internal
-   */
-  getStoredCartId(): string | null {
-    try {
-      return this.storage?.getItem(this.cartIdStorageKey) ?? null;
-    } catch {
-      return null;
-    }
-  }
-
-  /** @internal */
-  setStoredCartId(cartId: string | null): void {
-    try {
-      if (cartId) {
-        this.storage?.setItem(this.cartIdStorageKey, cartId);
-      } else {
-        this.storage?.removeItem(this.cartIdStorageKey);
-      }
-    } catch {
-      // Storage is optional; cart recovery simply falls back to creating one.
-    }
-  }
-
-  /**
-   * `utm_*` query params for shopper-session creation — the visitor's first
-   * touch, persisted so an MPA navigation that drops `utm_*` from the URL
-   * still forwards it. The server records this as
+   * UTM body for shopper-session creation — the visitor's first touch,
+   * persisted so an MPA navigation that drops `utm_*` from the URL still
+   * forwards it. The server records this as
    * `shoppers.attribution.first_seen` and never rewrites it.
    * @internal
    */
-  firstTouchUtmParams(): UtmRequestParams {
-    return firstTouchUtmParams(this.storage);
+  firstTouchUtm(): CheckoutUtm | undefined {
+    return firstTouchUtmTags(this.storage);
   }
 
   /**
-   * `utm_*` query params for the `last_seen` session refresh — the entry
-   * point of the visitor's current journey, overwritten on every page load
-   * that carries `utm_*`. Same source the checkout `attribution.utm` body
-   * draws on.
+   * UTM body for the `last_seen` session refresh — the entry point of the
+   * visitor's current journey, overwritten on every page load that carries
+   * `utm_*`. Same source the checkout `attribution.utm` body draws on.
    * @internal
    */
-  lastTouchUtmParams(): UtmRequestParams {
-    return lastTouchUtmParams(this.storage);
+  lastTouchUtm(): CheckoutUtm | undefined {
+    return lastTouchUtmTags(this.storage);
   }
 
-  /** The storage backing token/cart/UTM persistence, for the resources that
+  /** The storage backing token and UTM persistence, for the resources that
    * assemble attribution. `null` when persistence is disabled. @internal */
   get attributionStorage():
     | Pick<Storage, "getItem" | "setItem">
@@ -322,10 +287,11 @@ export class ChaosStorefrontClient {
   }
 
   private async createShopperSession(): Promise<string> {
-    const envelope = await this.request<{ data: ShopperSession }, UtmRequestParams>(
-      "/shopper/sessions",
-      { method: "POST", query: this.firstTouchUtmParams() },
-    );
+    const utm = this.firstTouchUtm();
+    const envelope = await this.request<{ data: ShopperSession }>("/shopper/sessions", {
+      method: "POST",
+      body: utm ? { attribution: { utm } } : {},
+    });
     this.setShopperToken(envelope.data.shopper_token);
     this.sessionMintedHere = true;
     return envelope.data.shopper_token;
@@ -342,8 +308,8 @@ export class ChaosStorefrontClient {
    */
   refreshLastSeen(): void {
     if (!this.shopperTokenCache || this.sessionMintedHere) return;
-    const query = this.lastTouchUtmParams();
-    if (Object.keys(query).length === 0) return;
+    const utm = this.lastTouchUtm();
+    if (!utm) return;
     let session: Pick<Storage, "getItem" | "setItem"> | null;
     try {
       session = globalThis.sessionStorage ?? null;
@@ -363,7 +329,7 @@ export class ChaosStorefrontClient {
     }
     void this.request("/shopper/sessions/touch", {
       method: "POST",
-      query,
+      body: { attribution: { utm } },
       requiresShopperToken: true,
     }).catch(() => {
       // last_seen is best-effort enrichment; a checkout must never depend on it.
@@ -514,7 +480,7 @@ export class ChaosStorefrontClient {
   ): Promise<T> {
     const method = options.method ?? "GET";
     const headers: Record<string, string> = {
-      authorization: `Bearer ${this.publishableKey}`,
+      "X-Chaos-Publishable-Key": this.publishableKey,
     };
 
     if (options.body !== undefined) {
@@ -527,7 +493,7 @@ export class ChaosStorefrontClient {
       headers["Idempotency-Key"] = options.idempotencyKey;
     }
     if (options.requiresShopperToken) {
-      headers["x-chaos-shopper-token"] = await this.ensureShopperToken();
+      headers["X-Chaos-Shopper-Token"] = await this.ensureShopperToken();
     }
     const requestUrl = this.buildUrl(path, options.query ?? {});
 

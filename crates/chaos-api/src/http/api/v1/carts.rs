@@ -10,10 +10,7 @@ use axum::{
 use chaos_core::{
     contracts::{CartDetail, CartLineItem, PaymentClientAction},
     payments::{CreateEmbeddedCheckoutInput, EmbeddedCheckoutResult},
-    sales::{
-        CheckoutAttributionInput, CreateCartInput, CreateStripeCheckoutInput, RemoveCartLineInput,
-        SetCartLineInput, UtmTags,
-    },
+    sales::{CreateCartInput, CreateStripeCheckoutInput, RemoveCartLineInput, SetCartLineInput},
 };
 use chaos_domain::{catalog::ProductVariantId, sales::CartId};
 use secrecy::ExposeSecret;
@@ -24,12 +21,15 @@ use crate::http::{
     ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, ShopperContext, invalid_value,
 };
 
-use super::wire::{CartStatus, MediaResponse, PaymentClientActionType, PaymentProvider};
+use super::{
+    attribution::{CheckoutAttributionRequest, checkout_attribution_input},
+    wire::{CartStatus, MediaResponse, PaymentClientActionType, PaymentProvider},
+};
 
 #[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
-        .route("/carts", post(create_cart))
+        .route("/carts", get(get_active_cart).post(create_cart))
         .route("/carts/{cart_id}", get(get_cart))
         .route("/carts/{cart_id}/lines/{product_variant_id}", put(set_cart_line).delete(remove_cart_line))
         .route("/carts/{cart_id}/checkout", post(create_embedded_checkout))
@@ -64,48 +64,7 @@ struct CreateEmbeddedCheckoutRequest {
     return_url: String,
     payment_provider: PaymentProvider,
     #[serde(default)]
-    attribution: Option<AttributionRequest>,
-}
-
-/// Ad-platform attribution captured at checkout and saved for the
-/// server-side Purchase event. `source_url` and `utm` are not
-/// platform-specific, so they sit alongside the per-platform `meta`
-/// namespace.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AttributionRequest {
-    #[serde(default)]
-    source_url: Option<String>,
-    #[serde(default)]
-    utm: Option<UtmAttributionRequest>,
-    #[serde(default)]
-    meta: Option<MetaAttributionRequest>,
-}
-
-/// Standard `utm_*` campaign tags, minus the redundant `utm_` prefix since
-/// they are already namespaced under `utm`.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UtmAttributionRequest {
-    #[serde(default)]
-    source: Option<String>,
-    #[serde(default)]
-    medium: Option<String>,
-    #[serde(default)]
-    campaign: Option<String>,
-    #[serde(default)]
-    term: Option<String>,
-    #[serde(default)]
-    content: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MetaAttributionRequest {
-    #[serde(default)]
-    fbc: Option<String>,
-    #[serde(default)]
-    fbp: Option<String>,
+    attribution: Option<CheckoutAttributionRequest>,
 }
 
 // ===== response contracts =====
@@ -199,43 +158,6 @@ impl From<PaymentClientAction> for PaymentClientActionResponse {
     }
 }
 
-// ===== request mapping =====
-
-/// `client_ip_address`/`client_user_agent` come from this request itself
-/// (`X-Real-IP` is set by `deploy/nginx` from the real client address,
-/// behind Cloudflare's realip module), never from the request body — the
-/// browser has no trustworthy way to report either.
-fn attribution_input(
-    attribution: Option<&AttributionRequest>,
-    headers: &HeaderMap,
-) -> Option<CheckoutAttributionInput> {
-    let client_ip_address = headers
-        .get("x-real-ip")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<std::net::IpAddr>().ok())
-        .map(|value| value.to_string());
-    let client_user_agent = headers
-        .get(header::USER_AGENT)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    let meta = attribution.and_then(|value| value.meta.as_ref());
-    let utm = attribution.and_then(|value| value.utm.as_ref());
-    Some(CheckoutAttributionInput {
-        meta_fbc: meta.and_then(|meta| meta.fbc.clone()),
-        meta_fbp: meta.and_then(|meta| meta.fbp.clone()),
-        client_ip_address,
-        client_user_agent,
-        source_url: attribution.and_then(|value| value.source_url.clone()),
-        utm: UtmTags {
-            source: utm.and_then(|utm| utm.source.clone()),
-            medium: utm.and_then(|utm| utm.medium.clone()),
-            campaign: utm.and_then(|utm| utm.campaign.clone()),
-            term: utm.and_then(|utm| utm.term.clone()),
-            content: utm.and_then(|utm| utm.content.clone()),
-        },
-    })
-}
-
 // ===== POST /carts =====
 
 async fn create_cart(
@@ -248,6 +170,16 @@ async fn create_cart(
         .create_cart(CreateCartInput { actor })
         .await?;
     Ok(ApiResponse::created(CartResponse::from_detail(cart)))
+}
+
+// ===== GET /carts =====
+
+async fn get_active_cart(
+    State(state): State<ApiState>,
+    ShopperContext(actor): ShopperContext,
+) -> Result<ApiResponse<CartResponse>, ApiError> {
+    let cart = state.storefront_sales.get_active_cart(&actor).await?;
+    Ok(ApiResponse::ok(CartResponse::from_detail(cart)))
 }
 
 // ===== GET /carts/{cart_id} =====
@@ -328,7 +260,7 @@ async fn create_embedded_checkout(
             payment_provider: request.payment_provider.into(),
             now,
             idempotency_key,
-            attribution: attribution_input(request.attribution.as_ref(), &headers),
+            attribution: checkout_attribution_input(request.attribution.as_ref(), &headers),
         })
         .await?;
     let checkout = state
@@ -385,22 +317,6 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-
-    #[test]
-    fn checkout_attribution_accepts_v4_and_v6_but_omits_invalid_ip() {
-        for (raw, expected) in [
-            ("203.0.113.10", Some("203.0.113.10")),
-            ("2001:db8::1", Some("2001:db8::1")),
-            ("not-an-ip", None),
-        ] {
-            let mut headers = HeaderMap::new();
-            headers.insert("x-real-ip", raw.parse().unwrap());
-
-            let attribution = attribution_input(None, &headers).unwrap();
-
-            assert_eq!(attribution.client_ip_address.as_deref(), expected);
-        }
-    }
 
     async fn decode_cart_line_request(
         ApiJson(_request): ApiJson<SetCartLineRequest>,

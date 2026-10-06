@@ -8,6 +8,11 @@ is meant to ship in a browser bundle (it's Channel-scoped and read-only); the
 shopper token is acquired and persisted automatically (`window.localStorage`
 by default).
 
+Every Storefront request sends the channel-scoped publishable key through
+`X-Chaos-Publishable-Key`. Shopper-owned requests additionally send the
+shopper token through `X-Chaos-Shopper-Token`. Storefront requests do not use
+the standard `Authorization` header.
+
 Client-side event delivery (Meta Pixel, GA4) is wired up internally from
 `ClientOptions.events` — there is no separate analytics class to construct,
 start, or export. Pass `providers.metaPixel`/`providers.ga4` to turn either
@@ -53,8 +58,8 @@ const chaos = new ChaosStorefrontClient({
 });
 
 // Call once on page load (don't await it on the critical render path):
-// acquires the shopper session and an active cart, resuming the persisted one
-// when possible, so the first "add to cart" is a single PUT instead of
+// acquires the shopper session and resolves its active cart from the server,
+// so the first "add to cart" is a single PUT instead of
 // session + create + get + put. Concurrent calls share one round of work.
 const cart = await chaos.cart.warmup();
 
@@ -139,14 +144,16 @@ Event delivery starts as soon as `ChaosStorefrontClient` is constructed with
 an `events` option; a destination (Pixel, GA4) stays off until its config key
 is present in `events.providers` — there is no separate start/stop call.
 Advanced/uncommon operations (`getShopperToken`, `randomUUID`, the raw
-`cart.getActive()`/`cart.getOrCreate()`) live directly on the client; invalid
-shopper-token retries are opt-in (`retryInvalidShopperToken`) because
+`cart.getCurrent()`/`cart.getActive()`/`cart.getOrCreate()`) live directly on
+the client; invalid shopper-token retries are opt-in
+(`retryInvalidShopperToken`) because
 silently minting a replacement can orphan a cart or hide an order.
 `cart.warmup()` is the intended page-load call; it delegates to
-`cart.resume()`, which reuses the cart id the client persisted next to the
-shopper token (same `storage`) after validating it with a `GET`. A consumer
-that drives the cart id itself can keep calling `cart.getOrCreate(id)` and
-ignore both.
+`cart.resume()`, which asks `GET /carts` for an existing shopper's current
+active Cart and creates one only when none exists. A newly minted shopper goes
+straight to creation. Cart identity is server-owned and is not persisted in
+browser storage. A consumer that already has a cart id can keep calling
+`cart.getOrCreate(id)` and ignore both.
 
 There are exactly six events — `page_view`, `view_content`, `search`,
 `add_to_cart`, `initiate_checkout`, `purchase` — and this SDK is the only

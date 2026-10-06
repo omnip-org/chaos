@@ -4,6 +4,7 @@ use axum::Router;
 
 use crate::http::ApiState;
 
+mod attribution;
 mod carts;
 mod collections;
 mod order;

@@ -152,6 +152,35 @@ impl PostgresStorefrontSalesRepository {
         Ok(detail)
     }
 
+    pub(crate) async fn get_active_cart(
+        &self,
+        shopper: &ShopperActor,
+    ) -> Result<Option<CartDetail>, ApplicationError> {
+        let actor = &shopper.machine;
+        let channel_id = require_channel(actor)?;
+        let mut transaction = self.begin_shopper(shopper).await?;
+        let cart_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM chaos_commerce.carts \
+             WHERE store_id = $1 AND channel_id = $2 AND shopper_id = $3 \
+               AND status = 'active' \
+             ORDER BY updated_at DESC, id DESC LIMIT 1",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(channel_id.as_uuid())
+        .bind(shopper.shopper_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let detail = match cart_id {
+            Some(cart_id) => {
+                load_cart(&mut transaction, actor, CartId::from_uuid(cart_id)).await?
+            }
+            None => None,
+        };
+        transaction.commit().await.map_err(database_error)?;
+        Ok(detail)
+    }
+
     pub(crate) async fn get_cart(
         &self,
         shopper: &ShopperActor,

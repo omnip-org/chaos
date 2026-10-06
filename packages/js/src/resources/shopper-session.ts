@@ -1,5 +1,4 @@
 import type { ChaosStorefrontClient } from "../client.js";
-import type { UtmRequestParams } from "../internal/utm.js";
 import type { DataEnvelope, ShopperSession } from "../types.js";
 
 export class ShopperSessionResource {
@@ -11,9 +10,10 @@ export class ShopperSessionResource {
    * this directly — shopper-scoped requests acquire the session automatically.
    */
   async create(): Promise<DataEnvelope<ShopperSession>> {
-    const response = await this.client.request<DataEnvelope<ShopperSession>, UtmRequestParams>(
+    const utm = this.client.firstTouchUtm();
+    const response = await this.client.request<DataEnvelope<ShopperSession>>(
       "/shopper/sessions",
-      { method: "POST", query: this.client.firstTouchUtmParams() },
+      { method: "POST", body: utm ? { attribution: { utm } } : {} },
     );
     this.client.setShopperToken(response.data.shopper_token);
     return response;

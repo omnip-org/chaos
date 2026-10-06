@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::{FromRequest, FromRequestParts, Path, Query, Request},
-    http::{HeaderMap, header::AUTHORIZATION, request::Parts},
+    http::{HeaderMap, request::Parts},
 };
 use chaos_core::{
     ApplicationError,
@@ -75,7 +75,7 @@ impl FromRequestParts<ApiState> for PublishableChannel {
         parts: &mut Parts,
         state: &ApiState,
     ) -> Result<Self, Self::Rejection> {
-        let token = bearer_token(&parts.headers)?;
+        let token = publishable_key(&parts.headers)?;
         let actor = state
             .publishable_key_authentication
             .authenticate(token.expose_secret())
@@ -91,7 +91,7 @@ impl FromRequestParts<ApiState> for ShopperContext {
         parts: &mut Parts,
         state: &ApiState,
     ) -> Result<Self, Self::Rejection> {
-        let token = bearer_token(&parts.headers)?;
+        let token = publishable_key(&parts.headers)?;
         let machine = state
             .publishable_key_authentication
             .authenticate(token.expose_secret())
@@ -105,11 +105,10 @@ impl FromRequestParts<ApiState> for ShopperContext {
     }
 }
 
-fn bearer_token(headers: &HeaderMap) -> Result<SecretString, ApiError> {
+fn publishable_key(headers: &HeaderMap) -> Result<SecretString, ApiError> {
     let value = headers
-        .get(AUTHORIZATION)
+        .get("x-chaos-publishable-key")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
         .filter(|value| !value.is_empty())
         .ok_or(ApplicationError::Unauthorized)?;
     Ok(SecretString::from(value.to_owned()))
@@ -122,4 +121,34 @@ fn shopper_credential(headers: &HeaderMap) -> Result<SecretString, ApiError> {
         .filter(|value| !value.is_empty())
         .ok_or(ApplicationError::Unauthorized)?;
     Ok(SecretString::from(value.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storefront_credentials_use_distinct_channel_and_shopper_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-chaos-publishable-key", "pk_channel".parse().unwrap());
+        headers.insert("x-chaos-shopper-token", "shopper.token".parse().unwrap());
+
+        assert_eq!(
+            publishable_key(&headers).unwrap().expose_secret(),
+            "pk_channel"
+        );
+        assert_eq!(
+            shopper_credential(&headers).unwrap().expose_secret(),
+            "shopper.token"
+        );
+    }
+
+    #[test]
+    fn authorization_is_not_a_storefront_credential() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer legacy-token".parse().unwrap());
+
+        assert!(publishable_key(&headers).is_err());
+        assert!(shopper_credential(&headers).is_err());
+    }
 }

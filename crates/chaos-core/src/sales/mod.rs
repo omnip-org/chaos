@@ -146,6 +146,17 @@ impl StorefrontSales {
         self.repository.create_cart(&input.actor).await
     }
 
+    pub async fn get_active_cart(
+        &self,
+        actor: &ShopperActor,
+    ) -> Result<CartDetail, ApplicationError> {
+        actor.machine.require_sales_channel()?;
+        self.repository
+            .get_active_cart(actor)
+            .await?
+            .ok_or_else(active_cart_not_found)
+    }
+
     pub async fn get_cart(
         &self,
         actor: &ShopperActor,
@@ -341,6 +352,13 @@ fn cart_not_found(cart_id: CartId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "cart",
         id: cart_id.as_uuid().to_string(),
+    }
+}
+
+fn active_cart_not_found() -> ApplicationError {
+    ApplicationError::NotFound {
+        resource: "cart",
+        id: "active".into(),
     }
 }
 

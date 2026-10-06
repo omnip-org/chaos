@@ -27,6 +27,10 @@ function jsonResponse(status: number, body: unknown): Response {
   } as unknown as Response;
 }
 
+function shopperToken(headers: Headers): string | null {
+  return headers.get("x-chaos-shopper-token");
+}
+
 test("checkout order lookup keeps the original shopper identity", async () => {
   const requests: Array<{ url: string; token: string | null }> = [];
   const order = {
@@ -40,7 +44,7 @@ test("checkout order lookup keeps the original shopper identity", async () => {
     storage: null,
     retryInvalidShopperToken: true,
     fetch: (async (url: string, init: RequestInit) => {
-      requests.push({ url: String(url), token: new Headers(init.headers).get("x-chaos-shopper-token") });
+      requests.push({ url: String(url), token: shopperToken(new Headers(init.headers)) });
       return jsonResponse(200, { data: order });
     }) as unknown as typeof fetch,
   });
@@ -65,7 +69,7 @@ test("guest order search uses GET with number and email, without a shopper token
       requests.push({
         url: String(url),
         method: init.method,
-        token: new Headers(init.headers).get("x-chaos-shopper-token"),
+        token: shopperToken(new Headers(init.headers)),
       });
       return jsonResponse(200, { data: { order_number: "W-12345678" } });
     }) as unknown as typeof fetch,
@@ -210,6 +214,9 @@ test("acquires a shopper session on the first shopper-scoped request and reuses 
 
   assert.equal(requests.length, 3);
   assert.match(requests[0]!.url, /\/shopper\/sessions$/);
+  assert.equal(requests[0]!.headers["x-chaos-publishable-key"], "public_test");
+  assert.equal(requests[0]!.headers["x-chaos-shopper-token"], undefined);
+  assert.equal(requests[0]!.headers.authorization, undefined);
   assert.equal(
     requests[1]!.headers["x-chaos-shopper-token"],
     "shopper-token-abc",
@@ -218,6 +225,10 @@ test("acquires a shopper session on the first shopper-scoped request and reuses 
     requests[2]!.headers["x-chaos-shopper-token"],
     "shopper-token-abc",
   );
+  assert.equal(requests[1]!.headers["x-chaos-publishable-key"], "public_test");
+  assert.equal(requests[2]!.headers["x-chaos-publishable-key"], "public_test");
+  assert.equal(requests[1]!.headers.authorization, undefined);
+  assert.equal(requests[2]!.headers.authorization, undefined);
   assert.equal(client.getShopperToken(), "shopper-token-abc");
 });
 
@@ -273,7 +284,7 @@ test("refreshes a stale shopper token once and retries the request", async () =>
       const headers = new Headers(init.headers);
       requests.push({
         url,
-        token: headers.get("x-chaos-shopper-token") ?? undefined,
+        token: shopperToken(headers) ?? undefined,
       });
       if (url.endsWith("/carts/cart-1")) {
         if (requests.at(-1)?.token === "stale-token")
@@ -337,14 +348,14 @@ test("can require an explicitly seeded shopper token", async () => {
   assert.equal(requestCount, 0);
 });
 
-test("creates a fresh cart when the stored cart is locked", async () => {
+test("creates a fresh cart when the supplied cart is locked", async () => {
   const requests: Array<{ url: string; token: string | null }> = [];
   const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     baseUrl: "https://shop.example.com/api/v1",
     storage: null,
     fetch: (async (url: string, init: RequestInit) => {
-      const token = new Headers(init.headers).get("x-chaos-shopper-token");
+      const token = shopperToken(new Headers(init.headers));
       requests.push({ url, token });
       if (url.endsWith("/carts/locked-cart")) {
         return jsonResponse(200, {
@@ -543,7 +554,7 @@ test("payments create an embedded Checkout session with SDK-owned request detail
   });
 
   assert.equal(
-    requests[2]?.headers.get("x-chaos-shopper-token"),
+    shopperToken(requests[2]!.headers),
     "shopper-token",
   );
   assert.equal(requests[2]?.headers.get("idempotency-key"), "id-1");
@@ -732,7 +743,7 @@ test("checkout captures utm_* tags from the current page URL", async () => {
   }
 });
 
-test("shopper session creation forwards utm_* tags from the current page URL", async () => {
+test("shopper session creation sends attribution in the JSON body", async () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", {
     value: {
@@ -740,14 +751,17 @@ test("shopper session creation forwards utm_* tags from the current page URL", a
     },
     configurable: true,
   });
-  const requests: string[] = [];
+  const requests: Array<{ url: string; body: string | undefined }> = [];
   try {
     const client = new ChaosStorefrontClient({
       publishableKey: "public_test",
       baseUrl: "https://shop.example.com/api/v1",
       storage: null,
-      fetch: (async (url: string) => {
-        requests.push(String(url));
+      fetch: (async (url: string, init: RequestInit) => {
+        requests.push({
+          url: String(url),
+          body: typeof init.body === "string" ? init.body : undefined,
+        });
         if (String(url).includes("/shopper/sessions")) {
           return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
         }
@@ -757,13 +771,16 @@ test("shopper session creation forwards utm_* tags from the current page URL", a
 
     await client.cart.create();
 
-    const sessionUrl = requests.find((url) => url.includes("/shopper/sessions"));
-    assert.ok(sessionUrl, "a shopper session was created");
-    const params = new URL(sessionUrl!).searchParams;
-    assert.equal(params.get("utm_source"), "newsletter");
-    assert.equal(params.get("utm_campaign"), "fall");
-    assert.equal(params.get("utm_medium"), null);
-    assert.equal(params.get("other"), null, "only utm_* params are forwarded");
+    const session = requests.find((request) =>
+      request.url.includes("/shopper/sessions"),
+    );
+    assert.ok(session, "a shopper session was created");
+    assert.equal(new URL(session.url).search, "");
+    assert.deepEqual(JSON.parse(session.body ?? "{}"), {
+      attribution: {
+        utm: { source: "newsletter", campaign: "fall" },
+      },
+    });
   } finally {
     if (descriptor) {
       Object.defineProperty(globalThis, "window", descriptor);
@@ -798,22 +815,26 @@ test("shopper session creation forwards the first-touch utm_* even after the URL
     // A later MPA navigation: no utm_* on the URL, and a stale token so a new
     // session is minted. It must still carry the persisted first-touch tags.
     setHref("https://shop.example.com/products/x");
-    const requests: string[] = [];
+    const requests: Array<{ url: string; body: string | undefined }> = [];
     const later = new ChaosStorefrontClient({
       publishableKey: "public_test",
       baseUrl: "https://shop.example.com/api/v1",
       storage,
-      fetch: (async (url: string) => {
-        requests.push(String(url));
+      fetch: (async (url: string, init: RequestInit) => {
+        requests.push({
+          url: String(url),
+          body: typeof init.body === "string" ? init.body : undefined,
+        });
         return jsonResponse(201, { data: { shopper_token: "t2" } });
       }) as unknown as typeof fetch,
     });
     later.setShopperToken(null);
     await later.shopperSession.create();
 
-    const params = new URL(requests[0]!).searchParams;
-    assert.equal(params.get("utm_source"), "meta");
-    assert.equal(params.get("utm_campaign"), "spring");
+    assert.equal(new URL(requests[0]!.url).search, "");
+    assert.deepEqual(JSON.parse(requests[0]!.body ?? "{}"), {
+      attribution: { utm: { source: "meta", campaign: "spring" } },
+    });
   } finally {
     if (descriptor) {
       Object.defineProperty(globalThis, "window", descriptor);
@@ -929,15 +950,18 @@ test("a returning visitor's warmup refreshes last_seen with the new journey's ut
 
     // Day 3: same browser (token in storage), back through ad B.
     setHref("https://shop.example.com/?utm_source=B&utm_campaign=summer");
-    const touched: URL[] = [];
+    const touched: Array<{ url: URL; body: string | undefined }> = [];
     const day3 = new ChaosStorefrontClient({
       publishableKey: "public_test",
       baseUrl: "https://shop.example.com/api/v1",
       storage,
-      fetch: (async (url: string) => {
+      fetch: (async (url: string, init: RequestInit) => {
         const parsed = new URL(String(url));
         if (parsed.pathname.endsWith("/shopper/sessions/touch")) {
-          touched.push(parsed);
+          touched.push({
+            url: parsed,
+            body: typeof init.body === "string" ? init.body : undefined,
+          });
           return jsonResponse(204, {});
         }
         if (parsed.pathname.endsWith("/carts")) {
@@ -955,8 +979,10 @@ test("a returning visitor's warmup refreshes last_seen with the new journey's ut
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.equal(touched.length, 1, "exactly one last_seen refresh per tab");
-    assert.equal(touched[0]!.searchParams.get("utm_source"), "B");
-    assert.equal(touched[0]!.searchParams.get("utm_campaign"), "summer");
+    assert.equal(touched[0]!.url.search, "");
+    assert.deepEqual(JSON.parse(touched[0]!.body ?? "{}"), {
+      attribution: { utm: { source: "B", campaign: "summer" } },
+    });
   } finally {
     if (descriptor) {
       Object.defineProperty(globalThis, "window", descriptor);
@@ -1532,7 +1558,7 @@ test("cartSnapshotTtlMs 0 makes every mutation re-read the cart", async () => {
   assert.equal(getCount, 2);
 });
 
-test("resume reuses a persisted active cart instead of creating one", async () => {
+test("resume resolves a returning shopper's active cart from the server", async () => {
   const storage = new MemoryStorage();
   const makeClient = (calls: string[]) =>
     new ChaosStorefrontClient({
@@ -1544,7 +1570,7 @@ test("resume reuses a persisted active cart instead of creating one", async () =
         if (url.endsWith("/shopper/sessions")) {
           return jsonResponse(201, { data: { shopper_token: "tok" } });
         }
-        return jsonResponse(url.endsWith("/carts") ? 201 : 200, {
+        return jsonResponse(init.method === "POST" ? 201 : 200, {
           data: {
             id: "cart-1",
             status: "active",
@@ -1564,15 +1590,15 @@ test("resume reuses a persisted active cart instead of creating one", async () =
       (entry) =>
         entry === "POST https://shop.example.com/api/v1/carts",
     ),
-    "first load with no persisted id creates a cart",
+    "a newly issued shopper session creates its first cart directly",
   );
 
   const secondLoad: string[] = [];
   const resumed = await makeClient(secondLoad).cart.resume();
   assert.equal(resumed.data.id, "cart-1");
   assert.ok(
-    secondLoad.includes("GET https://shop.example.com/api/v1/carts/cart-1"),
-    "second load validates the persisted id with a GET",
+    secondLoad.includes("GET https://shop.example.com/api/v1/carts"),
+    "a returning shopper asks the server for its current cart",
   );
   assert.ok(
     !secondLoad.some((entry) => entry.startsWith("POST https://shop.example.com/api/v1/carts")),
@@ -1580,40 +1606,24 @@ test("resume reuses a persisted active cart instead of creating one", async () =
   );
 });
 
-test("resume creates a new cart when the persisted one is locked", async () => {
+test("resume creates a cart when a returning shopper has no active cart", async () => {
   const storage = new MemoryStorage();
-  await new ChaosStorefrontClient({
+  const firstClient = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage,
-    fetch: (async (url: string) => {
-      if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "tok" } });
-      }
-      return jsonResponse(201, {
-        data: {
-          id: "cart-1",
-          status: "active",
-          currency: "USD",
-          subtotal_amount_minor: 0,
-          lines: [],
-        },
-      });
-    }) as unknown as typeof fetch,
-  }).cart.resume();
+    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+  });
+  firstClient.setShopperToken("tok");
 
+  const calls: string[] = [];
   const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage,
-    fetch: (async (url: string) => {
-      if (url.endsWith("/carts/cart-1")) {
-        return jsonResponse(200, {
-          data: {
-            id: "cart-1",
-            status: "locked",
-            currency: "USD",
-            subtotal_amount_minor: 0,
-            lines: [],
-          },
+    fetch: (async (url: string, init: RequestInit) => {
+      calls.push(`${init.method ?? "GET"} ${url}`);
+      if (url.endsWith("/carts") && init.method === "GET") {
+        return jsonResponse(404, {
+          error: { code: "not_found", message: "active cart not found" },
         });
       }
       return jsonResponse(201, {
@@ -1630,7 +1640,7 @@ test("resume creates a new cart when the persisted one is locked", async () => {
 
   const resumed = await client.cart.resume();
   assert.equal(resumed.data.id, "cart-2");
-  assert.equal(client.getStoredCartId(), "cart-2");
+  assert.deepEqual(calls, ["GET /api/v1/carts", "POST /api/v1/carts"]);
 });
 
 test("concurrent warmup calls do one session and one cart round", async () => {
@@ -1740,11 +1750,6 @@ test("addLine recovers from cart_not_active by rotating to a fresh cart", async 
   assert.deepEqual(
     puts.map((url) => new URL(url, "https://x").pathname),
     ["/api/v1/carts/cart-done/lines/v-1", "/api/v1/carts/cart-new/lines/v-1"],
-  );
-  assert.equal(
-    client.getStoredCartId(),
-    "cart-new",
-    "the dead cart id must not stay persisted",
   );
 });
 

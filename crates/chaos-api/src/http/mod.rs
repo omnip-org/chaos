@@ -504,6 +504,7 @@ mod tests {
             (Method::GET, "/health/live"),
             (Method::GET, "/api/v1/products"),
             (Method::GET, "/api/v1/collections"),
+            (Method::GET, "/api/v1/carts"),
             (Method::POST, "/api/v1/carts"),
             (
                 Method::POST,

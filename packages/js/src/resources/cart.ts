@@ -7,9 +7,9 @@ import type {
 } from "../types.js";
 
 /**
- * A cart body counts as active — safe to reuse for a later mutation and to
- * persist as the `resume()` target — when the server says so, or when status
- * is absent (older responses and test doubles omit it).
+ * A cart body counts as active — safe to reuse for a later mutation — when
+ * the server says so, or when status is absent (older responses and test
+ * doubles omit it).
  */
 function isActiveCart(cart: Cart): boolean {
   return cart.status === undefined || cart.status === "active";
@@ -47,25 +47,19 @@ export class CartResource {
 
   /**
    * Records a cart body as the freshest known state for its id so the read
-   * that a line mutation does before its write can skip `GET /carts/{id}`, and
-   * persists an active cart id for `resume()`. Inactive carts are neither
-   * cached nor persisted.
+   * that a line mutation does before its write can skip `GET /carts/{id}`.
    */
   private remember(cart: Cart): Cart {
     if (!isActiveCart(cart)) return cart;
     if (this.snapshotTtlMs > 0) {
       this.snapshots.set(cart.id, { cart, at: this.client.now() });
     }
-    this.client.setStoredCartId(cart.id);
     return cart;
   }
 
-  /** Drops a cart from the cache and, if it is the persisted one, from storage. */
+  /** Drops a cart from the in-memory snapshot cache. */
   private forget(cartId: string): void {
     this.snapshots.delete(cartId);
-    if (this.client.getStoredCartId() === cartId) {
-      this.client.setStoredCartId(null);
-    }
   }
 
   /** @internal The remembered Cart while still within the TTL, otherwise a fresh `GET`. */
@@ -97,9 +91,36 @@ export class CartResource {
   }
 
   /**
+   * Returns the server's current active cart for this shopper and channel.
+   * A missing shopper token or cart returns null without creating either.
+   */
+  async getCurrent(): Promise<DataEnvelope<Cart> | null> {
+    if (!this.client.getShopperToken()) return null;
+    try {
+      const response = await this.client.request<DataEnvelope<Cart>>("/carts", {
+        method: "GET",
+        requiresShopperToken: true,
+      });
+      this.remember(response.data);
+      return response;
+    } catch (error) {
+      if (
+        error instanceof ChaosApiError &&
+        (error.status === 401 || error.status === 403 || error.status === 404)
+      ) {
+        if (error.status === 401 || error.status === 403) {
+          this.client.setShopperToken(null);
+        }
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Reads a cart only when it is still active. A missing, locked, or
    * abandoned cart returns null without creating a replacement, and is
-   * dropped from the cache and the persisted id.
+   * dropped from the snapshot cache.
    *
    * Invalid shopper credentials are cleared from the configured token
    * storage, but this method never mints a new identity as a side effect.
@@ -130,7 +151,8 @@ export class CartResource {
    * Returns an active cart for the current shopper, creating one when the
    * supplied cart id is stale or belongs to a locked checkout. Shopper
    * identity recovery is explicit and persists through the client's configured
-   * token storage.
+   * token storage. Without an id, the server resolves the shopper's current
+   * active cart directly.
    */
   async getOrCreate(cartId?: string): Promise<DataEnvelope<Cart>> {
     if (cartId) {
@@ -138,8 +160,12 @@ export class CartResource {
       if (current) return current;
     }
 
-    if (!this.client.getShopperToken()) {
+    const hadShopperToken = Boolean(this.client.getShopperToken());
+    if (!hadShopperToken) {
       await this.client.acquireShopperToken();
+    } else {
+      const current = await this.getCurrent();
+      if (current) return current;
     }
 
     try {
@@ -158,14 +184,11 @@ export class CartResource {
   }
 
   /**
-   * Resumes the last active cart this client persisted (see
-   * `ClientOptions.storage`), creating a fresh one only when there is no
-   * stored id or it is no longer active. The stored id is still validated with
-   * a `GET`, so a stale id can never surface a locked or foreign cart.
+   * Resolves the current active cart from the server, creating one only when
+   * this shopper does not have one. The browser does not persist a cart id.
    */
   async resume(): Promise<DataEnvelope<Cart>> {
-    const stored = this.client.getStoredCartId();
-    return stored ? this.getOrCreate(stored) : this.getOrCreate();
+    return this.getOrCreate();
   }
 
   /**

@@ -31,10 +31,11 @@ export const UTM_KEYS = [
 ] as const;
 
 export type UtmKey = (typeof UTM_KEYS)[number];
+export type UtmTags = Partial<Record<UtmKey, string>>;
 
 /** `utm_*` tags on the current page URL, or `undefined` when there are none
  * (or no browser URL to read). */
-export function readUtmTags(): Partial<Record<UtmKey, string>> | undefined {
+export function readUtmTags(): UtmTags | undefined {
   if (typeof window === "undefined") return undefined;
   let params: URLSearchParams;
   try {
@@ -42,7 +43,7 @@ export function readUtmTags(): Partial<Record<UtmKey, string>> | undefined {
   } catch {
     return undefined;
   }
-  const utm: Partial<Record<UtmKey, string>> = {};
+  const utm: UtmTags = {};
   for (const key of UTM_KEYS) {
     const value = params.get(`utm_${key}`);
     if (value) utm[key] = value;
@@ -50,12 +51,12 @@ export function readUtmTags(): Partial<Record<UtmKey, string>> | undefined {
   return Object.keys(utm).length > 0 ? utm : undefined;
 }
 
-export type UtmRequestParams = Partial<Record<`utm_${UtmKey}`, string>>;
+type StoredUtmParams = Partial<Record<`utm_${UtmKey}`, string>>;
 
-function toRequestParams(
+function toStoredParams(
   tags: Partial<Record<UtmKey, string>> | undefined,
-): UtmRequestParams {
-  const params: UtmRequestParams = {};
+): StoredUtmParams {
+  const params: StoredUtmParams = {};
   if (tags) {
     for (const [key, value] of Object.entries(tags)) {
       if (value) params[`utm_${key as UtmKey}`] = value;
@@ -72,11 +73,11 @@ const LAST_TOUCH_STORAGE_KEY = "chaos.storefront.utm_last_touch";
 function readStored(
   storage: UtmStorage,
   key: string,
-): UtmRequestParams | undefined {
+): StoredUtmParams | undefined {
   try {
     const raw = storage?.getItem(key);
     if (!raw) return undefined;
-    const parsed = JSON.parse(raw) as UtmRequestParams;
+    const parsed = JSON.parse(raw) as StoredUtmParams;
     return parsed && typeof parsed === "object" ? parsed : undefined;
   } catch {
     return undefined;
@@ -86,7 +87,7 @@ function readStored(
 function writeStored(
   storage: UtmStorage,
   key: string,
-  value: UtmRequestParams,
+  value: StoredUtmParams,
 ): void {
   try {
     storage?.setItem(key, JSON.stringify(value));
@@ -95,13 +96,25 @@ function writeStored(
   }
 }
 
+function fromStoredParams(
+  params: StoredUtmParams | undefined,
+): UtmTags | undefined {
+  if (!params) return undefined;
+  const tags: UtmTags = {};
+  for (const key of UTM_KEYS) {
+    const value = params[`utm_${key}`];
+    if (value) tags[key] = value;
+  }
+  return Object.keys(tags).length > 0 ? tags : undefined;
+}
+
 /**
  * Records the current page's `utm_*` into `storage`: first touch if nothing
  * was recorded before, last touch every time. A page load with no `utm_*`
  * changes neither. Call once per page load (client construction).
  */
 export function recordPageUtm(storage: UtmStorage): void {
-  const current = toRequestParams(readUtmTags());
+  const current = toStoredParams(readUtmTags());
   if (Object.keys(current).length === 0) return;
   if (!readStored(storage, FIRST_TOUCH_STORAGE_KEY)) {
     writeStored(storage, FIRST_TOUCH_STORAGE_KEY, current);
@@ -110,15 +123,14 @@ export function recordPageUtm(storage: UtmStorage): void {
 }
 
 /**
- * `utm_*` query params for shopper-session creation — the visitor's first
- * touch. Falls back to the live URL when nothing is persisted yet (same-page
- * landing before `recordPageUtm` has a prior load to draw on). `{}` when
- * there is nothing anywhere.
+ * UTM tags for shopper-session creation — the visitor's first touch. Falls
+ * back to the live URL when nothing is persisted yet (same-page landing
+ * before `recordPageUtm` has a prior load to draw on).
  */
-export function firstTouchUtmParams(storage: UtmStorage): UtmRequestParams {
+export function firstTouchUtmTags(storage: UtmStorage): UtmTags | undefined {
   return (
-    readStored(storage, FIRST_TOUCH_STORAGE_KEY) ??
-    toRequestParams(readUtmTags())
+    fromStoredParams(readStored(storage, FIRST_TOUCH_STORAGE_KEY)) ??
+    readUtmTags()
   );
 }
 
@@ -130,21 +142,9 @@ export function firstTouchUtmParams(storage: UtmStorage): UtmRequestParams {
  */
 export function lastTouchUtmTags(
   storage: UtmStorage,
-): Partial<Record<UtmKey, string>> | undefined {
-  const stored = readStored(storage, LAST_TOUCH_STORAGE_KEY);
-  if (stored) {
-    const tags: Partial<Record<UtmKey, string>> = {};
-    for (const key of UTM_KEYS) {
-      const value = stored[`utm_${key}`];
-      if (value) tags[key] = value;
-    }
-    if (Object.keys(tags).length > 0) return tags;
-  }
-  return readUtmTags();
-}
-
-/** `utm_*` query params form of {@link lastTouchUtmTags}, for the session
- * refresh call. `{}` when there is nothing. */
-export function lastTouchUtmParams(storage: UtmStorage): UtmRequestParams {
-  return toRequestParams(lastTouchUtmTags(storage));
+): UtmTags | undefined {
+  return (
+    fromStoredParams(readStored(storage, LAST_TOUCH_STORAGE_KEY)) ??
+    readUtmTags()
+  );
 }
