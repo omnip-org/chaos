@@ -505,7 +505,14 @@ mod tests {
             (Method::GET, "/api/v1/products"),
             (Method::GET, "/api/v1/collections"),
             (Method::POST, "/api/v1/carts"),
-            (Method::POST, "/api/v1/orders/details"),
+            (
+                Method::GET,
+                "/api/v1/orders/search?order_number=W-12345678&email=user@example.com",
+            ),
+            (
+                Method::GET,
+                "/api/v1/orders/00000000-0000-4000-8000-000000000001/details",
+            ),
             (
                 Method::POST,
                 "/webhooks/v1/payment/stripe/00000000-0000-0000-0000-000000000000",
@@ -529,6 +536,19 @@ mod tests {
                 "route missing: {path}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn shopper_order_requires_authentication() {
+        let response = router(test_state())
+            .oneshot(
+                Request::get("/api/v1/orders/00000000-0000-4000-8000-000000000001/details")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

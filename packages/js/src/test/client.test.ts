@@ -3,6 +3,7 @@ import test, { mock } from "node:test";
 
 import { ChaosStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
+import type { OwnOrder } from "../types.js";
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
@@ -25,6 +26,85 @@ function jsonResponse(status: number, body: unknown): Response {
     json: async () => body,
   } as unknown as Response;
 }
+
+test("checkout order lookup keeps the original shopper identity", async () => {
+  const requests: Array<{ url: string; token: string | null }> = [];
+  const order = {
+    id: "00000000-0000-4000-8000-000000000001",
+    order_number: "W-12345678",
+    status: "pending",
+    payment_status: "pending",
+  } as OwnOrder;
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    retryInvalidShopperToken: true,
+    fetch: (async (url: string, init: RequestInit) => {
+      requests.push({ url: String(url), token: new Headers(init.headers).get("x-chaos-shopper-token") });
+      return jsonResponse(200, { data: order });
+    }) as unknown as typeof fetch,
+  });
+  await assert.rejects(() => client.orders.getCheckoutOrder(order.id), (error: unknown) =>
+    error instanceof ChaosApiError && error.code === "shopper_token_required");
+  assert.equal(requests.length, 0);
+  client.setShopperToken("shopper-original");
+  const result = await client.orders.getCheckoutOrder(order.id);
+  assert.equal(result.data, order);
+  assert.deepEqual(requests, [{
+    url: "/api/v1/orders/00000000-0000-4000-8000-000000000001/details",
+    token: "shopper-original",
+  }]);
+});
+
+test("guest order search uses GET with number and email, without a shopper token", async () => {
+  const requests: Array<{ url: string; method: string | undefined; token: string | null }> = [];
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async (url: string, init: RequestInit) => {
+      requests.push({
+        url: String(url),
+        method: init.method,
+        token: new Headers(init.headers).get("x-chaos-shopper-token"),
+      });
+      return jsonResponse(200, { data: { order_number: "W-12345678" } });
+    }) as unknown as typeof fetch,
+  });
+  await client.orders.lookupOrder({ orderNumber: "W-12345678", email: "user@example.com" });
+  assert.deepEqual(requests, [{
+    url: "/api/v1/orders/search?order_number=W-12345678&email=user%40example.com",
+    method: "GET",
+    token: null,
+  }]);
+});
+
+test("only a fresh, paid checkout attempts a browser Purchase", async () => {
+  const priorSessionStorage = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+  Object.defineProperty(globalThis, "sessionStorage", { value: new MemoryStorage(), configurable: true });
+  try {
+    const client = new ChaosStorefrontClient({
+      publishableKey: "public_test", storage: null, now: () => 1_000_000,
+      fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+    });
+    const calls: string[] = [];
+    client.recordConfirmedPurchase = (order) => { calls.push(order.id); };
+    const order = {
+      id: "00000000-0000-4000-8000-000000000001",
+      order_number: "W-12345678", status: "confirmed", payment_status: "paid",
+    } as OwnOrder;
+    await client.recordCheckoutPurchase(order);
+    client.rememberCheckoutOrder(order.id);
+    await client.recordCheckoutPurchase({ ...order, id: "00000000-0000-4000-8000-000000000002" });
+    await client.recordCheckoutPurchase({ ...order, payment_status: "pending" });
+    await client.recordCheckoutPurchase(order);
+    await client.recordCheckoutPurchase(order);
+    // Provider-level deduplication handles repeat reads and permits a failed provider to retry.
+    assert.deepEqual(calls, [order.id, order.id]);
+  } finally {
+    if (priorSessionStorage) Object.defineProperty(globalThis, "sessionStorage", priorSessionStorage);
+    else Reflect.deleteProperty(globalThis, "sessionStorage");
+  }
+});
 
 test("defers shopper session creation until a browser request needs it", async () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
@@ -442,6 +522,7 @@ test("payments create an embedded Checkout session with SDK-owned request detail
       if (url.endsWith("/checkout")) {
         return jsonResponse(201, {
           data: {
+            order_id: "00000000-0000-4000-8000-000000000001",
             order_number: "W-20260830-00000001",
             event_id: "W-20260830-00000001",
             client_action: {
@@ -500,6 +581,7 @@ test("checkout attaches explicit attribution and excludes it from the idempotenc
       if (url.endsWith("/checkout")) {
         return jsonResponse(201, {
           data: {
+            order_id: "00000000-0000-4000-8000-000000000001",
             order_number: "W-20260830-00000001",
             event_id: "W-20260830-00000001",
             client_action: {
@@ -562,6 +644,7 @@ test("checkout defaults source_url to the current page in a browser", async () =
           checkoutBody = typeof init.body === "string" ? init.body : undefined;
           return jsonResponse(201, {
             data: {
+              order_id: "00000000-0000-4000-8000-000000000001",
               order_number: "W-20260830-00000001",
               event_id: "W-20260830-00000001",
               client_action: {
@@ -620,6 +703,7 @@ test("checkout captures utm_* tags from the current page URL", async () => {
           checkoutBody = typeof init.body === "string" ? init.body : undefined;
           return jsonResponse(201, {
             data: {
+              order_id: "00000000-0000-4000-8000-000000000001",
               order_number: "W-20260830-00000001",
               event_id: "W-20260830-00000001",
               client_action: {
@@ -781,6 +865,7 @@ test("checkout keeps the last-touch utm_* after an MPA navigation drops them fro
           checkoutBody = typeof init.body === "string" ? init.body : undefined;
           return jsonResponse(201, {
             data: {
+              order_id: "00000000-0000-4000-8000-000000000001",
               order_number: "W-1",
               event_id: "W-1",
               client_action: {
@@ -1044,6 +1129,7 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
       if (url.endsWith("/carts/cart-1/checkout")) {
         return jsonResponse(201, {
           data: {
+            order_id: "00000000-0000-4000-8000-000000000001",
             order_number: "W-20260830-00000001",
             event_id: "W-20260830-00000001",
             client_action: {
@@ -1114,6 +1200,7 @@ test("checkout can hand off directly from a fresh Cart without another read or C
       if (url.endsWith("/carts/cart-1/checkout")) {
         return jsonResponse(201, {
           data: {
+            order_id: "00000000-0000-4000-8000-000000000001",
             order_number: "W-20260830-00000001",
             event_id: "W-20260830-00000001",
             client_action: {
@@ -1212,6 +1299,7 @@ test("payments create an embedded Checkout session with no attribution outside a
       if (url.endsWith("/checkout")) {
         return jsonResponse(201, {
           data: {
+            order_id: "00000000-0000-4000-8000-000000000001",
             order_number: "W-20260830-00000001",
             event_id: "W-20260830-00000001",
             client_action: {
@@ -1277,6 +1365,7 @@ test("checkout reuses one idempotency key per cart so a retry cannot double-char
       );
       return jsonResponse(201, {
         data: {
+          order_id: "00000000-0000-4000-8000-000000000001",
           order_number: "W-20260830-55555555",
           event_id: "W-20260830-55555555",
           client_action: {

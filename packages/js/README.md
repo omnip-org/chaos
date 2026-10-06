@@ -126,9 +126,12 @@ const mounted = await mountEmbeddedCheckout(action, document.querySelector("#che
 // `mounted.unmount()` hides the form (e.g. on `onComplete`); `mounted.destroy()`
 // disposes it. Direct Stripe accounts do not use a Stripe-Account header.
 
-// Purchase (Pixel/GA4) is never inferred from browser activity — only from a
-// confirmed, paid order, typically on the return page right after lookupOrder:
-chaos.orders.recordConfirmedPurchase(order);
+// On the return page, Stripe has appended order_id to the URL. Poll the
+// shopper-owned Order until Chaos's payment webhook marks it paid. Each read
+// automatically attempts Pixel and GA4 Purchase for this fresh checkout.
+const orderId = new URLSearchParams(location.search).get("order_id")!;
+const { data: order } = await chaos.orders.getCheckoutOrder(orderId);
+if (order.status === "confirmed" && order.payment_status === "paid") showSuccess();
 ```
 
 ### Contract boundary
@@ -202,14 +205,20 @@ catalog matching for dynamic ads and "viewed but not bought" retargeting on
 any product with more than one variant. `priceMinor`/`currency` are required
 on every call, validated the same way `AddToCart`/`Purchase` already are.
 
-`purchase` is a projection, not a first-party fact: the SDK never infers it
-from browser activity, only from a confirmed, paid order the storefront
-already has (typically via `chaos.orders.lookupOrder` on a return page). It
-derives its event ID from the Order ID, so a reload of the same confirmation
-page projects the identical ID and Meta deduplicates the copies.
-`chaos.orders.recordConfirmedPurchase(order)` (also reachable as
-`chaos.recordConfirmedPurchase(order)`) builds and sends this projection in
-one call from the shape `lookupOrder` already returns.
+`purchase` is a projection of a server-confirmed Order. Checkout creation
+records the Order UUID in this tab; `orders.getCheckoutOrder` uses
+the existing shopper token to read the saved Order and automatically sends
+Pixel/GA4 Purchase only for that fresh checkout after payment is confirmed.
+The authenticated Order read returns the current `orders` row with its flat
+contact and address columns, plus related lines and fulfillment progress; it
+does not use a checkout-time snapshot.
+The Order UUID is the Meta event ID and GA4 transaction ID. The SDK keeps
+separate per-provider dedup records so a failed provider can retry without
+repeating the other. It supplies saved Order identity to Meta Pixel Advanced
+Matching, while GA4 receives the net item amount, tax, and shipping without
+email or address. The manual `recordConfirmedPurchase` method remains for
+integrations that already have an authoritative Order, but order-history
+views should not call it.
 
 The collector maintains a first-party `_fbc` cookie from a landing `fbclid`,
 bounded and capped at 90 days, independent of whether the Meta Pixel script
@@ -248,7 +257,7 @@ above), not a gap to route around by adding them here.
 
 Confirmation emails link to the Sales Channel storefront's `/orders/details`
 page with the order number and contact email pre-filled as query parameters.
-The page submits both and the API returns the restricted order view when
+The page sends both to `GET /orders/search` and the API returns the restricted order view when
 they match:
 
 ```ts
@@ -258,7 +267,6 @@ const order = await chaos.orders.lookupOrder({
   email: params.get("email") ?? "",
 });
 console.log(order.data.order_number, order.data.fulfillment_status);
-chaos.orders.recordConfirmedPurchase(order.data);
 ```
 
 ### Errors

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
 
 import { ChaosStorefrontAnalytics } from "../events/browser.js";
 
@@ -387,6 +388,7 @@ test("attributes server checkout creation to the source Cart", () => {
   });
   const eventId = environment.analytics.recordCheckoutCreation({
     checkout: {
+      order_id: "00000000-0000-4000-8000-000000000001",
       order_number: "W-20260830-7K4M9Q2D",
       event_id: "W-20260830-7K4M9Q2D",
       client_action: {
@@ -528,6 +530,103 @@ test("uses the zero-decimal MGA currency scale in browser Meta payloads", () => 
     contents: [{ id: "variant-1", quantity: 1, item_price: 1_299 }],
     num_items: 1,
   });
+});
+
+test("Purchase gives GA4 net item revenue and keeps Meta's paid total", () => {
+  const environment = harness({
+    providers: { metaPixel: { pixelId: "12345" }, ga4: { measurementId: "G-TEST1234" } },
+  });
+  const id = "00000000-0000-4000-8000-000000000997";
+  environment.analytics.recordPurchase({
+    orderId: id,
+    currency: "USD",
+    valueMinor: 2420,
+    ga4ValueMinor: 2001,
+    taxMinor: 119,
+    shippingMinor: 300,
+    items: [{ productId: "product-1", productVariantId: "variant-1", quantity: 2, priceMinor: 1100 }],
+  });
+  const pixel = fbqCalls(environment.window).find((call) => call[1] === "Purchase");
+  assert.equal((pixel?.[2] as { value: number }).value, 24.20);
+  assert.deepEqual(pixel?.[3], { eventID: id });
+  const ga4 = ga4Calls(environment.window).find((call) => call[1] === "purchase")?.[2] as Record<string, unknown>;
+  assert.equal(ga4.transaction_id, id);
+  assert.equal(ga4.value, 20.01);
+  assert.equal(ga4.tax, 1.19);
+  assert.equal(ga4.shipping, 3);
+  const items = ga4.items as Array<{ price: number; quantity: number; discount: number }>;
+  assert.equal(items.reduce((sum, item) => sum + item.price * item.quantity, 0).toFixed(2), "20.01");
+  assert.equal(items.reduce((sum, item) => sum + item.discount * item.quantity, 0).toFixed(2), "1.99");
+  environment.analytics.recordPurchase({
+    orderId: id, currency: "USD", valueMinor: 2420, ga4ValueMinor: 2001,
+    items: [{ productId: "product-1", productVariantId: "variant-1", quantity: 2, priceMinor: 1100 }],
+  });
+  assert.equal(fbqCalls(environment.window).filter((call) => call[1] === "Purchase").length, 1);
+  assert.equal(ga4Calls(environment.window).filter((call) => call[1] === "purchase").length, 1);
+});
+
+test("a failed Pixel call can retry without repeating GA4 Purchase", () => {
+  const environment = harness({
+    providers: { metaPixel: { pixelId: "12345" }, ga4: { measurementId: "G-TEST1234" } },
+  });
+  const window = environment.window as unknown as { fbq: (...args: unknown[]) => void };
+  const original = window.fbq;
+  window.fbq = () => { throw new Error("Pixel unavailable"); };
+  const input = {
+    orderId: "00000000-0000-4000-8000-000000000996",
+    valueMinor: 1000,
+    currency: "USD",
+    items: [{ productId: "product-1", productVariantId: "variant-1", quantity: 1, priceMinor: 1000 }],
+  };
+  environment.analytics.recordPurchase(input);
+  window.fbq = original;
+  environment.analytics.recordPurchase(input);
+  assert.equal(fbqCalls(environment.window).filter((call) => call[1] === "Purchase").length, 1);
+  assert.equal(ga4Calls(environment.window).filter((call) => call[1] === "purchase").length, 1);
+});
+
+test("manual Purchase remains compatible with the original minimal Order input", () => {
+  const environment = harness({ providers: { ga4: { measurementId: "G-TEST1234" } } });
+  environment.analytics.recordConfirmedPurchase({
+    id: "00000000-0000-4000-8000-000000000995",
+    status: "confirmed", payment_status: "paid", currency: "USD", total_amount_minor: 1000,
+    lines: [{
+      product_id: "product-1", product_variant_id: "variant-1", quantity: 1,
+      unit_price_amount_minor: 1000, subtotal_amount_minor: 1000,
+    } as never],
+  });
+  assert.equal(ga4Calls(environment.window).filter((call) => call[1] === "purchase").length, 1);
+});
+
+test("a recently refunded Order still represents the original Purchase", () => {
+  const environment = harness({ providers: { ga4: { measurementId: "G-TEST1234" } } });
+  environment.analytics.recordConfirmedPurchase({
+    id: "00000000-0000-4000-8000-000000000994",
+    status: "confirmed", payment_status: "refunded", currency: "USD", total_amount_minor: 1000,
+    subtotal_amount_minor: 1000, discount_amount_minor: 0, tax_amount_minor: 0, shipping_amount_minor: 0,
+    lines: [{
+      product_id: "product-1", product_variant_id: "variant-1", quantity: 1,
+      unit_price_amount_minor: 1000, subtotal_amount_minor: 1000,
+    } as never],
+  });
+  assert.equal(ga4Calls(environment.window).filter((call) => call[1] === "purchase").length, 1);
+});
+
+test("Meta receives hashed order identity before Purchase", async () => {
+  const environment = harness({ providers: { metaPixel: { pixelId: "12345" } } });
+  await environment.analytics.setMetaOrderIdentity({
+    contact_email: " Buyer@Example.com ",
+    contact_phone: "+1 (415) 555-2671",
+    shipping_full_name: "Ada Lovelace",
+    shipping_address_line1: "1 Main St",
+    shipping_locality: "San Francisco",
+    shipping_administrative_area: "CA",
+    shipping_postal_code: "94105",
+    shipping_country_code: "US",
+  } as never);
+  const init = fbqAdvancedMatchingCalls(environment.window)[0]?.[2] as Record<string, string>;
+  assert.equal(init.em, createHash("sha256").update("buyer@example.com").digest("hex"));
+  assert.equal(init.ct, createHash("sha256").update("sanfrancisco").digest("hex"));
 });
 
 test("setShopperId hashes the shopper id into Meta's external_id", async () => {

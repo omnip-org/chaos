@@ -20,6 +20,9 @@ export interface AnalyticsCommerceItem {
 export interface PurchaseAnalyticsInput {
   orderId: UUID;
   valueMinor: number;
+  ga4ValueMinor?: number;
+  taxMinor?: number;
+  shippingMinor?: number;
   currency: CurrencyCode;
   items: AnalyticsCommerceItem[];
 }

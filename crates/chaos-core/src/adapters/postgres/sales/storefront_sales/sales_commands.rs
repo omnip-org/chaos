@@ -582,6 +582,55 @@ impl PostgresStorefrontSalesRepository {
         transaction.commit().await.map_err(database_error)?;
         Ok(order)
     }
+
+    pub(crate) async fn get_shopper_order(
+        &self,
+        shopper: &ShopperActor,
+        order_id: OrderId,
+    ) -> Result<Option<ShopperOrderDetail>, ApplicationError> {
+        let actor = &shopper.machine;
+        let mut transaction = self.begin(actor).await?;
+        let row = sqlx::query_as::<_, ShopperOrderRow>(
+            "SELECT order_row.id, order_row.order_number, order_row.store_id, \
+                    order_row.channel_id, order_row.shopper_id, order_row.cart_id, \
+                    order_row.currency::text AS currency, order_row.status::text AS status, \
+                    order_row.payment_status::text AS payment_status, \
+                    order_row.payment_provider_account_id, order_row.payment_provider_reference_id, \
+                    order_row.payment_failure_code, order_row.fulfillment_status::text AS fulfillment_status, \
+                    order_row.refunded_amount_minor, order_row.subtotal_amount_minor, \
+                    order_row.discount_amount_minor, order_row.tax_amount_minor, \
+                    order_row.shipping_amount_minor, order_row.total_amount_minor, \
+                    order_row.amounts_finalized_at, order_row.contact_email::text AS contact_email, \
+                    order_row.contact_phone, order_row.billing_full_name, \
+                    order_row.billing_address_line1, order_row.billing_address_line2, \
+                    order_row.billing_locality, order_row.billing_administrative_area, \
+                    order_row.billing_postal_code, \
+                    order_row.billing_country_code::text AS billing_country_code, \
+                    order_row.shipping_full_name, order_row.shipping_address_line1, \
+                    order_row.shipping_address_line2, order_row.shipping_locality, \
+                    order_row.shipping_administrative_area, order_row.shipping_postal_code, \
+                    order_row.shipping_country_code::text AS shipping_country_code, \
+                    order_row.created_at, order_row.updated_at \
+             FROM chaos_commerce.orders AS order_row \
+             WHERE order_row.store_id = $1 AND order_row.channel_id = $2 \
+               AND order_row.shopper_id = $3 AND order_row.id = $4",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(actor.channel_id.map(SalesChannelId::as_uuid))
+        .bind(shopper.shopper_id.as_uuid())
+        .bind(order_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let order = match row {
+            Some(row) => load_order(&mut transaction, actor, order_id)
+                .await?
+                .map(|detail| ShopperOrderDetail { row, detail }),
+            None => None,
+        };
+        transaction.commit().await.map_err(database_error)?;
+        Ok(order)
+    }
 }
 
 async fn existing_checkout_draft(

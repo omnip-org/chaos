@@ -1,15 +1,17 @@
-//! Guest order lookup endpoint.
+//! Storefront order search and shopper-owned order details.
 
-use axum::{Router, extract::State, routing::post};
+use axum::{Router, extract::State, routing::get};
 
 use crate::http::ApiState;
 
 #[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
-    Router::new().route("/orders/details", post(lookup_order::handler))
+    Router::new()
+        .route("/orders/search", get(lookup_order::handler))
+        .route("/orders/{order_id}/details", get(own_order::handler))
 }
 
-// ===== POST /orders/details =====
+// ===== GET /orders/search =====
 
 mod lookup_order {
     use chaos_core::contracts::{OrderDetail, OrderFulfillmentItem, OrderLineItem};
@@ -17,11 +19,13 @@ mod lookup_order {
     use uuid::Uuid;
 
     use super::*;
-    use crate::http::{ApiDateTime, ApiError, ApiJson, ApiResponse, PublishableChannel};
+    use axum::{http::header, response::IntoResponse};
+
+    use crate::http::{ApiDateTime, ApiError, ApiQuery, ApiResponse, PublishableChannel};
 
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
-    pub(super) struct OrderLookupBody {
+    pub(super) struct OrderSearchQuery {
         email: String,
         order_number: String,
     }
@@ -79,13 +83,19 @@ mod lookup_order {
     pub(super) async fn handler(
         State(state): State<ApiState>,
         PublishableChannel(actor): PublishableChannel,
-        ApiJson(body): ApiJson<OrderLookupBody>,
-    ) -> Result<ApiResponse<OrderLookupData>, ApiError> {
+        ApiQuery(query): ApiQuery<OrderSearchQuery>,
+    ) -> Result<impl IntoResponse, ApiError> {
         let order = state
             .storefront_sales
-            .lookup_order(&actor, body.order_number.trim(), &body.email)
+            .lookup_order(&actor, query.order_number.trim(), &query.email)
             .await?;
-        Ok(ApiResponse::ok(order_details_data(order)))
+        Ok((
+            [
+                (header::CACHE_CONTROL, "private, no-store"),
+                (header::REFERRER_POLICY, "no-referrer"),
+            ],
+            ApiResponse::ok(order_details_data(order)),
+        ))
     }
 
     fn order_details_data(order: OrderDetail) -> OrderLookupData {
@@ -117,7 +127,9 @@ mod lookup_order {
         }
     }
 
-    fn order_details_fulfillment_data(item: OrderFulfillmentItem) -> OrderLookupFulfillmentData {
+    pub(super) fn order_details_fulfillment_data(
+        item: OrderFulfillmentItem,
+    ) -> OrderLookupFulfillmentData {
         OrderLookupFulfillmentData {
             status: item.status.as_str(),
             tracking_number: item.tracking_number,
@@ -127,7 +139,7 @@ mod lookup_order {
         }
     }
 
-    fn order_line_data(line: OrderLineItem) -> OrderLineData {
+    pub(super) fn order_line_data(line: OrderLineItem) -> OrderLineData {
         OrderLineData {
             product_id: line.product_id.as_uuid(),
             product_variant_id: line.product_variant_id.as_uuid(),
@@ -137,6 +149,65 @@ mod lookup_order {
             quantity: line.quantity,
             unit_price_amount_minor: line.unit_price_amount_minor,
             subtotal_amount_minor: line.subtotal_amount_minor,
+        }
+    }
+}
+
+mod own_order {
+    use axum::{http::header, response::IntoResponse};
+    use chaos_core::contracts::{ShopperOrderDetail, ShopperOrderRow};
+    use serde::Serialize;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::http::{ApiError, ApiPath, ApiResponse, ShopperContext};
+
+    #[derive(serde::Deserialize)]
+    pub(super) struct OrderPath {
+        order_id: Uuid,
+    }
+
+    #[derive(Serialize)]
+    pub(super) struct OwnOrderData {
+        #[serde(flatten)]
+        order_row: ShopperOrderRow,
+        lines: Vec<lookup_order::OrderLineData>,
+        fulfillments: Vec<lookup_order::OrderLookupFulfillmentData>,
+    }
+
+    pub(super) async fn handler(
+        State(state): State<ApiState>,
+        ShopperContext(shopper): ShopperContext,
+        ApiPath(path): ApiPath<OrderPath>,
+    ) -> Result<impl IntoResponse, ApiError> {
+        let order = state
+            .storefront_sales
+            .get_shopper_order(
+                &shopper,
+                chaos_domain::sales::OrderId::from_uuid(path.order_id),
+            )
+            .await?;
+        Ok((
+            [(header::CACHE_CONTROL, "private, no-store")],
+            ApiResponse::ok(own_order_data(order)),
+        ))
+    }
+
+    fn own_order_data(order: ShopperOrderDetail) -> OwnOrderData {
+        OwnOrderData {
+            order_row: order.row,
+            lines: order
+                .detail
+                .lines
+                .into_iter()
+                .map(lookup_order::order_line_data)
+                .collect(),
+            fulfillments: order
+                .detail
+                .fulfillments
+                .into_iter()
+                .map(lookup_order::order_details_fulfillment_data)
+                .collect(),
         }
     }
 }

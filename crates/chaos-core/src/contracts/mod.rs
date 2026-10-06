@@ -74,7 +74,8 @@ pub use review::{
 };
 pub use sales::{
     CartDetail, CartLineItem, CheckoutDraft, OrderDetail, OrderFulfillmentItem, OrderLineItem,
-    OrderListFilter, OrderPage, OrderPaymentAttemptItem, OrderRefundItem,
+    OrderListFilter, OrderPage, OrderPaymentAttemptItem, OrderRefundItem, ShopperOrderDetail,
+    ShopperOrderRow,
 };
 pub use store::{
     StoreListItem, StoreMembershipItem, StoreMembershipRepository, StoreReadRepository,

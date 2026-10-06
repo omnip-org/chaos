@@ -9,7 +9,8 @@ use crate::{
         cart_event_payload, payment_event_payload, publish_topic_event, splice_attribution,
     },
     contracts::{
-        CartDetail, CartLineItem, MachineActor, OrderDetail, ShopperActor,
+        CartDetail, CartLineItem, MachineActor, OrderDetail, ShopperActor, ShopperOrderDetail,
+        ShopperOrderRow,
         StorefrontMediaAsset, StorefrontMediaScope, StorefrontSelectedOption,
         resolve_storefront_media,
         CheckoutDraft,

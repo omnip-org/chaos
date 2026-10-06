@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    FieldViolation, catalog::ProductVariantId, integration::PaymentProvider, sales::CartId,
+    FieldViolation,
+    catalog::ProductVariantId,
+    integration::PaymentProvider,
+    sales::{CartId, OrderId},
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -230,6 +233,21 @@ impl StorefrontSales {
             .ok_or(ApplicationError::NotFound {
                 resource: "order",
                 id: order_number.to_owned(),
+            })
+    }
+
+    pub async fn get_shopper_order(
+        &self,
+        shopper: &ShopperActor,
+        order_id: OrderId,
+    ) -> Result<crate::contracts::ShopperOrderDetail, ApplicationError> {
+        shopper.machine.require_sales_channel()?;
+        self.repository
+            .get_shopper_order(shopper, order_id)
+            .await?
+            .ok_or(ApplicationError::NotFound {
+                resource: "order",
+                id: order_id.as_uuid().to_string(),
             })
     }
 }

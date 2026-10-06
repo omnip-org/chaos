@@ -19,14 +19,17 @@ import { ShopperSessionResource } from "./resources/shopper-session.js";
 import type { ViewContentAnalyticsInput } from "./events/types.js";
 import type {
   CartLineMutation,
+  ConfirmedPurchaseOrderInput,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutStart,
-  OrderLookup,
+  OwnOrder,
   ShopperSession,
 } from "./types.js";
 
 const SHOPPER_TOKEN_STORAGE_PREFIX = "chaos.storefront.shopper_token";
 const CART_ID_STORAGE_PREFIX = "chaos.storefront.cart_id";
+const CHECKOUT_ORDER_STORAGE_PREFIX = "chaos.storefront.checkout_order";
+const CHECKOUT_ORDER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_CART_SNAPSHOT_TTL_MS = 30_000;
 
 /**
@@ -92,6 +95,8 @@ export interface RequestOptions<Query extends object = Record<string, never>> {
   body?: unknown;
   /** Attaches the shopper token, acquiring one if the browser has not created a Shopper session yet. */
   requiresShopperToken?: boolean;
+  /** Override the client's invalid-token retry for a specific request. */
+  retryShopperToken?: boolean;
   /** Optional trace identifier propagated as X-Request-ID. */
   requestId?: string;
   /** Business idempotency key sent as Idempotency-Key. */
@@ -108,6 +113,8 @@ export class ChaosStorefrontClient {
   > | null;
   private readonly shopperTokenStorageKey: string;
   private readonly cartIdStorageKey: string;
+  private readonly checkoutOrderStorageKey: string;
+  private readonly checkoutStorage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
   private readonly autoAcquireShopperToken: boolean;
   private readonly retryInvalidShopperToken: boolean;
   private readonly analytics: ChaosStorefrontAnalytics | null;
@@ -150,6 +157,16 @@ export class ChaosStorefrontClient {
       this.baseUrl,
       this.publishableKey,
     );
+    this.checkoutOrderStorageKey = scopedStorageKey(
+      CHECKOUT_ORDER_STORAGE_PREFIX,
+      this.baseUrl,
+      this.publishableKey,
+    );
+    try {
+      this.checkoutStorage = options.events?.sessionStorage ?? globalThis.sessionStorage ?? null;
+    } catch {
+      this.checkoutStorage = null;
+    }
     this.autoAcquireShopperToken = options.autoAcquireShopperToken ?? true;
     this.retryInvalidShopperToken = options.retryInvalidShopperToken ?? false;
     this.analytics = options.events
@@ -361,7 +378,7 @@ export class ChaosStorefrontClient {
     return this.requestWithShopperTokenRetry(
       path,
       options,
-      this.retryInvalidShopperToken,
+      options.retryShopperToken ?? this.retryInvalidShopperToken,
     );
   }
 
@@ -387,17 +404,43 @@ export class ChaosStorefrontClient {
     }
   }
 
+  /** @internal A fresh checkout in this tab may generate a browser Purchase on return. */
+  rememberCheckoutOrder(orderId: string): void {
+    try {
+      this.checkoutStorage?.setItem(
+        this.checkoutOrderStorageKey,
+        JSON.stringify({ orderId, startedAt: this.now() }),
+      );
+    } catch {
+      // The payment handoff must work even when session storage is blocked.
+    }
+  }
+
+  /** @internal Called only after a shopper-owned Order read. */
+  async recordCheckoutPurchase(order: OwnOrder): Promise<void> {
+    if (order.status !== "confirmed" ||
+        !["paid", "partially_refunded", "refunded"].includes(order.payment_status)) return;
+    try {
+      const stored = this.checkoutStorage?.getItem(this.checkoutOrderStorageKey);
+      if (!stored) return;
+      const marker: unknown = JSON.parse(stored);
+      if (!marker || typeof marker !== "object") return;
+      const { orderId, startedAt } = marker as Record<string, unknown>;
+      if (orderId !== order.id || typeof startedAt !== "number" ||
+          this.now() - startedAt < 0 || this.now() - startedAt > CHECKOUT_ORDER_MAX_AGE_MS) return;
+      await this.analytics?.setMetaOrderIdentity(order);
+      this.recordConfirmedPurchase(order);
+    } catch {
+      // Analytics and browser storage are best-effort after payment.
+    }
+  }
+
   /**
-   * Projects a confirmed, paid order to Meta Pixel/GA4 — never inferred from
-   * browser activity. Typically called on a return page right after
-   * `orders.lookupOrder`. No-op unless the order is confirmed and paid.
+   * Manual projection for a server-confirmed Order. Checkout return pages
+   * should use `orders.getCheckoutOrder`, which verifies shopper ownership
+   * and limits browser delivery to the current checkout.
    */
-  recordConfirmedPurchase(
-    order: Pick<
-      OrderLookup,
-      "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines"
-    >,
-  ): void {
+  recordConfirmedPurchase(order: ConfirmedPurchaseOrderInput): void {
     this.warnIfAnalyticsUnreachable("recordConfirmedPurchase");
     try {
       this.analytics?.recordConfirmedPurchase(order);

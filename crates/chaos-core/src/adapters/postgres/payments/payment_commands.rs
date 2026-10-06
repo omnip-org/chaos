@@ -24,7 +24,7 @@ impl PostgresStripeRepository {
         payment: &OrderCheckoutPayment,
         return_url: &str,
     ) -> Result<PaymentCommand, ApplicationError> {
-        let return_url = checkout_return_url(return_url, &payment.order_number)?;
+        let return_url = checkout_return_url(return_url, payment.order_id.as_uuid())?;
         let payload = json!({
             "aggregate_id": payment.order_id.as_uuid(),
             "amount_minor": payment.amount_minor,
@@ -599,7 +599,7 @@ impl PostgresStripeRepository {
 
 fn checkout_return_url(
     return_url: &str,
-    order_number: &str,
+    order_id: uuid::Uuid,
 ) -> Result<String, ApplicationError> {
     let mut url = url::Url::parse(return_url).map_err(|_| invalid_outbox_payload())?;
     let mut query_pairs = url
@@ -607,7 +607,7 @@ fn checkout_return_url(
         .filter(|(key, _)| key != "order_id" && key != "order_number")
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect::<Vec<_>>();
-    query_pairs.push(("order_number".into(), order_number.into()));
+    query_pairs.push(("order_id".into(), order_id.to_string()));
     url.query_pairs_mut().clear().extend_pairs(query_pairs);
     Ok(url.to_string())
 }
@@ -639,10 +639,10 @@ mod tests {
     use super::checkout_return_url;
 
     #[test]
-    fn checkout_return_url_uses_the_public_order_number() {
+    fn checkout_return_url_uses_the_order_id() {
         let value = checkout_return_url(
             "https://shop.example/checkout/confirmation?source=email&order_id=internal&order_number=stale",
-            "W-20260830-7K4M9Q2D",
+            uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap(),
         )
         .expect("return URL should be valid");
         let url = url::Url::parse(&value).expect("generated URL should be valid");
@@ -655,7 +655,7 @@ mod tests {
             pairs,
             vec![
                 ("source".into(), "email".into()),
-                ("order_number".into(), "W-20260830-7K4M9Q2D".into()),
+                ("order_id".into(), "00000000-0000-4000-8000-000000000001".into()),
             ]
         );
     }

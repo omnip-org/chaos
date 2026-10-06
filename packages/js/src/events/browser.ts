@@ -6,11 +6,13 @@ import {
   MAX_META_BROWSER_ID_LENGTH,
 } from "../internal/meta.js";
 import { sha256Hex } from "../internal/sha256.js";
+import { toMajorUnits } from "../money.js";
 import type {
   CartLineMutation,
+  ConfirmedPurchaseOrderInput,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutStart,
-  OrderLookup,
+  OwnOrder,
 } from "../types.js";
 import {
   addToCartEventData,
@@ -175,6 +177,33 @@ export class ChaosStorefrontAnalytics {
       });
   }
 
+  /** Adds the order identity already saved by Chaos to Meta Pixel matching. */
+  async setMetaOrderIdentity(order: OwnOrder): Promise<void> {
+    if (!this.destinations.hasPixel()) return;
+    const name = order.shipping_full_name ?? order.billing_full_name ?? "";
+    const [firstName, ...lastName] = name.trim().split(/\s+/);
+    const values: Record<string, string | undefined> = {
+      em: order.contact_email?.trim().toLowerCase(),
+      ph: order.contact_phone?.replace(/\D/g, ""),
+      fn: normalizeMetaText(firstName),
+      ln: normalizeMetaText(lastName.join(" ")),
+      ct: normalizeMetaText(order.shipping_locality ?? order.billing_locality ?? undefined),
+      st: normalizeMetaText(order.shipping_administrative_area ?? order.billing_administrative_area ?? undefined),
+      zp: normalizeMetaText(order.shipping_postal_code ?? order.billing_postal_code ?? undefined),
+      country: normalizeMetaText(order.shipping_country_code ?? order.billing_country_code ?? undefined),
+    };
+    try {
+      const entries = await Promise.all(
+        Object.entries(values)
+          .filter((entry): entry is [string, string] => Boolean(entry[1]))
+          .map(async ([key, value]) => [key, await sha256Hex(value)] as const),
+      );
+      this.destinations.setMetaCustomerData(Object.fromEntries(entries));
+    } catch {
+      // Web Crypto is optional; a Purchase must still reach Pixel and GA4.
+    }
+  }
+
   pageView(input: PageViewInput = {}): string {
     this.maintainFbcCookie();
     const path = input.path ?? this.documentRef.location?.pathname ?? "/";
@@ -336,17 +365,24 @@ export class ChaosStorefrontAnalytics {
     const orderId = input.orderId.toLowerCase();
 
     try {
-      return this.recordOnce("purchase", orderId, () => {
-        const eventData = purchaseEventData(input);
-        this.destinations.pixel("Purchase", orderId, eventData);
-        this.destinations.ga4("purchase", {
+      const eventData = purchaseEventData(input);
+      let sent = false;
+      if (this.destinations.hasPixel()) {
+        sent = this.recordProviderOnce("meta", "purchase", orderId, () =>
+          this.destinations.pixel("Purchase", orderId, eventData)) || sent;
+      }
+      if (this.destinations.hasGa4()) {
+        sent = this.recordProviderOnce("ga4", "purchase", orderId, () => this.destinations.ga4("purchase", {
           event_id: orderId,
           transaction_id: orderId,
-          value: eventData.value,
+          value: toMajorUnits(input.ga4ValueMinor ?? input.valueMinor, input.currency),
           currency: eventData.currency,
-          items: toGa4Items(eventData.contents),
-        });
-      });
+          ...(input.taxMinor !== undefined ? { tax: toMajorUnits(input.taxMinor, input.currency) } : {}),
+          ...(input.shippingMinor !== undefined ? { shipping: toMajorUnits(input.shippingMinor, input.currency) } : {}),
+          items: discountedGa4PurchaseItems(input),
+        })) || sent;
+      }
+      return sent ? orderId : null;
     } catch {
       // Provider/storage problems are best-effort; bad input above already threw.
       return null;
@@ -354,7 +390,7 @@ export class ChaosStorefrontAnalytics {
   }
 
   /** Projects a confirmed, paid order without making the caller rebuild event fields. */
-  recordConfirmedPurchase(order: Pick<OrderLookup, "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines">): string | null {
+  recordConfirmedPurchase(order: ConfirmedPurchaseOrderInput): string | null {
     const input = toPurchaseAnalyticsInput(order);
     return input ? this.recordPurchase(input) : null;
   }
@@ -402,6 +438,27 @@ export class ChaosStorefrontAnalytics {
     }
     this.storage?.setItem(storageKey, new Date(this.now()).toISOString());
     return eventId;
+  }
+
+  private recordProviderOnce(
+    provider: "meta" | "ga4",
+    eventName: string,
+    eventId: string,
+    project: () => boolean,
+  ): boolean {
+    const storageKey = `${this.providerEventStoragePrefix}${provider}.${eventName}.${eventId}`;
+    try {
+      if (this.storage?.getItem(storageKey)) return false;
+    } catch {
+      // Delivery still proceeds when browser storage is blocked.
+    }
+    if (!project()) return false;
+    try {
+      this.storage?.setItem(storageKey, new Date(this.now()).toISOString());
+    } catch {
+      // Delivery already happened.
+    }
+    return true;
   }
 
   /**
@@ -486,6 +543,8 @@ class AnalyticsDestinations {
   private readonly onError: AnalyticsOptions["onError"];
   private metaStarted = false;
   private ga4Started = false;
+  private externalIdHash: string | null = null;
+  private metaCustomerData: Record<string, string> = {};
 
   constructor(
     windowRef: Window & typeof globalThis,
@@ -502,13 +561,23 @@ class AnalyticsDestinations {
     if (this.options?.metaPixel) this.startMeta();
   }
 
-  pixel(eventName: string, eventId: string, params: Record<string, unknown>): void {
-    if (!this.metaStarted) return;
+  pixel(eventName: string, eventId: string, params: Record<string, unknown>): boolean {
+    if (!this.metaStarted || !this.windowRef.fbq) return false;
     try {
-      this.windowRef.fbq?.("track", eventName, params, { eventID: eventId });
+      this.windowRef.fbq("track", eventName, params, { eventID: eventId });
+      return true;
     } catch (error) {
       this.reportError(error, eventName, eventId);
+      return false;
     }
+  }
+
+  hasPixel(): boolean { return this.metaStarted; }
+  hasGa4(): boolean { return this.ga4Started; }
+
+  setMetaCustomerData(values: Record<string, string>): void {
+    this.metaCustomerData = values;
+    this.updateMetaMatching();
   }
 
   /**
@@ -518,10 +587,16 @@ class AnalyticsDestinations {
    * full base snippet's init would, since this SDK never uses that snippet.
    */
   setExternalId(hash: string): void {
+    this.externalIdHash = hash;
+    this.updateMetaMatching();
+  }
+
+  private updateMetaMatching(): void {
     if (!this.metaStarted || !this.options?.metaPixel) return;
     try {
       this.windowRef.fbq?.("init", this.options.metaPixel.pixelId, {
-        external_id: hash,
+        ...(this.externalIdHash ? { external_id: this.externalIdHash } : {}),
+        ...this.metaCustomerData,
       });
     } catch (error) {
       this.reportError(error, "AdvancedMatching", undefined);
@@ -543,16 +618,18 @@ class AnalyticsDestinations {
     }
   }
 
-  ga4(eventName: string, params: Record<string, unknown>): void {
-    if (!this.ga4Started) return;
+  ga4(eventName: string, params: Record<string, unknown>): boolean {
+    if (!this.ga4Started || !this.windowRef.gtag) return false;
     try {
-      this.windowRef.gtag?.("event", eventName, params);
+      this.windowRef.gtag("event", eventName, params);
+      return true;
     } catch (error) {
       this.reportError(
         error,
         eventName,
         typeof params.event_id === "string" ? params.event_id : undefined,
       );
+      return false;
     }
   }
 
@@ -607,6 +684,12 @@ class AnalyticsDestinations {
       `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(this.options.ga4.measurementId)}`,
     );
   }
+}
+
+function normalizeMetaText(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, "");
+  return normalized || undefined;
 }
 
 function validateDestinationOptions(options: DestinationOptions): void {
@@ -671,6 +754,56 @@ function toGa4Items(contents: MetaCommerceEventData["contents"]): Array<{
     quantity: content.quantity,
     price: content.item_price,
   }));
+}
+
+/** Allocates an order discount in minor units so item revenue equals GA4 value. */
+function discountedGa4PurchaseItems(input: PurchaseAnalyticsInput): Array<{
+  item_id: string;
+  quantity: number;
+  price: number;
+  discount: number;
+}> {
+  const gross = input.items.reduce(
+    (sum, item) => sum + BigInt(item.priceMinor) * BigInt(item.quantity),
+    0n,
+  );
+  const discount = gross - BigInt(input.ga4ValueMinor ?? Number(gross));
+  if (gross === 0n || discount < 0n || discount > gross) {
+    return input.items.map((item) => ({
+      item_id: item.productVariantId,
+      quantity: item.quantity,
+      price: toMajorUnits(item.priceMinor, input.currency),
+      discount: 0,
+    }));
+  }
+  let remaining = discount;
+  const lastPositive = input.items.reduce(
+    (last, item, index) => item.priceMinor > 0 ? index : last,
+    -1,
+  );
+  const result = [] as Array<{ item_id: string; quantity: number; price: number; discount: number }>;
+  input.items.forEach((item, index) => {
+    const lineGross = BigInt(item.priceMinor) * BigInt(item.quantity);
+    const lineDiscount = index === lastPositive
+      ? remaining
+      : discount * lineGross / gross;
+    remaining -= lineDiscount;
+    const each = Number(lineDiscount / BigInt(item.quantity));
+    const extra = Number(lineDiscount % BigInt(item.quantity));
+    for (const [quantity, unitDiscount] of [
+      [extra, each + 1],
+      [item.quantity - extra, each],
+    ] as Array<[number, number]>) {
+      if (quantity === 0) continue;
+      result.push({
+        item_id: item.productVariantId,
+        quantity,
+        price: toMajorUnits(item.priceMinor - unitDiscount, input.currency),
+        discount: toMajorUnits(unitDiscount, input.currency),
+      });
+    }
+  });
+  return result;
 }
 
 function analyticsStorageNamespace(publishableKey: string): string {

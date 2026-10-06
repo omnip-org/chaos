@@ -117,7 +117,9 @@ export class PaymentsResource {
         idempotencyKey: this.checkoutIdempotencyKey(cart.id),
       },
     );
-    return requireEmbeddedCheckoutSession(response);
+    const checkout = requireEmbeddedCheckoutSession(response);
+    this.client.rememberCheckoutOrder(checkout.data.order_id);
+    return checkout;
   }
 }
 
@@ -144,6 +146,7 @@ function isEmbeddedCheckoutSession(
 ): value is EmbeddedCheckoutSession {
   if (!isRecord(value) || !isRecord(value.client_action)) return false;
   return (
+    isNonEmptyString(value.order_id) &&
     isNonEmptyString(value.order_number) &&
     isNonEmptyString(value.event_id) &&
     value.client_action.type === "stripe_checkout_embedded" &&

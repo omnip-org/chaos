@@ -222,8 +222,8 @@ export interface OrderLookup {
     "pending" | "paid" | "failed" | "expired" | "partially_refunded" | "refunded";
   fulfillment_status:
     "pending" | "shipped" | "delivered" | "cancelled";
-  shipping_locality?: string;
-  shipping_country_code?: string;
+  shipping_locality?: string | null;
+  shipping_country_code?: string | null;
   subtotal_amount_minor: number;
   discount_amount_minor: number;
   tax_amount_minor: number;
@@ -236,9 +236,46 @@ export interface OrderLookup {
   updated_at: string;
 }
 
+/** Minimum manual Purchase input; richer Order totals improve GA4 revenue accuracy. */
+export type ConfirmedPurchaseOrderInput = Pick<
+  OrderLookup,
+  "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines"
+> & Partial<Pick<
+  OrderLookup,
+  "subtotal_amount_minor" | "discount_amount_minor" | "tax_amount_minor" | "shipping_amount_minor"
+>>;
+
+/** The shopper-owned `orders` row, with related lines and fulfillment progress. */
+export interface OwnOrder extends OrderLookup {
+  store_id: UUID;
+  channel_id: UUID;
+  shopper_id: UUID;
+  cart_id: UUID;
+  payment_provider_account_id: UUID;
+  payment_provider_reference_id: string | null;
+  payment_failure_code: string | null;
+  amounts_finalized_at: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  billing_full_name: string | null;
+  billing_address_line1: string | null;
+  billing_address_line2: string | null;
+  billing_locality: string | null;
+  billing_administrative_area: string | null;
+  billing_postal_code: string | null;
+  billing_country_code: string | null;
+  shipping_full_name: string | null;
+  shipping_address_line1: string | null;
+  shipping_address_line2: string | null;
+  shipping_administrative_area: string | null;
+  shipping_postal_code: string | null;
+  shipping_locality: string | null;
+  shipping_country_code: string | null;
+}
+
 /** Storefront-facing options for creating an embedded checkout. */
 export interface EmbeddedCheckoutOptions {
-  /** Stripe appends the public order number to this URL before redirecting the shopper. */
+  /** Stripe appends the Order UUID to this URL before redirecting the shopper. */
   returnUrl: string;
   /**
    * Ad-platform attribution read off the browser's own cookies/URL,
@@ -269,6 +306,7 @@ export interface CheckoutUtm {
 }
 
 export interface EmbeddedCheckoutSession {
+  order_id: UUID;
   order_number: string;
   client_action: PaymentClientAction;
   /**

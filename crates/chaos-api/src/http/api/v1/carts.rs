@@ -343,6 +343,7 @@ mod create_embedded_checkout {
 
     #[derive(Serialize)]
     pub(super) struct EmbeddedCheckoutData {
+        order_id: Uuid,
         order_number: String,
         client_action: PaymentClientActionData,
         /// Shared with the browser Pixel's own InitiateCheckout call so Meta
@@ -401,15 +402,18 @@ mod create_embedded_checkout {
             .await?;
         Ok(ApiResponse::created(embedded_checkout_data(
             checkout,
+            draft.order_id.as_uuid(),
             draft.event_id,
         )))
     }
 
     fn embedded_checkout_data(
         checkout: chaos_core::payments::EmbeddedCheckoutResult,
+        order_id: Uuid,
         event_id: Uuid,
     ) -> EmbeddedCheckoutData {
         EmbeddedCheckoutData {
+            order_id,
             order_number: checkout.order_number,
             client_action: client_action_data(checkout.client_action),
             event_id,

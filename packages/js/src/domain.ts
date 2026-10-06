@@ -1,7 +1,7 @@
 import type { PurchaseAnalyticsInput } from "./events/types.js";
 import type {
   OrderConfirmationState,
-  OrderLookup,
+  ConfirmedPurchaseOrderInput,
   ProductOption,
   ProductVariant,
   Review,
@@ -72,11 +72,8 @@ export function getAverageRating(reviews: readonly Review[]): number | null {
 }
 
 /**
- * Order lifecycle state for status badges. An order stays "confirmed" here
- * even after a later refund — `toPurchaseAnalyticsInput` below applies a
- * stricter, independent check (exactly `payment_status === "paid"`) to gate
- * whether a Purchase event fires at all, so the two intentionally diverge on
- * a refunded order.
+ * Order lifecycle state for status badges. A refund does not erase the
+ * original confirmed purchase.
  */
 export function getOrderConfirmationState(
   status: string | undefined,
@@ -90,23 +87,23 @@ export function getOrderConfirmationState(
 }
 
 /**
- * Builds the provider-neutral Purchase input only for a confirmed, paid
- * order — stricter than `getOrderConfirmationState` above, which still
- * reports "confirmed" for a later-refunded order.
+ * Builds the provider-neutral Purchase input for an Order that was paid,
+ * including one later partially or fully refunded.
  */
-export function toPurchaseAnalyticsInput(
-  order: Pick<
-    OrderLookup,
-    "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines"
-  >,
-): PurchaseAnalyticsInput | null {
-  if (order.status !== "confirmed" || order.payment_status !== "paid") {
+export function toPurchaseAnalyticsInput(order: ConfirmedPurchaseOrderInput): PurchaseAnalyticsInput | null {
+  if (order.status !== "confirmed" ||
+      !["paid", "partially_refunded", "refunded"].includes(order.payment_status)) {
     return null;
   }
 
   return {
     orderId: order.id,
     valueMinor: order.total_amount_minor,
+    ...(order.subtotal_amount_minor !== undefined
+      ? { ga4ValueMinor: order.subtotal_amount_minor - (order.discount_amount_minor ?? 0) }
+      : {}),
+    ...(order.tax_amount_minor !== undefined ? { taxMinor: order.tax_amount_minor } : {}),
+    ...(order.shipping_amount_minor !== undefined ? { shippingMinor: order.shipping_amount_minor } : {}),
     currency: order.currency,
     items: order.lines.map((line) => ({
       productId: line.product_id,
