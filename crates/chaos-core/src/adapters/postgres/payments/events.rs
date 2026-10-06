@@ -10,13 +10,11 @@ type RefundDetailRow = (
     OffsetDateTime,
 );
 
-/// contact_email, contact_phone, channel.origin, shipping_full_name,
-/// shipping_locality, shipping_administrative_area, shipping_postal_code,
-/// shipping_country_code.
+/// contact_email, contact_phone, shipping_full_name, shipping_locality,
+/// shipping_administrative_area, shipping_postal_code, shipping_country_code.
 type OrderIdentityRow = (
     Option<String>,
     Option<String>,
-    String,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -280,7 +278,6 @@ async fn apply_payment_event(
         let (
             contact_email,
             contact_phone,
-            origin,
             shipping_full_name,
             shipping_locality,
             shipping_administrative_area,
@@ -288,13 +285,10 @@ async fn apply_payment_event(
             shipping_country_code,
         ): OrderIdentityRow = sqlx::query_as(
             "SELECT order_row.contact_email::text, order_row.contact_phone, \
-                    channel.origin, order_row.shipping_full_name, \
+                    order_row.shipping_full_name, \
                     order_row.shipping_locality, order_row.shipping_administrative_area, \
                     order_row.shipping_postal_code, order_row.shipping_country_code::text \
              FROM chaos_commerce.orders AS order_row \
-             JOIN chaos_commerce.channels AS channel \
-               ON channel.store_id = order_row.store_id \
-              AND channel.id = order_row.channel_id \
              WHERE order_row.store_id = $1 AND order_row.id = $2",
         )
         .bind(store_id.as_uuid())
@@ -318,7 +312,6 @@ async fn apply_payment_event(
             OrderIdentityContext {
                 email: contact_email.as_deref(),
                 phone: contact_phone.as_deref(),
-                origin: Some(&origin),
                 full_name: shipping_full_name.as_deref(),
                 locality: shipping_locality.as_deref(),
                 administrative_area: shipping_administrative_area.as_deref(),

@@ -197,12 +197,8 @@ fn meta_user_data(command: &AnalyticsDeliveryCommand) -> MetaUserData {
         external_id: vec![sha256_hex(command.shopper_id.to_string().as_bytes())],
         em: hashed_context_value(properties, "em"),
         ph: hashed_context_value(properties, "ph"),
-        fbc: context_value(properties, "fbc")
-            .filter(|value| valid_meta_browser_id(value))
-            .map(str::to_owned),
-        fbp: context_value(properties, "fbp")
-            .filter(|value| valid_meta_browser_id(value))
-            .map(str::to_owned),
+        fbc: context_value(properties, "fbc").map(str::to_owned),
+        fbp: context_value(properties, "fbp").map(str::to_owned),
         client_ip_address: context_value(properties, "client_ip_address").map(str::to_owned),
         client_user_agent: context_value(properties, "client_user_agent").map(str::to_owned),
         first_name: hashed_context_value(properties, "fn"),
@@ -357,25 +353,6 @@ fn sha256_hex(value: &[u8]) -> String {
 
 fn is_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn valid_meta_browser_id(value: &str) -> bool {
-    if value.len() > 2_048 {
-        return false;
-    }
-    let mut parts = value.splitn(4, '.');
-    let (Some(prefix), Some(version), Some(timestamp), Some(suffix)) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return false;
-    };
-    prefix == "fb"
-        && !version.is_empty()
-        && version.bytes().all(|byte| byte.is_ascii_digit())
-        && timestamp.len() == 13
-        && timestamp.bytes().all(|byte| byte.is_ascii_digit())
-        && !suffix.is_empty()
-        && !suffix.chars().any(char::is_whitespace)
 }
 
 fn invalid_command() -> AnalyticsDeliveryError {
@@ -583,18 +560,18 @@ mod tests {
     }
 
     #[test]
-    fn does_not_forward_invalid_browser_matching_ids() {
+    fn forwards_browser_matching_ids_as_opaque_values() {
         let mut input = command(1_299, "USD");
         input.properties = json!({
             "_meta": {
-                "fbc": "fb.1.123.click",
-                "fbp": "fb.1.123.browser"
+                "fbc": "future-format-click-id",
+                "fbp": "future-format-browser-id"
             }
         });
 
         let user_data = meta_user_data(&input);
 
-        assert!(user_data.fbc.is_none());
-        assert!(user_data.fbp.is_none());
+        assert_eq!(user_data.fbc.as_deref(), Some("future-format-click-id"));
+        assert_eq!(user_data.fbp.as_deref(), Some("future-format-browser-id"));
     }
 }

@@ -112,7 +112,6 @@ pub(crate) fn splice_attribution(properties: &mut Value, attribution: &Value) {
 pub(crate) struct OrderIdentityContext<'a> {
     pub email: Option<&'a str>,
     pub phone: Option<&'a str>,
-    pub origin: Option<&'a str>,
     pub full_name: Option<&'a str>,
     pub locality: Option<&'a str>,
     pub administrative_area: Option<&'a str>,
@@ -120,8 +119,7 @@ pub(crate) struct OrderIdentityContext<'a> {
     pub country_code: Option<&'a str>,
 }
 
-/// Add server-owned order contact identity and the canonical storefront origin
-/// without coupling conversion delivery to an arbitrary browser ledger row.
+/// Add server-owned order contact identity to the Purchase event.
 pub(crate) fn merge_order_identity(properties: &mut Value, context: OrderIdentityContext<'_>) {
     let Some(object) = properties.as_object_mut() else {
         return;
@@ -132,10 +130,6 @@ pub(crate) fn merge_order_identity(properties: &mut Value, context: OrderIdentit
     let Some(meta) = meta.as_object_mut() else {
         return;
     };
-    if let Some(origin) = context.origin.filter(|value| !value.trim().is_empty()) {
-        meta.entry("source_url")
-            .or_insert_with(|| Value::String(origin.to_owned()));
-    }
     if let Some(email) = context.email.and_then(normalized_email_hash) {
         meta.insert("em".into(), Value::String(email));
     }
@@ -389,7 +383,6 @@ mod tests {
             OrderIdentityContext {
                 email: None,
                 phone: None,
-                origin: None,
                 full_name: Some("Jane Q. Shopper"),
                 locality: Some("San Francisco"),
                 administrative_area: Some("CA"),

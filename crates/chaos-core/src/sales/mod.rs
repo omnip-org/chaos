@@ -8,6 +8,7 @@ use chaos_domain::{
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
+use url::Url;
 
 use crate::{
     ApplicationError,
@@ -243,8 +244,11 @@ impl StorefrontSales {
 
 /// Drop invalid or oversized attribution rather than fail checkout over it —
 /// this is enrichment for a later Meta CAPI call, not something a shopper's
-/// purchase should ever block on. The Meta adapter re-checks `fbc`/`fbp`
-/// format itself before sending, so this only needs to bound what's stored.
+/// purchase should ever block on. Meta-owned identifiers remain opaque; this
+/// boundary only rejects unsafe strings and invalid source URLs, and sheds UTM
+/// enrichment before the Cart's JSONB size limit can be reached.
+const MAX_CHECKOUT_ATTRIBUTION_JSON_BYTES: usize = 3 * 1024;
+
 fn checkout_attribution_value(input: Option<CheckoutAttributionInput>) -> Option<Value> {
     let input = input?;
     let mut meta = serde_json::Map::new();
@@ -260,7 +264,7 @@ fn checkout_attribution_value(input: Option<CheckoutAttributionInput>) -> Option
     }
     let utm = utm_map(input.utm);
     let mut attribution = serde_json::Map::new();
-    if let Some(source_url) = sanitized_attribution_string(input.source_url) {
+    if let Some(source_url) = sanitized_source_url(input.source_url) {
         attribution.insert("source_url".into(), Value::String(source_url));
     }
     if !utm.is_empty() {
@@ -269,6 +273,11 @@ fn checkout_attribution_value(input: Option<CheckoutAttributionInput>) -> Option
     if !meta.is_empty() {
         attribution.insert("meta".into(), Value::Object(meta));
     }
+    if serde_json::to_vec(&attribution)
+        .is_ok_and(|value| value.len() > MAX_CHECKOUT_ATTRIBUTION_JSON_BYTES)
+    {
+        attribution.remove("utm");
+    }
     (!attribution.is_empty()).then_some(Value::Object(attribution))
 }
 
@@ -276,6 +285,12 @@ fn sanitized_attribution_string(value: Option<String>) -> Option<String> {
     value.filter(|value| {
         !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
     })
+}
+
+fn sanitized_source_url(value: Option<String>) -> Option<String> {
+    let value = sanitized_attribution_string(value)?;
+    let url = Url::parse(&value).ok()?;
+    (matches!(url.scheme(), "http" | "https") && url.host_str().is_some()).then_some(value)
 }
 
 /// Shape the acquisition snapshot into `{ "first_seen": .., "last_seen": .. }`
@@ -341,6 +356,48 @@ fn validation(field: &'static str, reason: &'static str) -> ApplicationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkout_attribution_keeps_opaque_meta_ids_and_drops_invalid_source_url() {
+        let attribution = checkout_attribution_value(Some(CheckoutAttributionInput {
+            meta_fbc: Some("future-format-click-id".into()),
+            meta_fbp: Some("future-format-browser-id".into()),
+            source_url: Some("javascript:alert(1)".into()),
+            ..CheckoutAttributionInput::default()
+        }))
+        .expect("meta identifiers produce attribution");
+
+        assert_eq!(attribution["meta"]["fbc"], "future-format-click-id");
+        assert_eq!(attribution["meta"]["fbp"], "future-format-browser-id");
+        assert!(attribution.get("source_url").is_none());
+    }
+
+    #[test]
+    fn checkout_attribution_drops_utm_before_the_storage_limit() {
+        let long = "x".repeat(512);
+        let attribution = checkout_attribution_value(Some(CheckoutAttributionInput {
+            meta_fbc: Some(long.clone()),
+            meta_fbp: Some(long.clone()),
+            client_ip_address: Some("2001:db8::1".into()),
+            client_user_agent: Some(long.clone()),
+            source_url: Some(format!("https://shop.example/{}", "x".repeat(480))),
+            utm: UtmTags {
+                source: Some(long.clone()),
+                medium: Some(long.clone()),
+                campaign: Some(long.clone()),
+                term: Some(long.clone()),
+                content: Some(long),
+            },
+        }))
+        .expect("higher-priority attribution remains");
+
+        assert!(attribution.get("utm").is_none());
+        assert!(
+            serde_json::to_vec(&attribution).unwrap().len() <= MAX_CHECKOUT_ATTRIBUTION_JSON_BYTES
+        );
+        assert!(attribution["meta"].get("fbc").is_some());
+        assert!(attribution.get("source_url").is_some());
+    }
 
     #[test]
     fn shopper_session_attribution_records_first_and_last_seen_with_nested_utm() {

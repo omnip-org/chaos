@@ -212,7 +212,8 @@ fn attribution_input(
     let client_ip_address = headers
         .get("x-real-ip")
         .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
+        .and_then(|value| value.parse::<std::net::IpAddr>().ok())
+        .map(|value| value.to_string());
     let client_user_agent = headers
         .get(header::USER_AGENT)
         .and_then(|value| value.to_str().ok())
@@ -384,6 +385,22 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    #[test]
+    fn checkout_attribution_accepts_v4_and_v6_but_omits_invalid_ip() {
+        for (raw, expected) in [
+            ("203.0.113.10", Some("203.0.113.10")),
+            ("2001:db8::1", Some("2001:db8::1")),
+            ("not-an-ip", None),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-real-ip", raw.parse().unwrap());
+
+            let attribution = attribution_input(None, &headers).unwrap();
+
+            assert_eq!(attribution.client_ip_address.as_deref(), expected);
+        }
+    }
 
     async fn decode_cart_line_request(
         ApiJson(_request): ApiJson<SetCartLineRequest>,
