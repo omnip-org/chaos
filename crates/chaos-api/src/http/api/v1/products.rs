@@ -6,9 +6,9 @@ use axum::{
     routing::{get, post},
 };
 use chaos_core::contracts::{
-    ReviewPageCursor, StorefrontCatalogProduct, StorefrontCatalogVariant, StorefrontMediaAsset,
-    StorefrontMediaScope, StorefrontProductCollection, StorefrontProductOption,
-    StorefrontProductOptionValue, StorefrontRatingSummary, StorefrontSelectedOption,
+    ReviewPageCursor, StorefrontCatalogProduct, StorefrontCatalogVariant,
+    StorefrontProductCollection, StorefrontProductOption, StorefrontProductOptionValue,
+    StorefrontRatingSummary, StorefrontSelectedOption,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -20,6 +20,8 @@ use crate::http::shared::pagination::{
 use crate::http::{
     ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, PublishableChannel,
 };
+
+use super::wire::{MediaData, ReviewStatus};
 
 #[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
@@ -80,7 +82,7 @@ struct StorefrontProductData {
     description: String,
     options: Vec<StorefrontProductOptionData>,
     variants: Vec<StorefrontVariantData>,
-    media: Vec<StorefrontMediaData>,
+    media: Vec<MediaData>,
     collections: Vec<StorefrontProductCollectionData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<serde_json::Value>,
@@ -101,23 +103,6 @@ struct StorefrontProductCollectionData {
     title: String,
 }
 
-#[derive(Serialize)]
-struct StorefrontMediaData {
-    id: Uuid,
-    scope: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    option_id: Option<Uuid>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    option_value_id: Option<Uuid>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    product_variant_id: Option<Uuid>,
-    media_type: String,
-    kind: &'static str,
-    alt_text: String,
-    position: u16,
-    url: String,
-}
-
 fn product_data(product: StorefrontCatalogProduct) -> StorefrontProductData {
     StorefrontProductData {
         id: product.id.as_uuid(),
@@ -126,7 +111,7 @@ fn product_data(product: StorefrontCatalogProduct) -> StorefrontProductData {
         description: product.description,
         options: product.options.into_iter().map(option_data).collect(),
         variants: product.variants.into_iter().map(variant_data).collect(),
-        media: product.media.into_iter().map(media_data).collect(),
+        media: product.media.into_iter().map(MediaData::from).collect(),
         collections: product
             .collections
             .into_iter()
@@ -173,36 +158,6 @@ fn selected_option_data(selection: StorefrontSelectedOption) -> StorefrontSelect
     StorefrontSelectedOptionData {
         option_id: selection.option_id.as_uuid(),
         option_value_id: selection.option_value_id.as_uuid(),
-    }
-}
-
-fn media_data(media: StorefrontMediaAsset) -> StorefrontMediaData {
-    let (scope, option_id, option_value_id, product_variant_id) = match media.scope {
-        StorefrontMediaScope::Product => ("product", None, None, None),
-        StorefrontMediaScope::OptionValue {
-            option_id,
-            option_value_id,
-        } => (
-            "option_value",
-            Some(option_id.as_uuid()),
-            Some(option_value_id.as_uuid()),
-            None,
-        ),
-        StorefrontMediaScope::Variant { product_variant_id } => {
-            ("variant", None, None, Some(product_variant_id.as_uuid()))
-        }
-    };
-    StorefrontMediaData {
-        id: media.id.as_uuid(),
-        scope,
-        option_id,
-        option_value_id,
-        product_variant_id,
-        media_type: media.media_type,
-        kind: media.kind.as_str(),
-        alt_text: media.alt_text,
-        position: media.position,
-        url: media.url,
     }
 }
 
@@ -320,7 +275,7 @@ mod submit_review {
     use chaos_core::catalog::SubmitReviewInput;
     use chaos_domain::catalog::ProductId;
 
-    #[derive(Deserialize, Serialize)]
+    #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct SubmitReviewBody {
         rating: u8,
@@ -387,7 +342,7 @@ mod list_reviews {
         title: Option<String>,
         content: String,
         images: Vec<String>,
-        status: &'static str,
+        status: ReviewStatus,
         is_staff_reply: bool,
         verified_buyer: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -464,7 +419,7 @@ mod list_reviews {
                 .filter(|image| image.status == MediaAssetStatus::Ready)
                 .filter_map(|image| image.public_url)
                 .collect(),
-            status: item.status.as_str(),
+            status: item.status.into(),
             is_staff_reply: item.is_staff_reply,
             verified_buyer: item.verified_buyer,
             reviewed_at: item.reviewed_at.map(Into::into),

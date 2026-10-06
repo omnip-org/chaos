@@ -74,8 +74,8 @@ pub use review::{
 };
 pub use sales::{
     CartDetail, CartLineItem, CheckoutDraft, OrderDetail, OrderFulfillmentItem, OrderLineItem,
-    OrderListFilter, OrderPage, OrderPaymentAttemptItem, OrderRefundItem, ShopperOrderDetail,
-    ShopperOrderRow,
+    OrderListFilter, OrderPage, OrderPaymentAttemptItem, OrderRefundItem, ShopperOrderContext,
+    ShopperOrderDetail,
 };
 pub use store::{
     StoreListItem, StoreMembershipItem, StoreMembershipRepository, StoreReadRepository,
@@ -89,11 +89,11 @@ pub use storefront_catalog::{
 };
 pub use stripe::{
     OrderMetadataContext, PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction,
-    PaymentCommand, PaymentCommandKind, PaymentCommandResult, PaymentLineItem, PaymentProvider,
-    PaymentProviderRegistry, PaymentRefundObservation, PaymentRefundStatus, PaymentSecretResolver,
-    PaymentShippingAddress, PaymentShippingOption, PaymentWebhookEvent, PaymentWebhookVerifier,
-    PaymentWebhookVerifierRegistry, RefundDetail, StripeAccountConfiguration, StripeAccountDetail,
-    StripeAccountPage, StripeCommand, StripeCommandResult, StripePaymentGateway,
-    StripeWebhookConfiguration, StripeWebhookConfigurationRepository, StripeWebhookEvent,
-    StripeWebhookSignatureVerifier,
+    PaymentClientActionKind, PaymentCommand, PaymentCommandKind, PaymentCommandResult,
+    PaymentLineItem, PaymentProvider, PaymentProviderRegistry, PaymentRefundObservation,
+    PaymentRefundStatus, PaymentSecretResolver, PaymentShippingAddress, PaymentShippingOption,
+    PaymentWebhookEvent, PaymentWebhookVerifier, PaymentWebhookVerifierRegistry, RefundDetail,
+    StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage, StripeCommand,
+    StripeCommandResult, StripePaymentGateway, StripeWebhookConfiguration,
+    StripeWebhookConfigurationRepository, StripeWebhookEvent, StripeWebhookSignatureVerifier,
 };

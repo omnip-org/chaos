@@ -3,10 +3,10 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use crate::{
     ApplicationError,
     contracts::{
-        IntegrationSecretResolver, PaymentClientAction, PaymentCommand, PaymentCommandKind,
-        PaymentCommandResult, PaymentProvider, PaymentRefundObservation, PaymentRefundStatus,
-        PaymentShippingAddress, PaymentWebhookVerifier, StripeWebhookConfigurationRepository,
-        StripeWebhookEvent,
+        IntegrationSecretResolver, PaymentClientAction, PaymentClientActionKind, PaymentCommand,
+        PaymentCommandKind, PaymentCommandResult, PaymentProvider, PaymentRefundObservation,
+        PaymentRefundStatus, PaymentShippingAddress, PaymentWebhookVerifier,
+        StripeWebhookConfigurationRepository, StripeWebhookEvent,
     },
 };
 use async_trait::async_trait;
@@ -414,7 +414,7 @@ impl PaymentProvider for StripeGateway {
         Ok(PaymentCommandResult {
             provider_object_id: object.id,
             client_action: Some(PaymentClientAction {
-                kind: "stripe_checkout_embedded",
+                kind: PaymentClientActionKind::StripeCheckoutEmbedded,
                 public_key: credentials.publishable_key,
                 client_token: SecretString::from(client_secret),
             }),

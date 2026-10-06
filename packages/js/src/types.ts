@@ -47,20 +47,39 @@ export interface ProductVariant {
 }
 
 export type ProductMediaScope = "product" | "option_value" | "variant";
+export type MediaKind = "image" | "video";
 
-export interface ProductMedia {
+export interface ProductMediaBase {
   id: UUID;
-  /** Where this Media is attached; Product media is the final fallback. */
-  scope: ProductMediaScope;
-  option_id?: UUID;
-  option_value_id?: UUID;
-  product_variant_id?: UUID;
   media_type: string;
-  kind: "image" | "video";
+  kind: MediaKind;
   alt_text: string;
   position: number;
   url: string;
 }
+
+/** A media rule with exactly the identifiers required by its attachment scope. */
+export type ProductMedia = ProductMediaBase & (
+  | {
+      /** Product media is the final fallback. */
+      scope: "product";
+      option_id?: never;
+      option_value_id?: never;
+      product_variant_id?: never;
+    }
+  | {
+      scope: "option_value";
+      option_id: UUID;
+      option_value_id: UUID;
+      product_variant_id?: never;
+    }
+  | {
+      scope: "variant";
+      option_id?: never;
+      option_value_id?: never;
+      product_variant_id: UUID;
+    }
+);
 
 /** Approved, top-level review rating for a Product — average rounded to
  * one decimal, count of rated reviews. Absent when the Product has no
@@ -115,7 +134,7 @@ export interface Review {
   title?: string;
   content: string;
   images: string[];
-  status: "approved";
+  status: StorefrontReviewStatus;
   is_staff_reply: boolean;
   verified_buyer: boolean;
   /** Original timestamp for an imported review, when supplied by its source. */
@@ -124,6 +143,8 @@ export interface Review {
   updated_at: string;
   replies?: Review[];
 }
+
+export type StorefrontReviewStatus = "approved";
 
 export interface Page {
   has_more: boolean;
@@ -152,10 +173,12 @@ export interface CartLine {
   media: ProductMedia[];
 }
 
+export type CartStatus = "active" | "locked" | "completed" | "abandoned";
+
 export interface Cart {
   id: UUID;
   currency: CurrencyCode;
-  status: "active" | "locked" | "completed" | "abandoned";
+  status: CartStatus;
   lines: CartLine[];
   subtotal_amount_minor: number;
   created_at: string;
@@ -198,10 +221,20 @@ export interface OrderLine {
   subtotal_amount_minor: number;
 }
 
+export type FulfillmentStatus = "pending" | "shipped" | "delivered" | "cancelled";
+export type OrderStatus = "pending" | "confirmed" | "cancelled";
+export type OrderPaymentStatus =
+  | "pending"
+  | "paid"
+  | "failed"
+  | "expired"
+  | "partially_refunded"
+  | "refunded";
+
 /** The subset of a Fulfillment exposed on the order-lookup view: shipping
  * progress and carrier tracking, without the internal Store provider-account id. */
 export interface OrderLookupFulfillment {
-  status: "pending" | "shipped" | "delivered" | "cancelled";
+  status: FulfillmentStatus;
   tracking_number?: string;
   tracking_url?: string;
   shipped_at?: string;
@@ -217,11 +250,9 @@ export interface OrderLookup {
   id: UUID;
   order_number: string;
   currency: CurrencyCode;
-  status: "pending" | "confirmed" | "cancelled";
-  payment_status:
-    "pending" | "paid" | "failed" | "expired" | "partially_refunded" | "refunded";
-  fulfillment_status:
-    "pending" | "shipped" | "delivered" | "cancelled";
+  status: OrderStatus;
+  payment_status: OrderPaymentStatus;
+  fulfillment_status: FulfillmentStatus;
   shipping_locality?: string | null;
   shipping_country_code?: string | null;
   subtotal_amount_minor: number;
@@ -286,6 +317,8 @@ export interface EmbeddedCheckoutOptions {
   attribution?: CheckoutAttribution;
 }
 
+export type PaymentProvider = "stripe";
+
 /** Namespaced by ad platform so a future platform is an additive field;
  * `source_url` and `utm` aren't platform-specific, so they sit alongside
  * `meta`. */
@@ -338,10 +371,12 @@ export interface PaymentClientAction {
    * client_token is an Embedded Checkout Session client secret. Pass it to
    * Stripe's EmbeddedCheckoutProvider.
    */
-  type: "stripe_checkout_embedded";
+  type: PaymentClientActionType;
   public_key: string;
   client_token: string;
 }
+
+export type PaymentClientActionType = "stripe_checkout_embedded";
 
 export type OrderConfirmationState =
   | "pending"

@@ -4,20 +4,23 @@ import test from "node:test";
 import { resolveProductMedia } from "../media.js";
 import type { Product, ProductMedia, ProductVariant } from "../types.js";
 
+type MediaScopeFields =
+  | { scope: "product" }
+  | { scope: "option_value"; option_id: string; option_value_id: string }
+  | { scope: "variant"; product_variant_id: string };
+
 const productMedia = (
   id: string,
-  scope: ProductMedia["scope"],
   position: number,
-  extra: Partial<ProductMedia> = {},
+  scope: MediaScopeFields,
 ): ProductMedia => ({
   id,
-  scope,
   media_type: "image/jpeg",
   kind: "image",
   alt_text: "",
   position,
   url: `https://cdn.example/${id}.jpg`,
-  ...extra,
+  ...scope,
 });
 
 const variant = (
@@ -38,20 +41,24 @@ const product: Product = {
   title: "Chair",
   description: "",
   media: [
-    productMedia("product-image", "product", 0),
-    productMedia("red-image", "option_value", 0, {
+    productMedia("product-image", 0, { scope: "product" }),
+    productMedia("red-image", 0, {
+      scope: "option_value",
       option_id: "color",
       option_value_id: "red",
     }),
-    productMedia("shared-image", "option_value", 1, {
+    productMedia("shared-image", 1, {
+      scope: "option_value",
       option_id: "color",
       option_value_id: "red",
     }),
-    productMedia("shared-image", "option_value", 2, {
+    productMedia("shared-image", 2, {
+      scope: "option_value",
       option_id: "length",
       option_value_id: "100",
     }),
-    productMedia("variant-image", "variant", 0, {
+    productMedia("variant-image", 0, {
+      scope: "variant",
       product_variant_id: "red-160",
     }),
   ],

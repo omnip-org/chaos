@@ -7,17 +7,14 @@ use axum::{
     routing::{get, post, put},
 };
 use chaos_core::{
-    ApplicationError,
-    contracts::{
-        CartDetail, CartLineItem, PaymentClientAction, StorefrontMediaAsset, StorefrontMediaScope,
-    },
+    contracts::{CartDetail, CartLineItem, PaymentClientAction},
     payments::CreateEmbeddedCheckoutInput,
     sales::{
         CheckoutAttributionInput, CreateCartInput, CreateStripeCheckoutInput, RemoveCartLineInput,
         SetCartLineInput, UtmTags,
     },
 };
-use chaos_domain::{catalog::ProductVariantId, integration::PaymentProvider, sales::CartId};
+use chaos_domain::{catalog::ProductVariantId, sales::CartId};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -25,6 +22,8 @@ use uuid::Uuid;
 use crate::http::{
     ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, ShopperContext, invalid_value,
 };
+
+use super::wire::{CartStatus, MediaData, PaymentClientActionType, PaymentProvider};
 
 #[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
@@ -52,7 +51,7 @@ struct CartLinePath {
 struct CartData {
     id: Uuid,
     currency: String,
-    status: &'static str,
+    status: CartStatus,
     lines: Vec<CartLineData>,
     subtotal_amount_minor: i64,
     created_at: ApiDateTime,
@@ -75,37 +74,20 @@ struct CartLineData {
     quantity: u32,
     unit_price_amount_minor: i64,
     subtotal_amount_minor: i64,
-    media: Vec<CartMediaData>,
+    media: Vec<MediaData>,
 }
 
-#[derive(Serialize)]
-struct CartMediaData {
-    id: Uuid,
-    scope: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    option_id: Option<Uuid>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    option_value_id: Option<Uuid>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    product_variant_id: Option<Uuid>,
-    media_type: String,
-    kind: &'static str,
-    alt_text: String,
-    position: u16,
-    url: String,
-}
-
-fn cart_data(cart: CartDetail, event_id: Option<Uuid>) -> Result<CartData, ApplicationError> {
-    Ok(CartData {
+fn cart_data(cart: CartDetail, event_id: Option<Uuid>) -> CartData {
+    CartData {
         id: cart.id.as_uuid(),
         currency: cart.currency.as_str().to_owned(),
-        status: cart.status.as_str(),
+        status: cart.status.into(),
         lines: cart.lines.into_iter().map(cart_line_data).collect(),
         subtotal_amount_minor: cart.subtotal_amount_minor,
         created_at: cart.created_at.into(),
         updated_at: cart.updated_at.into(),
         event_id,
-    })
+    }
 }
 
 fn cart_line_data(line: CartLineItem) -> CartLineData {
@@ -118,37 +100,7 @@ fn cart_line_data(line: CartLineItem) -> CartLineData {
         quantity: line.quantity,
         unit_price_amount_minor: line.unit_price_amount_minor,
         subtotal_amount_minor: line.subtotal_amount_minor,
-        media: line.media.into_iter().map(cart_media_data).collect(),
-    }
-}
-
-fn cart_media_data(media: StorefrontMediaAsset) -> CartMediaData {
-    let (scope, option_id, option_value_id, product_variant_id) = match media.scope {
-        StorefrontMediaScope::Product => ("product", None, None, None),
-        StorefrontMediaScope::OptionValue {
-            option_id,
-            option_value_id,
-        } => (
-            "option_value",
-            Some(option_id.as_uuid()),
-            Some(option_value_id.as_uuid()),
-            None,
-        ),
-        StorefrontMediaScope::Variant { product_variant_id } => {
-            ("variant", None, None, Some(product_variant_id.as_uuid()))
-        }
-    };
-    CartMediaData {
-        id: media.id.as_uuid(),
-        scope,
-        option_id,
-        option_value_id,
-        product_variant_id,
-        media_type: media.media_type,
-        kind: media.kind.as_str(),
-        alt_text: media.alt_text,
-        position: media.position,
-        url: media.url,
+        media: line.media.into_iter().map(MediaData::from).collect(),
     }
 }
 
@@ -156,7 +108,7 @@ fn cart_media_data(media: StorefrontMediaAsset) -> CartMediaData {
 /// by the checkout handler (InitiateCheckout) and the line-mutation handler
 /// (AddToCart). `source_url` and `utm` are not platform-specific, so they
 /// sit alongside the per-platform `meta` namespace.
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AttributionBody {
     #[serde(default)]
@@ -169,7 +121,7 @@ struct AttributionBody {
 
 /// Standard `utm_*` campaign tags, minus the redundant `utm_` prefix since
 /// they are already namespaced under `utm`.
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UtmAttributionBody {
     #[serde(default)]
@@ -184,7 +136,7 @@ struct UtmAttributionBody {
     content: Option<String>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MetaAttributionBody {
     #[serde(default)]
@@ -232,7 +184,7 @@ fn attribution_input(
 mod create_cart {
     use super::*;
 
-    #[derive(Deserialize, Serialize)]
+    #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct CreateCartBody {}
 
@@ -245,7 +197,7 @@ mod create_cart {
             .storefront_sales
             .create_cart(CreateCartInput { actor })
             .await?;
-        Ok(ApiResponse::created(cart_data(cart, None)?))
+        Ok(ApiResponse::created(cart_data(cart, None)))
     }
 }
 
@@ -263,7 +215,7 @@ mod get_cart {
             .storefront_sales
             .get_cart(&actor, CartId::from_uuid(path.cart_id))
             .await?;
-        Ok(ApiResponse::ok(cart_data(cart, None)?))
+        Ok(ApiResponse::ok(cart_data(cart, None)))
     }
 }
 
@@ -272,7 +224,7 @@ mod get_cart {
 mod set_cart_line {
     use super::*;
 
-    #[derive(Deserialize, Serialize)]
+    #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct SetCartLineBody {
         quantity: u32,
@@ -301,7 +253,7 @@ mod set_cart_line {
                 attribution: attribution_input(body.attribution.as_ref(), &headers),
             })
             .await?;
-        Ok(ApiResponse::ok(cart_data(cart, event_id)?))
+        Ok(ApiResponse::ok(cart_data(cart, event_id)))
     }
 }
 
@@ -323,7 +275,7 @@ mod remove_cart_line {
                 product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
             })
             .await?;
-        Ok(ApiResponse::ok(cart_data(cart, None)?))
+        Ok(ApiResponse::ok(cart_data(cart, None)))
     }
 }
 
@@ -332,11 +284,11 @@ mod remove_cart_line {
 mod create_embedded_checkout {
     use super::*;
 
-    #[derive(Deserialize, Serialize)]
+    #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct CreateEmbeddedCheckoutBody {
         return_url: String,
-        payment_provider: String,
+        payment_provider: PaymentProvider,
         #[serde(default)]
         attribution: Option<AttributionBody>,
     }
@@ -354,7 +306,7 @@ mod create_embedded_checkout {
 
     #[derive(Serialize)]
     pub(super) struct PaymentClientActionData {
-        r#type: &'static str,
+        r#type: PaymentClientActionType,
         public_key: String,
         client_token: String,
     }
@@ -367,12 +319,6 @@ mod create_embedded_checkout {
         ApiJson(body): ApiJson<CreateEmbeddedCheckoutBody>,
     ) -> Result<ApiResponse<EmbeddedCheckoutData>, ApiError> {
         validate_return_url(&body.return_url)?;
-        let payment_provider = PaymentProvider::parse(&body.payment_provider).ok_or_else(|| {
-            invalid_value(
-                "payment_provider",
-                "must be a supported payment provider such as stripe",
-            )
-        })?;
         let idempotency_key = headers
             .get("idempotency-key")
             .and_then(|value| value.to_str().ok())
@@ -385,7 +331,7 @@ mod create_embedded_checkout {
                 actor: actor.clone(),
                 cart_id: CartId::from_uuid(path.cart_id),
                 return_url: body.return_url.clone(),
-                payment_provider,
+                payment_provider: body.payment_provider.into(),
                 now: state.clock.now(),
                 idempotency_key,
                 attribution: attribution_input(body.attribution.as_ref(), &headers),
@@ -422,7 +368,7 @@ mod create_embedded_checkout {
 
     fn client_action_data(value: PaymentClientAction) -> PaymentClientActionData {
         PaymentClientActionData {
-            r#type: value.kind,
+            r#type: value.kind.into(),
             public_key: value.public_key.expose_secret().to_owned(),
             client_token: value.client_token.expose_secret().to_owned(),
         }
@@ -446,5 +392,51 @@ mod create_embedded_checkout {
             ));
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use axum::{
+            Router,
+            body::{Body, to_bytes},
+            http::{Request, StatusCode, header::CONTENT_TYPE},
+            routing::post,
+        };
+        use serde_json::Value;
+        use tower::ServiceExt;
+
+        use super::*;
+
+        async fn decode_checkout_body(
+            ApiJson(_body): ApiJson<CreateEmbeddedCheckoutBody>,
+        ) -> StatusCode {
+            StatusCode::OK
+        }
+
+        #[tokio::test]
+        async fn payment_provider_is_validated_during_json_deserialization() {
+            let app = Router::new().route("/", post(decode_checkout_body));
+            let request = |provider: &str| {
+                Request::post("/")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "return_url": "https://shop.example.test/return",
+                            "payment_provider": provider,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap()
+            };
+
+            let accepted = app.clone().oneshot(request("stripe")).await.unwrap();
+            assert_eq!(accepted.status(), StatusCode::OK);
+
+            let rejected = app.oneshot(request("unknown")).await.unwrap();
+            assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+            let body = to_bytes(rejected.into_body(), 2048).await.unwrap();
+            let json = serde_json::from_slice::<Value>(&body).unwrap();
+            assert_eq!(json["error"]["code"], "invalid_json");
+        }
     }
 }

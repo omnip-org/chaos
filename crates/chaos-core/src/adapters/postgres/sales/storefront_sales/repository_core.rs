@@ -10,7 +10,7 @@ use crate::{
     },
     contracts::{
         CartDetail, CartLineItem, MachineActor, OrderDetail, ShopperActor, ShopperOrderDetail,
-        ShopperOrderRow,
+        ShopperOrderContext,
         StorefrontMediaAsset, StorefrontMediaScope, StorefrontSelectedOption,
         resolve_storefront_media,
         CheckoutDraft,

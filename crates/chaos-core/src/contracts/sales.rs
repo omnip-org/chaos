@@ -134,55 +134,20 @@ pub struct OrderDetail {
     pub updated_at: OffsetDateTime,
 }
 
-/// Storefront response DTO for the persisted `chaos_commerce.orders` columns.
-#[derive(sqlx::FromRow, serde::Serialize)]
-pub struct ShopperOrderRow {
-    pub id: uuid::Uuid,
-    pub order_number: String,
+/// Storefront-only ownership and payment context not already represented by
+/// the validated `OrderDetail` aggregate.
+#[derive(sqlx::FromRow)]
+pub struct ShopperOrderContext {
     pub store_id: uuid::Uuid,
     pub channel_id: uuid::Uuid,
-    pub shopper_id: uuid::Uuid,
     pub cart_id: uuid::Uuid,
-    pub currency: String,
-    pub status: String,
-    pub payment_status: String,
     pub payment_provider_account_id: uuid::Uuid,
-    pub payment_provider_reference_id: Option<String>,
     pub payment_failure_code: Option<String>,
-    pub fulfillment_status: String,
-    pub refunded_amount_minor: i64,
-    pub subtotal_amount_minor: i64,
-    pub discount_amount_minor: i64,
-    pub tax_amount_minor: i64,
-    pub shipping_amount_minor: i64,
-    pub total_amount_minor: i64,
-    #[serde(with = "time::serde::rfc3339::option")]
-    pub amounts_finalized_at: Option<OffsetDateTime>,
-    pub contact_email: Option<String>,
-    pub contact_phone: Option<String>,
-    pub billing_full_name: Option<String>,
-    pub billing_address_line1: Option<String>,
-    pub billing_address_line2: Option<String>,
-    pub billing_locality: Option<String>,
-    pub billing_administrative_area: Option<String>,
-    pub billing_postal_code: Option<String>,
-    pub billing_country_code: Option<String>,
-    pub shipping_full_name: Option<String>,
-    pub shipping_address_line1: Option<String>,
-    pub shipping_address_line2: Option<String>,
-    pub shipping_locality: Option<String>,
-    pub shipping_administrative_area: Option<String>,
-    pub shipping_postal_code: Option<String>,
-    pub shipping_country_code: Option<String>,
-    #[serde(with = "time::serde::rfc3339")]
-    pub created_at: OffsetDateTime,
-    #[serde(with = "time::serde::rfc3339")]
-    pub updated_at: OffsetDateTime,
 }
 
-/// Shopper-owned Order row plus related data needed for browser analytics.
+/// Shopper-owned Order plus the context needed by its private Storefront view.
 pub struct ShopperOrderDetail {
-    pub row: ShopperOrderRow,
+    pub context: ShopperOrderContext,
     pub detail: OrderDetail,
 }
 

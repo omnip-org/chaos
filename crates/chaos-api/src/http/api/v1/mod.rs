@@ -9,6 +9,7 @@ mod collections;
 mod order;
 mod products;
 mod shopper;
+mod wire;
 
 pub(crate) fn routes() -> Router<ApiState> {
     // Keep these public channel routes synchronized with the SDK

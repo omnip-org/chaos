@@ -418,7 +418,10 @@ async fn stripe_checkout_adapter_creates_an_embedded_session_and_returns_its_cli
         .unwrap();
     assert_eq!(created.provider_object_id, "cs_created");
     let action = created.client_action.as_ref().unwrap();
-    assert_eq!(action.kind, "stripe_checkout_embedded");
+    assert_eq!(
+        action.kind,
+        crate::contracts::PaymentClientActionKind::StripeCheckoutEmbedded
+    );
     assert_eq!(
         action.client_token.expose_secret(),
         "cs_created_secret_value"

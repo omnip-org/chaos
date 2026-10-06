@@ -6,7 +6,7 @@ use crate::{
     error::database_error,
     contracts::{
         AdminActor, MachineActor, OrderMetadataContext,
-        PaymentCheckoutDetails, PaymentClientAction, PaymentLineItem,
+        PaymentCheckoutDetails, PaymentClientAction, PaymentClientActionKind, PaymentLineItem,
         StripeAccountConfiguration,
         StripeAccountDetail, StripeAccountPage,
         PaymentRefundObservation, PaymentRefundStatus, PaymentShippingAddress, PaymentCommand,
@@ -205,12 +205,13 @@ fn parse_payment_client_action(value: Value) -> Result<Option<PaymentClientActio
     let Some(object) = value.as_object() else {
         return Err(corrupt_checkout_state());
     };
-    let Some(kind) = object.get("type").and_then(Value::as_str) else {
+    let Some(kind) = object
+        .get("type")
+        .and_then(Value::as_str)
+        .and_then(PaymentClientActionKind::parse)
+    else {
         return Err(corrupt_checkout_state());
     };
-    if kind != "stripe_checkout_embedded" {
-        return Err(corrupt_checkout_state());
-    }
     let Some(public_key) = object.get("public_key").and_then(Value::as_str) else {
         return Err(corrupt_checkout_state());
     };
@@ -221,7 +222,7 @@ fn parse_payment_client_action(value: Value) -> Result<Option<PaymentClientActio
         return Err(corrupt_checkout_state());
     }
     Ok(Some(PaymentClientAction {
-        kind: "stripe_checkout_embedded",
+        kind,
         public_key: SecretString::from(public_key.to_owned()),
         client_token: SecretString::from(client_token.to_owned()),
     }))
@@ -229,7 +230,7 @@ fn parse_payment_client_action(value: Value) -> Result<Option<PaymentClientActio
 
 fn payment_client_action_json(action: &PaymentClientAction) -> Value {
     json!({
-        "type": action.kind,
+        "type": action.kind.as_str(),
         "public_key": action.public_key.expose_secret(),
         "client_token": action.client_token.expose_secret(),
     })

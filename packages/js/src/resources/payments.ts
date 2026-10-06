@@ -13,10 +13,11 @@ import type {
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutStart,
   EmbeddedCheckoutSession,
+  PaymentProvider,
 } from "../types.js";
 
 interface EmbeddedCheckoutRequest {
-  payment_provider: "stripe";
+  payment_provider: PaymentProvider;
   return_url: string;
   attribution?: CheckoutAttribution;
 }

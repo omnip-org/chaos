@@ -203,10 +203,30 @@ pub struct PaymentCommandResult {
     pub client_action: Option<PaymentClientAction>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PaymentClientActionKind {
+    StripeCheckoutEmbedded,
+}
+
+impl PaymentClientActionKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StripeCheckoutEmbedded => "stripe_checkout_embedded",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "stripe_checkout_embedded" => Some(Self::StripeCheckoutEmbedded),
+            _ => None,
+        }
+    }
+}
+
 pub struct PaymentClientAction {
     /// The client handoff for provider-hosted Embedded Checkout. The client
     /// token is the provider's checkout client secret.
-    pub kind: &'static str,
+    pub kind: PaymentClientActionKind,
     pub public_key: SecretString,
     pub client_token: SecretString,
 }
