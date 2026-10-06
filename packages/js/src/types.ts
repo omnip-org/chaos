@@ -244,7 +244,7 @@ export interface OrderLookupFulfillment {
 /**
  * The order view returned by `orders.lookupOrder` for a matching
  * order-number + email pair. Contact details and the full billing/shipping
- * address are intentionally absent — see `OrderLookupData` on the API side.
+ * address are intentionally absent from the public lookup response.
  */
 export interface OrderLookup {
   id: UUID;

@@ -1,25 +1,43 @@
 //! Storefront order search and shopper-owned order details.
 
-use axum::{Router, extract::State, routing::get};
-use chaos_core::contracts::{OrderFulfillmentItem, OrderLineItem};
-use serde::Serialize;
+use axum::{Router, extract::State, http::header, response::IntoResponse, routing::get};
+use chaos_core::contracts::{OrderDetail, OrderFulfillmentItem, OrderLineItem, ShopperOrderDetail};
+use chaos_domain::sales::OrderId;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::http::{ApiDateTime, ApiState};
+use crate::http::{
+    ApiDateTime, ApiError, ApiPath, ApiQuery, ApiResponse, ApiState, PublishableChannel,
+    ShopperContext,
+};
 
 use super::wire::{FulfillmentStatus, OrderPaymentStatus, OrderStatus};
 
 #[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
-        .route("/orders/search", get(lookup_order::handler))
-        .route("/orders/{order_id}/details", get(own_order::handler))
+        .route("/orders/search", get(lookup_order))
+        .route("/orders/{order_id}/details", get(get_own_order))
 }
 
-// ===== shared wire types & mappers =====
+// ===== request contracts =====
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OrderSearchQuery {
+    email: String,
+    order_number: String,
+}
+
+#[derive(Deserialize)]
+struct OrderPath {
+    order_id: Uuid,
+}
+
+// ===== response contracts =====
 
 #[derive(Serialize)]
-struct OrderLineData {
+struct OrderLineResponse {
     product_id: Uuid,
     product_variant_id: Uuid,
     product_title: String,
@@ -31,8 +49,23 @@ struct OrderLineData {
     subtotal_amount_minor: i64,
 }
 
+impl From<OrderLineItem> for OrderLineResponse {
+    fn from(line: OrderLineItem) -> Self {
+        Self {
+            product_id: line.product_id.as_uuid(),
+            product_variant_id: line.product_variant_id.as_uuid(),
+            product_title: line.product_title,
+            variant_title: line.variant_title,
+            sku: line.sku,
+            quantity: line.quantity,
+            unit_price_amount_minor: line.unit_price_amount_minor,
+            subtotal_amount_minor: line.subtotal_amount_minor,
+        }
+    }
+}
+
 #[derive(Serialize)]
-struct OrderFulfillmentData {
+struct OrderFulfillmentResponse {
     status: FulfillmentStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     tracking_number: Option<String>,
@@ -44,194 +77,118 @@ struct OrderFulfillmentData {
     delivered_at: Option<ApiDateTime>,
 }
 
-fn order_fulfillment_data(item: OrderFulfillmentItem) -> OrderFulfillmentData {
-    OrderFulfillmentData {
-        status: item.status.into(),
-        tracking_number: item.tracking_number,
-        tracking_url: item.tracking_url,
-        shipped_at: item.shipped_at.map(Into::into),
-        delivered_at: item.delivered_at.map(Into::into),
+impl From<OrderFulfillmentItem> for OrderFulfillmentResponse {
+    fn from(item: OrderFulfillmentItem) -> Self {
+        Self {
+            status: item.status.into(),
+            tracking_number: item.tracking_number,
+            tracking_url: item.tracking_url,
+            shipped_at: item.shipped_at.map(Into::into),
+            delivered_at: item.delivered_at.map(Into::into),
+        }
     }
 }
 
-fn order_line_data(line: OrderLineItem) -> OrderLineData {
-    OrderLineData {
-        product_id: line.product_id.as_uuid(),
-        product_variant_id: line.product_variant_id.as_uuid(),
-        product_title: line.product_title,
-        variant_title: line.variant_title,
-        sku: line.sku,
-        quantity: line.quantity,
-        unit_price_amount_minor: line.unit_price_amount_minor,
-        subtotal_amount_minor: line.subtotal_amount_minor,
-    }
+#[derive(Serialize)]
+struct OrderLookupResponse {
+    id: Uuid,
+    order_number: String,
+    currency: String,
+    status: OrderStatus,
+    payment_status: OrderPaymentStatus,
+    fulfillment_status: FulfillmentStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_locality: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_country_code: Option<String>,
+    subtotal_amount_minor: i64,
+    discount_amount_minor: i64,
+    tax_amount_minor: i64,
+    shipping_amount_minor: i64,
+    total_amount_minor: i64,
+    refunded_amount_minor: i64,
+    fulfillments: Vec<OrderFulfillmentResponse>,
+    lines: Vec<OrderLineResponse>,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
-// ===== GET /orders/search =====
-
-mod lookup_order {
-    use chaos_core::contracts::OrderDetail;
-    use serde::Deserialize;
-
-    use super::*;
-    use axum::{http::header, response::IntoResponse};
-
-    use crate::http::{ApiError, ApiQuery, ApiResponse, PublishableChannel};
-
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub(super) struct OrderSearchQuery {
-        email: String,
-        order_number: String,
-    }
-
-    #[derive(Serialize)]
-    pub(super) struct OrderLookupData {
-        id: Uuid,
-        order_number: String,
-        currency: String,
-        status: OrderStatus,
-        payment_status: OrderPaymentStatus,
-        fulfillment_status: FulfillmentStatus,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        shipping_locality: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        shipping_country_code: Option<String>,
-        subtotal_amount_minor: i64,
-        discount_amount_minor: i64,
-        tax_amount_minor: i64,
-        shipping_amount_minor: i64,
-        total_amount_minor: i64,
-        refunded_amount_minor: i64,
-        fulfillments: Vec<OrderFulfillmentData>,
-        lines: Vec<OrderLineData>,
-        created_at: ApiDateTime,
-        updated_at: ApiDateTime,
-    }
-
-    pub(super) async fn handler(
-        State(state): State<ApiState>,
-        PublishableChannel(actor): PublishableChannel,
-        ApiQuery(query): ApiQuery<OrderSearchQuery>,
-    ) -> Result<impl IntoResponse, ApiError> {
-        let order = state
-            .storefront_sales
-            .lookup_order(&actor, query.order_number.trim(), &query.email)
-            .await?;
-        Ok((
-            [
-                (header::CACHE_CONTROL, "private, no-store"),
-                (header::REFERRER_POLICY, "no-referrer"),
-            ],
-            ApiResponse::ok(order_details_data(order)),
-        ))
-    }
-
-    fn order_details_data(order: OrderDetail) -> OrderLookupData {
+impl From<OrderDetail> for OrderLookupResponse {
+    fn from(order: OrderDetail) -> Self {
         let shipping_address = order.identity.shipping_address();
-        OrderLookupData {
+        let shipping_locality = shipping_address.map(|address| address.locality().to_owned());
+        let shipping_country_code =
+            shipping_address.map(|address| address.country_code().to_owned());
+
+        Self {
             id: order.id.as_uuid(),
             order_number: order.order_number.as_str().into(),
             currency: order.currency.as_str().to_owned(),
             status: order.status.into(),
             payment_status: order.payment_status.into(),
             fulfillment_status: order.fulfillment_status.into(),
-            shipping_locality: shipping_address.map(|address| address.locality().to_owned()),
-            shipping_country_code: shipping_address
-                .map(|address| address.country_code().to_owned()),
+            shipping_locality,
+            shipping_country_code,
             subtotal_amount_minor: order.subtotal_amount_minor,
             discount_amount_minor: order.discount_amount_minor,
             tax_amount_minor: order.tax_amount_minor,
             shipping_amount_minor: order.shipping_amount_minor,
             total_amount_minor: order.total_amount_minor,
             refunded_amount_minor: order.refunded_amount_minor,
-            fulfillments: order
-                .fulfillments
-                .into_iter()
-                .map(order_fulfillment_data)
-                .collect(),
-            lines: order.lines.into_iter().map(order_line_data).collect(),
+            fulfillments: order.fulfillments.into_iter().map(Into::into).collect(),
+            lines: order.lines.into_iter().map(Into::into).collect(),
             created_at: order.created_at.into(),
             updated_at: order.updated_at.into(),
         }
     }
 }
 
-mod own_order {
-    use axum::{http::header, response::IntoResponse};
-    use chaos_core::contracts::ShopperOrderDetail;
+#[derive(Serialize)]
+struct OwnOrderResponse {
+    id: Uuid,
+    order_number: String,
+    store_id: Uuid,
+    channel_id: Uuid,
+    shopper_id: Uuid,
+    cart_id: Uuid,
+    currency: String,
+    status: OrderStatus,
+    payment_status: OrderPaymentStatus,
+    payment_provider_account_id: Uuid,
+    payment_provider_reference_id: Option<String>,
+    payment_failure_code: Option<String>,
+    fulfillment_status: FulfillmentStatus,
+    refunded_amount_minor: i64,
+    subtotal_amount_minor: i64,
+    discount_amount_minor: i64,
+    tax_amount_minor: i64,
+    shipping_amount_minor: i64,
+    total_amount_minor: i64,
+    amounts_finalized_at: Option<ApiDateTime>,
+    contact_email: Option<String>,
+    contact_phone: Option<String>,
+    billing_full_name: Option<String>,
+    billing_address_line1: Option<String>,
+    billing_address_line2: Option<String>,
+    billing_locality: Option<String>,
+    billing_administrative_area: Option<String>,
+    billing_postal_code: Option<String>,
+    billing_country_code: Option<String>,
+    shipping_full_name: Option<String>,
+    shipping_address_line1: Option<String>,
+    shipping_address_line2: Option<String>,
+    shipping_locality: Option<String>,
+    shipping_administrative_area: Option<String>,
+    shipping_postal_code: Option<String>,
+    shipping_country_code: Option<String>,
+    lines: Vec<OrderLineResponse>,
+    fulfillments: Vec<OrderFulfillmentResponse>,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
+}
 
-    use super::*;
-    use crate::http::{ApiError, ApiPath, ApiResponse, ShopperContext};
-
-    #[derive(serde::Deserialize)]
-    pub(super) struct OrderPath {
-        order_id: Uuid,
-    }
-
-    #[derive(Serialize)]
-    pub(super) struct OwnOrderData {
-        id: Uuid,
-        order_number: String,
-        store_id: Uuid,
-        channel_id: Uuid,
-        shopper_id: Uuid,
-        cart_id: Uuid,
-        currency: String,
-        status: OrderStatus,
-        payment_status: OrderPaymentStatus,
-        payment_provider_account_id: Uuid,
-        payment_provider_reference_id: Option<String>,
-        payment_failure_code: Option<String>,
-        fulfillment_status: FulfillmentStatus,
-        refunded_amount_minor: i64,
-        subtotal_amount_minor: i64,
-        discount_amount_minor: i64,
-        tax_amount_minor: i64,
-        shipping_amount_minor: i64,
-        total_amount_minor: i64,
-        amounts_finalized_at: Option<ApiDateTime>,
-        contact_email: Option<String>,
-        contact_phone: Option<String>,
-        billing_full_name: Option<String>,
-        billing_address_line1: Option<String>,
-        billing_address_line2: Option<String>,
-        billing_locality: Option<String>,
-        billing_administrative_area: Option<String>,
-        billing_postal_code: Option<String>,
-        billing_country_code: Option<String>,
-        shipping_full_name: Option<String>,
-        shipping_address_line1: Option<String>,
-        shipping_address_line2: Option<String>,
-        shipping_locality: Option<String>,
-        shipping_administrative_area: Option<String>,
-        shipping_postal_code: Option<String>,
-        shipping_country_code: Option<String>,
-        lines: Vec<OrderLineData>,
-        fulfillments: Vec<OrderFulfillmentData>,
-        created_at: ApiDateTime,
-        updated_at: ApiDateTime,
-    }
-
-    pub(super) async fn handler(
-        State(state): State<ApiState>,
-        ShopperContext(shopper): ShopperContext,
-        ApiPath(path): ApiPath<OrderPath>,
-    ) -> Result<impl IntoResponse, ApiError> {
-        let order = state
-            .storefront_sales
-            .get_shopper_order(
-                &shopper,
-                chaos_domain::sales::OrderId::from_uuid(path.order_id),
-            )
-            .await?;
-        Ok((
-            [(header::CACHE_CONTROL, "private, no-store")],
-            ApiResponse::ok(own_order_data(order)),
-        ))
-    }
-
-    fn own_order_data(order: ShopperOrderDetail) -> OwnOrderData {
+impl From<ShopperOrderDetail> for OwnOrderResponse {
+    fn from(order: ShopperOrderDetail) -> Self {
         let contact_email = order.detail.identity.contact().email().map(str::to_owned);
         let contact_phone = order.detail.identity.contact().phone().map(str::to_owned);
         let billing_address = order.detail.identity.billing_address();
@@ -266,7 +223,7 @@ mod own_order {
         let shipping_country_code =
             shipping_address.map(|address| address.country_code().to_owned());
 
-        OwnOrderData {
+        Self {
             id: order.detail.id.as_uuid(),
             order_number: order.detail.order_number.as_str().to_owned(),
             store_id: order.context.store_id,
@@ -303,105 +260,137 @@ mod own_order {
             shipping_administrative_area,
             shipping_postal_code,
             shipping_country_code,
-            lines: order
-                .detail
-                .lines
-                .into_iter()
-                .map(order_line_data)
-                .collect(),
+            lines: order.detail.lines.into_iter().map(Into::into).collect(),
             fulfillments: order
                 .detail
                 .fulfillments
                 .into_iter()
-                .map(order_fulfillment_data)
+                .map(Into::into)
                 .collect(),
             created_at: order.detail.created_at.into(),
             updated_at: order.detail.updated_at.into(),
         }
     }
+}
 
-    #[cfg(test)]
-    mod tests {
-        use chaos_core::contracts::{OrderDetail, ShopperOrderContext};
-        use chaos_domain::{
-            CurrencyCode,
-            fulfillment::FulfillmentStatus as DomainFulfillmentStatus,
-            pricing::PriceListId,
-            sales::{
-                OrderContact, OrderId, OrderIdentity, OrderNumber,
-                OrderPaymentStatus as DomainOrderPaymentStatus, OrderStatus as DomainOrderStatus,
-                ShopperId,
+// ===== GET /orders/search =====
+
+async fn lookup_order(
+    State(state): State<ApiState>,
+    PublishableChannel(actor): PublishableChannel,
+    ApiQuery(query): ApiQuery<OrderSearchQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let order = state
+        .storefront_sales
+        .lookup_order(&actor, query.order_number.trim(), &query.email)
+        .await?;
+    Ok((
+        [
+            (header::CACHE_CONTROL, "private, no-store"),
+            (header::REFERRER_POLICY, "no-referrer"),
+        ],
+        ApiResponse::ok(OrderLookupResponse::from(order)),
+    ))
+}
+
+// ===== GET /orders/{order_id}/details =====
+
+async fn get_own_order(
+    State(state): State<ApiState>,
+    ShopperContext(shopper): ShopperContext,
+    ApiPath(path): ApiPath<OrderPath>,
+) -> Result<impl IntoResponse, ApiError> {
+    let order = state
+        .storefront_sales
+        .get_shopper_order(&shopper, OrderId::from_uuid(path.order_id))
+        .await?;
+    Ok((
+        [(header::CACHE_CONTROL, "private, no-store")],
+        ApiResponse::ok(OwnOrderResponse::from(order)),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use chaos_core::contracts::{OrderDetail, ShopperOrderContext};
+    use chaos_domain::{
+        CurrencyCode,
+        fulfillment::FulfillmentStatus as DomainFulfillmentStatus,
+        pricing::PriceListId,
+        sales::{
+            OrderContact, OrderIdentity, OrderNumber,
+            OrderPaymentStatus as DomainOrderPaymentStatus, OrderStatus as DomainOrderStatus,
+            ShopperId,
+        },
+    };
+    use serde_json::Value;
+    use time::OffsetDateTime;
+
+    use super::*;
+
+    #[test]
+    fn own_order_serializes_validated_statuses_without_leaking_internal_fields() {
+        let order_id = Uuid::from_u128(1);
+        let response = OwnOrderResponse::from(ShopperOrderDetail {
+            context: ShopperOrderContext {
+                store_id: Uuid::from_u128(2),
+                channel_id: Uuid::from_u128(3),
+                cart_id: Uuid::from_u128(4),
+                payment_provider_account_id: Uuid::from_u128(5),
+                payment_failure_code: None,
             },
-        };
-        use serde_json::Value;
-        use time::OffsetDateTime;
+            detail: OrderDetail {
+                id: OrderId::from_uuid(order_id),
+                order_number: OrderNumber::parse("W-00000000").unwrap(),
+                shopper_id: ShopperId::from_uuid(Uuid::from_u128(6)),
+                price_list_id: PriceListId::from_uuid(Uuid::from_u128(7)),
+                currency: CurrencyCode::parse("USD").unwrap(),
+                status: DomainOrderStatus::Confirmed,
+                payment_status: DomainOrderPaymentStatus::Paid,
+                fulfillment_status: DomainFulfillmentStatus::Pending,
+                payment_provider: None,
+                payment_provider_reference_id: None,
+                identity: OrderIdentity::new(
+                    OrderContact::new(None::<String>, None).unwrap(),
+                    None,
+                    None,
+                ),
+                subtotal_amount_minor: 1_000,
+                discount_amount_minor: 100,
+                tax_amount_minor: 80,
+                shipping_amount_minor: 20,
+                total_amount_minor: 1_000,
+                amounts_finalized_at: None,
+                refunded_amount_minor: 0,
+                lines: Vec::new(),
+                payment_attempt: None,
+                refunds: Vec::new(),
+                fulfillments: Vec::new(),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+            },
+        });
 
-        use super::*;
-
-        #[test]
-        fn own_order_serializes_validated_statuses_without_leaking_internal_fields() {
-            let order_id = Uuid::from_u128(1);
-            let data = own_order_data(ShopperOrderDetail {
-                context: ShopperOrderContext {
-                    store_id: Uuid::from_u128(2),
-                    channel_id: Uuid::from_u128(3),
-                    cart_id: Uuid::from_u128(4),
-                    payment_provider_account_id: Uuid::from_u128(5),
-                    payment_failure_code: None,
-                },
-                detail: OrderDetail {
-                    id: OrderId::from_uuid(order_id),
-                    order_number: OrderNumber::parse("W-00000000").unwrap(),
-                    shopper_id: ShopperId::from_uuid(Uuid::from_u128(6)),
-                    price_list_id: PriceListId::from_uuid(Uuid::from_u128(7)),
-                    currency: CurrencyCode::parse("USD").unwrap(),
-                    status: DomainOrderStatus::Confirmed,
-                    payment_status: DomainOrderPaymentStatus::Paid,
-                    fulfillment_status: DomainFulfillmentStatus::Pending,
-                    payment_provider: None,
-                    payment_provider_reference_id: None,
-                    identity: OrderIdentity::new(
-                        OrderContact::new(None::<String>, None).unwrap(),
-                        None,
-                        None,
-                    ),
-                    subtotal_amount_minor: 1_000,
-                    discount_amount_minor: 100,
-                    tax_amount_minor: 80,
-                    shipping_amount_minor: 20,
-                    total_amount_minor: 1_000,
-                    amounts_finalized_at: None,
-                    refunded_amount_minor: 0,
-                    lines: Vec::new(),
-                    payment_attempt: None,
-                    refunds: Vec::new(),
-                    fulfillments: Vec::new(),
-                    created_at: OffsetDateTime::UNIX_EPOCH,
-                    updated_at: OffsetDateTime::UNIX_EPOCH,
-                },
-            });
-
-            let json = serde_json::to_value(data).unwrap();
-            assert_eq!(json["id"], order_id.to_string());
-            assert_eq!(json["status"], "confirmed");
-            assert_eq!(json["payment_status"], "paid");
-            assert_eq!(json["fulfillment_status"], "pending");
-            for field in [
-                "payment_provider_reference_id",
-                "payment_failure_code",
-                "amounts_finalized_at",
-                "contact_email",
-                "billing_full_name",
-                "shipping_locality",
-            ] {
-                assert_eq!(
-                    json[field],
-                    Value::Null,
-                    "field {field} must remain nullable"
-                );
-            }
-            assert!(json.get("price_list_id").is_none());
-            assert!(json.get("payment_provider").is_none());
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["id"], order_id.to_string());
+        assert_eq!(json["status"], "confirmed");
+        assert_eq!(json["payment_status"], "paid");
+        assert_eq!(json["fulfillment_status"], "pending");
+        for field in [
+            "payment_provider_reference_id",
+            "payment_failure_code",
+            "amounts_finalized_at",
+            "contact_email",
+            "billing_full_name",
+            "shipping_locality",
+        ] {
+            assert_eq!(
+                json[field],
+                Value::Null,
+                "field {field} must remain nullable"
+            );
         }
+        assert!(json.get("price_list_id").is_none());
+        assert!(json.get("payment_provider").is_none());
     }
 }

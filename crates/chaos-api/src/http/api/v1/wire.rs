@@ -82,7 +82,7 @@ impl From<StorefrontMediaScope> for MediaScope {
 }
 
 #[derive(Serialize)]
-pub(super) struct MediaData {
+pub(super) struct MediaResponse {
     id: Uuid,
     #[serde(flatten)]
     scope: MediaScope,
@@ -93,7 +93,7 @@ pub(super) struct MediaData {
     url: String,
 }
 
-impl From<StorefrontMediaAsset> for MediaData {
+impl From<StorefrontMediaAsset> for MediaResponse {
     fn from(value: StorefrontMediaAsset) -> Self {
         Self {
             id: value.id.as_uuid(),
@@ -310,7 +310,7 @@ mod tests {
         let option_value_id = Uuid::from_u128(2);
         let variant_id = Uuid::from_u128(3);
         let media = |scope| {
-            MediaData::from(StorefrontMediaAsset {
+            MediaResponse::from(StorefrontMediaAsset {
                 id: MediaAssetId::from_uuid(Uuid::from_u128(4)),
                 scope,
                 media_type: "image/webp".into(),
