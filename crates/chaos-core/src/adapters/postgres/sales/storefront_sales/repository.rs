@@ -1,40 +1,24 @@
-// Storefront sales repository core imports, row shapes, wiring, and shared constants.
-
-use std::collections::HashMap;
-
 use crate::{
     ApplicationError,
+    contracts::{MachineActor, OrderDetail, ShopperActor},
     error::database_error,
-    contracts::{
-        CartDetail, CartLineItem, MachineActor, OrderDetail, ShopperActor, ShopperOrderDetail,
-        ShopperOrderContext,
-        StorefrontMediaAsset, StorefrontMediaScope, StorefrontSelectedOption,
-        resolve_storefront_media,
-        CheckoutDraft,
-    },
-    sales::StripeCheckoutRequest,
+    sales::CheckoutRequest,
 };
-use serde_json::Value;
 use chaos_domain::{
     CurrencyCode,
-    catalog::{ProductId, ProductOptionId, ProductOptionValueId, ProductVariantId},
-    pricing::{Money, PriceListId},
-    sales::{
-        Cart, CartId, CartLine, CartStatus, OrderId, OrderNumber, ShopperId,
-    },
+    catalog::ProductVariantId,
+    sales::{CartId, OrderId, OrderNumber, ShopperId},
     store::SalesChannelId,
 };
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 const ORDER_NUMBER_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-/// `W-` + 8 Crockford base32 chars (~2^40). Collisions are handled at the
-/// checkout INSERT by regenerating on the per-store UNIQUE, not here.
-fn generate_order_number() -> Result<OrderNumber, ApplicationError> {
+/// `W-` plus eight Crockford base32 characters, giving roughly 40 random bits.
+pub(super) fn generate_order_number() -> Result<OrderNumber, ApplicationError> {
     let mut random = [0_u8; 8];
     rand::rng().fill_bytes(&mut random);
     let suffix: String = random
@@ -48,37 +32,10 @@ fn generate_order_number() -> Result<OrderNumber, ApplicationError> {
     })
 }
 
-/// A generated number lost the per-store UNIQUE race on every retry — with a
-/// 2^40 space this only happens if generation is broken.
-fn order_number_unavailable() -> ApplicationError {
-    ApplicationError::Unexpected(anyhow::anyhow!(
-        "could not allocate a unique order number"
-    ))
+pub(super) fn order_number_unavailable() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!("could not allocate a unique order number"))
 }
-type CartHeaderRow = (
-    Uuid,
-    Uuid,
-    Uuid,
-    String,
-    String,
-    OffsetDateTime,
-    OffsetDateTime,
-);
 
-type CartLineRow = (Uuid, Uuid, String, String, Option<String>, bool, i32, i64);
-type CartMediaRow = (
-    Uuid,
-    Uuid,
-    String,
-    Option<Uuid>,
-    Option<Uuid>,
-    Option<Uuid>,
-    String,
-    String,
-    String,
-    i16,
-    String,
-);
 #[derive(Clone)]
 pub struct PostgresStorefrontSalesRepository {
     pool: PgPool,
@@ -89,7 +46,7 @@ impl PostgresStorefrontSalesRepository {
         Self { pool }
     }
 
-    async fn begin(
+    pub(super) async fn begin(
         &self,
         actor: &MachineActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
@@ -100,21 +57,22 @@ impl PostgresStorefrontSalesRepository {
         Ok(transaction)
     }
 
-    async fn begin_shopper(
+    pub(super) async fn begin_shopper(
         &self,
         shopper: &ShopperActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.begin(&shopper.machine).await?;
-        crate::adapters::postgres::database::set_shopper_context(&mut transaction, shopper.shopper_id)
-            .await
-            .map_err(database_error)?;
+        crate::adapters::postgres::database::set_shopper_context(
+            &mut transaction,
+            shopper.shopper_id,
+        )
+        .await
+        .map_err(database_error)?;
         Ok(transaction)
     }
 }
 
-// Shared ownership checks and workflow parsing.
-
-async fn ensure_cart_owner(
+pub(super) async fn ensure_cart_owner(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     cart_id: CartId,
@@ -139,22 +97,22 @@ async fn ensure_cart_owner(
     }
 }
 
-fn require_channel(actor: &MachineActor) -> Result<SalesChannelId, ApplicationError> {
+pub(super) fn require_channel(actor: &MachineActor) -> Result<SalesChannelId, ApplicationError> {
     actor.channel_id.ok_or(ApplicationError::Forbidden)
 }
 
-fn parse_currency(value: &str) -> Result<CurrencyCode, ApplicationError> {
+pub(super) fn parse_currency(value: &str) -> Result<CurrencyCode, ApplicationError> {
     CurrencyCode::parse(value).map_err(ApplicationError::from)
 }
 
-fn payment_provider_unavailable() -> ApplicationError {
+pub(super) fn payment_provider_unavailable() -> ApplicationError {
     ApplicationError::Conflict {
         code: "payment_provider_unavailable",
         message: "no configured Payment Provider account is available",
     }
 }
 
-fn idempotency_key_reused() -> ApplicationError {
+pub(super) fn idempotency_key_reused() -> ApplicationError {
     ApplicationError::Conflict {
         code: "idempotency_key_reused",
         message: "the idempotency key was already used with different checkout parameters",
@@ -166,12 +124,13 @@ fn fingerprint_part(hasher: &mut Sha256, value: &[u8]) {
     hasher.update(value);
 }
 
-fn checkout_request_fingerprint(actor: &MachineActor, request: &StripeCheckoutRequest) -> [u8; 32] {
+pub(super) fn checkout_request_fingerprint(
+    actor: &MachineActor,
+    request: &CheckoutRequest,
+) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    // This fingerprint covers only the immutable request contract. Cart
-    // contents are already snapshotted into the Order, and the return URL is
-    // intentionally not persisted anywhere else, so changing any of these
-    // inputs while reusing the client idempotency key must be rejected.
+    // The return URL is not persisted elsewhere, so it must be part of the
+    // idempotency fingerprint along with the caller and provider.
     hasher.update(b"chaos-checkout-request-v4");
     fingerprint_part(&mut hasher, actor.store_id.as_uuid().as_bytes());
     fingerprint_part(
@@ -187,13 +146,13 @@ fn checkout_request_fingerprint(actor: &MachineActor, request: &StripeCheckoutRe
     hasher.finalize().into()
 }
 
-fn unexpected_conversion(
+pub(super) fn unexpected_conversion(
     error: impl std::error::Error + Send + Sync + 'static,
 ) -> ApplicationError {
     ApplicationError::Unexpected(error.into())
 }
 
-fn checkout_insert_error(error: sqlx::Error) -> ApplicationError {
+pub(super) fn checkout_insert_error(error: sqlx::Error) -> ApplicationError {
     let constraint = match &error {
         sqlx::Error::Database(database) => database.constraint(),
         _ => None,
@@ -205,55 +164,69 @@ fn checkout_insert_error(error: sqlx::Error) -> ApplicationError {
     }
 }
 
-fn cart_not_found(cart_id: CartId) -> ApplicationError {
+pub(super) fn cart_not_found(cart_id: CartId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "cart",
         id: cart_id.as_uuid().to_string(),
     }
 }
 
-fn cart_not_active() -> ApplicationError {
+pub(super) fn cart_not_active() -> ApplicationError {
     ApplicationError::Conflict {
         code: "cart_not_active",
         message: "the Cart is no longer active",
     }
 }
 
-fn checkout_cart_already_started() -> ApplicationError {
+pub(super) fn checkout_cart_already_started() -> ApplicationError {
     ApplicationError::Conflict {
         code: "checkout_cart_already_started",
         message: "the Cart is locked to an existing checkout; retry the same Cart checkout request or use a new active Cart",
     }
 }
 
-fn price_context_unavailable() -> ApplicationError {
+pub(super) fn price_context_unavailable() -> ApplicationError {
     ApplicationError::Conflict {
         code: "price_context_unavailable",
         message: "no active Price List is available for the requested currency",
     }
 }
 
-fn variant_unavailable(variant_id: ProductVariantId) -> ApplicationError {
+pub(super) fn variant_unavailable(variant_id: ProductVariantId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "product_variant",
         id: variant_id.as_uuid().to_string(),
     }
 }
 
-fn cart_line_unavailable() -> ApplicationError {
+pub(super) fn cart_line_unavailable() -> ApplicationError {
     ApplicationError::Conflict {
         code: "cart_line_unavailable",
         message: "one or more Cart lines are no longer published and priced",
     }
 }
 
-fn insufficient_inventory(_variant_id: ProductVariantId) -> ApplicationError {
+pub(super) fn insufficient_inventory(_variant_id: ProductVariantId) -> ApplicationError {
     ApplicationError::Conflict {
         code: "insufficient_inventory",
         message: "one or more Cart lines exceed available inventory",
     }
 }
 
-fn corrupt_sales_state() -> ApplicationError {
+pub(super) fn corrupt_sales_state() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("database contains an unknown sales state"))
+}
+
+pub(super) async fn load_order(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    order_id: OrderId,
+) -> Result<Option<OrderDetail>, ApplicationError> {
+    crate::adapters::postgres::sales::order_detail::load(
+        transaction,
+        actor.store_id,
+        actor.channel_id,
+        order_id,
+    )
+    .await
 }

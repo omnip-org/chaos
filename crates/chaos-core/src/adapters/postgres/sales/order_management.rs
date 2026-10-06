@@ -1,7 +1,7 @@
 use crate::{
-    ApplicationError,
+    ApplicationError, Page,
     adapters::postgres::sales::{consume_order_inventory, release_order_inventory},
-    contracts::{AdminActor, OrderDetail, OrderListFilter, OrderPage},
+    contracts::{AdminActor, OrderDetail, OrderListFilter},
     error::database_error,
 };
 use chaos_domain::{
@@ -46,7 +46,7 @@ impl PostgresOrderManagementRepository {
         after: Option<Uuid>,
         limit: u16,
         filter: &OrderListFilter,
-    ) -> Result<OrderPage, ApplicationError> {
+    ) -> Result<Page<OrderDetail>, ApplicationError> {
         let mut transaction = self.begin_for_admin(&actor).await?;
         let ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT o.id FROM chaos_commerce.orders o \
@@ -79,7 +79,7 @@ impl PostgresOrderManagementRepository {
             );
         }
         transaction.commit().await.map_err(database_error)?;
-        Ok(OrderPage { items, has_more })
+        Ok(Page { items, has_more })
     }
 
     pub(crate) async fn get_order(

@@ -1,8 +1,8 @@
 use crate::{
-    ApplicationError,
+    ApplicationError, Page,
     contracts::{
         EmailAccountConfiguration, EmailBrandConfiguration, EmailBrandDetail, EmailMessage,
-        EmailOrderLineItem, EmailProviderAccountDetail, EmailProviderAccountPage,
+        EmailOrderLineItem, EmailProviderAccountDetail,
     },
     email_templates::{
         FulfillmentUpdateTemplateData, OrderConfirmationTemplateData,
@@ -71,7 +71,7 @@ impl PostgresEmailRepository {
         store_id: StoreId,
         after: Option<Uuid>,
         limit: u16,
-    ) -> Result<EmailProviderAccountPage, ApplicationError> {
+    ) -> Result<Page<EmailProviderAccountDetail>, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         let rows = sqlx::query_as::<_, EmailProviderAccountRow>(
             "SELECT id, provider, display_name, enabled, \
@@ -96,7 +96,7 @@ impl PostgresEmailRepository {
             .map(email_provider_account_detail)
             .collect::<Result<Vec<_>, _>>()?;
         transaction.commit().await.map_err(database_error)?;
-        Ok(EmailProviderAccountPage { items, has_more })
+        Ok(Page { items, has_more })
     }
 
     pub(crate) async fn get_provider_account(

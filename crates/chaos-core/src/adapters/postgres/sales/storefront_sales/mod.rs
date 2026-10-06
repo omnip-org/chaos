@@ -1,13 +1,7 @@
-//! Storefront sales persistence organized by the shopper-to-order workflow.
-//!
-//! The files share one module namespace to keep Repository implementations and private
-//! domain reconstruction helpers compatible while making each workflow easy to locate.
+//! PostgreSQL persistence for the Storefront shopper, cart, and checkout flow.
 
-include!("repository_core.rs");
-include!("sales_commands.rs");
-include!("cart.rs");
-include!("order.rs");
+mod cart;
+mod operations;
+mod repository;
 
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;
+pub use repository::PostgresStorefrontSalesRepository;

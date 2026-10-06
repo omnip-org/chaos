@@ -6,14 +6,9 @@ use chaos_domain::{
 };
 
 use crate::{
-    ApplicationError,
+    ApplicationError, Page,
     contracts::{StoreListItem, StoreReadRepository},
 };
-
-pub struct Page<T> {
-    pub items: Vec<T>,
-    pub has_more: bool,
-}
 
 #[derive(Clone, Copy)]
 pub struct StoreActor {

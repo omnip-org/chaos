@@ -1,4 +1,84 @@
-// Order-centric checkout handoff and payment state updates.
+use super::events::{
+    PaymentEvent, RefundEvent, apply_payment_event, apply_refund_event,
+    load_refund_reconciliation_context,
+};
+use super::repository::*;
+
+use chaos_domain::{
+    CurrencyCode,
+    payments::{PaymentAttemptStatus, Refund, RefundId, RefundStatus},
+    pricing::Money,
+    sales::OrderId,
+    store::{SalesChannelId, StoreId},
+};
+use secrecy::ExposeSecret;
+use serde_json::{Value, json};
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+use crate::{
+    ApplicationError,
+    adapters::postgres::sales::release_order_inventory,
+    contracts::{
+        AdminActor, OrderMetadataContext, PaymentCheckoutDetails, PaymentCommand,
+        PaymentCommandKind, PaymentCommandResult, PaymentLineItem, PaymentShippingAddress,
+        RefundDetail, ShopperActor,
+    },
+    error::database_error,
+};
+
+#[derive(sqlx::FromRow)]
+struct CheckoutResultRow {
+    cart_id: Uuid,
+    order_status: String,
+    payment_status: String,
+    client_action: Option<Value>,
+}
+
+#[derive(sqlx::FromRow)]
+struct RefundOrderRow {
+    total_amount_minor: i64,
+    currency: String,
+    payment_status: String,
+    payment_provider_account_id: Uuid,
+}
+
+#[derive(sqlx::FromRow)]
+struct PaymentCommandContextRow {
+    amount_minor: i64,
+    currency: String,
+    provider_account_id: Uuid,
+    credential_secret_reference: String,
+    provider_payment_reference: Option<String>,
+    shopper_id: Uuid,
+    channel_id: Uuid,
+    order_number: String,
+    order_id: Uuid,
+    refund_id: Option<Uuid>,
+}
+
+#[derive(sqlx::FromRow)]
+struct CheckoutCustomerRow {
+    contact_email: Option<String>,
+    contact_phone: Option<String>,
+    shipping_full_name: Option<String>,
+    shipping_address_line1: Option<String>,
+    shipping_address_line2: Option<String>,
+    shipping_locality: Option<String>,
+    shipping_administrative_area: Option<String>,
+    shipping_postal_code: Option<String>,
+    shipping_country_code: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct PaymentLineRow {
+    product_title: String,
+    variant_title: String,
+    sku: Option<String>,
+    quantity: i32,
+    unit_price_amount_minor: i64,
+    image_url: Option<String>,
+}
 
 impl PostgresStripeRepository {
     pub(crate) async fn get_order_checkout_payment(
@@ -67,9 +147,10 @@ impl PostgresStripeRepository {
         let actor = &shopper.machine;
         let channel_id = actor.channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut transaction = self.begin_shopper(shopper).await?;
-        let existing = sqlx::query_as::<_, (Uuid, String, String, Option<Value>)>(
-            "SELECT sales_order.cart_id, sales_order.status::text, \
-                    sales_order.payment_status::text, source_cart.payment_client_action \
+        let existing = sqlx::query_as::<_, CheckoutResultRow>(
+            "SELECT sales_order.cart_id, sales_order.status::text AS order_status, \
+                    sales_order.payment_status::text AS payment_status, \
+                    source_cart.payment_client_action AS client_action \
              FROM chaos_commerce.orders AS sales_order \
              INNER JOIN chaos_commerce.carts AS source_cart \
                ON source_cart.store_id = sales_order.store_id AND source_cart.id = sales_order.cart_id \
@@ -85,7 +166,7 @@ impl PostgresStripeRepository {
         .await
         .map_err(database_error)?
         .ok_or_else(|| order_not_found(order_id))?;
-        if let Some(existing_action) = existing.3 {
+        if let Some(existing_action) = existing.client_action {
             let existing_action = parse_payment_client_action(existing_action)?
                 .ok_or_else(checkout_client_action_missing)?;
             if !same_client_action(&existing_action, client_action) {
@@ -94,7 +175,7 @@ impl PostgresStripeRepository {
             transaction.commit().await.map_err(database_error)?;
             return Ok(());
         }
-        if existing.1 != "pending" || existing.2 != "pending" {
+        if existing.order_status != "pending" || existing.payment_status != "pending" {
             // A payment webhook won the race. Never resurrect a terminal
             // Order with a client action that can no longer be used.
             transaction.commit().await.map_err(database_error)?;
@@ -106,7 +187,7 @@ impl PostgresStripeRepository {
              WHERE store_id = $1 AND id = $2 AND status = 'locked'",
         )
         .bind(actor.store_id.as_uuid())
-        .bind(existing.0)
+        .bind(existing.cart_id)
         .bind(action)
         .bind(now)
         .execute(&mut *transaction)
@@ -146,8 +227,12 @@ impl PostgresStripeRepository {
             transaction.commit().await.map_err(database_error)?;
             return Ok(());
         }
-        release_order_inventory(&mut transaction, actor.store_id.as_uuid(), order_id.as_uuid())
-            .await?;
+        release_order_inventory(
+            &mut transaction,
+            actor.store_id.as_uuid(),
+            order_id.as_uuid(),
+        )
+        .await?;
         sqlx::query(
             "UPDATE chaos_commerce.orders SET status = 'cancelled'::chaos_commerce.order_status, \
                     payment_status = 'failed'::chaos_commerce.order_payment_status, \
@@ -184,9 +269,9 @@ impl PostgresStripeRepository {
         amount_minor: i64,
     ) -> Result<RefundDetail, ApplicationError> {
         let mut transaction = self.begin_admin(&actor).await?;
-        let row = sqlx::query_as::<_, (i64, String, String, Uuid)>(
-            "SELECT total_amount_minor, currency::text, payment_status::text, \
-                    payment_provider_account_id \
+        let order = sqlx::query_as::<_, RefundOrderRow>(
+            "SELECT total_amount_minor, currency::text AS currency, \
+                    payment_status::text AS payment_status, payment_provider_account_id \
              FROM chaos_commerce.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -195,11 +280,11 @@ impl PostgresStripeRepository {
         .await
         .map_err(database_error)?
         .ok_or_else(|| order_not_found(order_id))?;
-        let currency = CurrencyCode::parse(&row.1)?;
+        let currency = CurrencyCode::parse(&order.currency)?;
         // The captured amount available to refund against is the Order's
         // total — only an Order that has been paid (in full, or already
         // partially refunded) is eligible for a further refund.
-        let payment_status = match row.2.as_str() {
+        let payment_status = match order.payment_status.as_str() {
             "paid" | "partially_refunded" => PaymentAttemptStatus::Captured,
             "expired" => PaymentAttemptStatus::Expired,
             _ => PaymentAttemptStatus::Failed,
@@ -219,7 +304,7 @@ impl PostgresStripeRepository {
         let refund = Refund::create(
             order_id,
             payment_status,
-            Money::new(row.0, currency),
+            Money::new(order.total_amount_minor, currency),
             Money::new(amount_minor, currency),
             already_refunded,
         )?;
@@ -235,7 +320,7 @@ impl PostgresStripeRepository {
         .bind(order_id.as_uuid())
         .bind(currency.as_str())
         .bind(amount_minor)
-        .bind(row.3)
+        .bind(order.payment_provider_account_id)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -277,13 +362,15 @@ impl PostgresStripeRepository {
                 .ok_or_else(corrupt_webhook_payload)?;
             apply_payment_event(
                 &mut transaction,
-                StoreId::from_uuid(store_id),
-                order_id,
-                provider_account_id,
-                normalized_event_type,
-                failure_code,
-                event_payload,
-                now,
+                PaymentEvent {
+                    store_id: StoreId::from_uuid(store_id),
+                    order_id,
+                    provider_account_id,
+                    event_type: normalized_event_type,
+                    failure_code,
+                    payload: event_payload,
+                    now,
+                },
             )
             .await?;
         } else if normalized_event_type == "refund.reconcile" {
@@ -312,14 +399,16 @@ impl PostgresStripeRepository {
                 .map(RefundId::from_uuid);
             apply_refund_event(
                 &mut transaction,
-                StoreId::from_uuid(store_id),
-                refund_id,
-                provider_account_id,
-                normalized_event_type,
-                stripe_object_id,
-                failure_code,
-                event_payload,
-                now,
+                RefundEvent {
+                    store_id: StoreId::from_uuid(store_id),
+                    refund_id,
+                    provider_account_id,
+                    event_type: normalized_event_type,
+                    provider_reference_id: stripe_object_id,
+                    failure_code,
+                    payload: event_payload,
+                    now,
+                },
             )
             .await?;
         } else {
@@ -339,25 +428,14 @@ impl PostgresStripeRepository {
         let provider = provider.unwrap_or("stripe");
         let aggregate_id = outbox_aggregate_id(payload)?;
         let mut transaction = self.begin_context(None, store_id).await?;
-        type ContextRow = (
-            i64,
-            String,
-            Uuid,
-            String,
-            Option<String>,
-            Uuid,
-            Uuid,
-            String,
-            Uuid,
-            Option<Uuid>,
-        );
-        let row: ContextRow = if is_refund {
+        let context: PaymentCommandContextRow = if is_refund {
             sqlx::query_as(
-                "SELECT refund.amount_minor, refund.currency::text, \
-                        account.id, account.credential_secret_reference, \
-                        sales_order.payment_provider_reference_id, \
+                "SELECT refund.amount_minor, refund.currency::text AS currency, \
+                        account.id AS provider_account_id, account.credential_secret_reference, \
+                        sales_order.payment_provider_reference_id AS provider_payment_reference, \
                         sales_order.shopper_id, sales_order.channel_id, \
-                        sales_order.order_number, sales_order.id, refund.id \
+                        sales_order.order_number, sales_order.id AS order_id, \
+                        refund.id AS refund_id \
                  FROM chaos_commerce.order_refunds AS refund \
                  INNER JOIN chaos_commerce.orders AS sales_order \
                    ON sales_order.store_id = refund.store_id AND sales_order.id = refund.order_id \
@@ -380,11 +458,13 @@ impl PostgresStripeRepository {
             .ok_or_else(provider_unavailable)?
         } else {
             sqlx::query_as(
-                "SELECT sales_order.subtotal_amount_minor, sales_order.currency::text, \
-                        account.id, account.credential_secret_reference, \
-                        sales_order.payment_provider_reference_id, \
+                "SELECT sales_order.subtotal_amount_minor AS amount_minor, \
+                        sales_order.currency::text AS currency, \
+                        account.id AS provider_account_id, account.credential_secret_reference, \
+                        sales_order.payment_provider_reference_id AS provider_payment_reference, \
                         sales_order.shopper_id, sales_order.channel_id, \
-                        sales_order.order_number, sales_order.id, NULL::uuid \
+                        sales_order.order_number, sales_order.id AS order_id, \
+                        NULL::uuid AS refund_id \
                  FROM chaos_commerce.orders AS sales_order \
                  INNER JOIN chaos_integration.provider_accounts AS account \
                    ON account.store_id = sales_order.store_id \
@@ -404,15 +484,17 @@ impl PostgresStripeRepository {
             .map_err(database_error)?
             .ok_or_else(provider_unavailable)?
         };
-        let command_amount = row.0;
-        if !is_refund && (command_amount != outbox_amount(payload)? || row.1 != outbox_currency(payload)?)
+        let command_amount = context.amount_minor;
+        if !is_refund
+            && (command_amount != outbox_amount(payload)?
+                || context.currency != outbox_currency(payload)?)
         {
             return Err(invalid_outbox_payload());
         }
         if is_refund && command_amount != outbox_amount(payload)? {
             return Err(invalid_outbox_payload());
         }
-        if is_refund && row.4.is_none() {
+        if is_refund && context.provider_payment_reference.is_none() {
             return Err(ApplicationError::Conflict {
                 code: "payment_provider_reference_missing",
                 message: "the Order has no payment provider reference",
@@ -420,24 +502,11 @@ impl PostgresStripeRepository {
         }
         let checkout_details = if !is_refund {
             let order_id = aggregate_id;
-            let contact = sqlx::query_as::<
-                _,
-                (
-                    Option<String>,
-                    Option<String>,
-                    Option<String>,
-                    Option<String>,
-                    Option<String>,
-                    Option<String>,
-                    Option<String>,
-                    Option<String>,
-                    Option<String>,
-                ),
-            >(
+            let customer = sqlx::query_as::<_, CheckoutCustomerRow>(
                 "SELECT contact_email::text, contact_phone, shipping_full_name, \
                         shipping_address_line1, shipping_address_line2, shipping_locality, \
                         shipping_administrative_area, shipping_postal_code, \
-                        NULLIF(btrim(shipping_country_code::text), '') \
+                        NULLIF(btrim(shipping_country_code::text), '') AS shipping_country_code \
                  FROM chaos_commerce.orders WHERE store_id = $1 AND id = $2",
             )
             .bind(store_id)
@@ -446,54 +515,53 @@ impl PostgresStripeRepository {
             .await
             .map_err(database_error)?
             .ok_or_else(corrupt_state)?;
-            let shipping_address = contact
-                .2
+            let shipping_address = customer
+                .shipping_full_name
                 .map(|name| {
-                    let Some(line1) = contact.3 else {
+                    let Some(line1) = customer.shipping_address_line1 else {
                         return Err(corrupt_state());
                     };
-                    let Some(city) = contact.5 else {
+                    let Some(city) = customer.shipping_locality else {
                         return Err(corrupt_state());
                     };
-                    let Some(country_code) = contact.8 else {
+                    let Some(country_code) = customer.shipping_country_code else {
                         return Err(corrupt_state());
                     };
                     Ok(PaymentShippingAddress {
                         name,
                         line1,
-                        line2: contact.4,
+                        line2: customer.shipping_address_line2,
                         city,
-                        state: contact.6,
-                        postal_code: contact.7,
+                        state: customer.shipping_administrative_area,
+                        postal_code: customer.shipping_postal_code,
                         country_code,
                     })
                 })
                 .transpose()?;
-            let line_rows =
-                sqlx::query_as::<_, (String, String, Option<String>, i32, i64, Option<String>)>(
-                    "SELECT product_title, variant_title, sku, quantity, \
+            let line_rows = sqlx::query_as::<_, PaymentLineRow>(
+                "SELECT product_title, variant_title, sku, quantity, \
                         unit_price_amount_minor, image_url \
                  FROM chaos_commerce.order_lines WHERE store_id = $1 AND order_id = $2 \
                  ORDER BY position",
-                )
-                .bind(store_id)
-                .bind(order_id)
-                .fetch_all(&mut *transaction)
-                .await
-                .map_err(database_error)?;
+            )
+            .bind(store_id)
+            .bind(order_id)
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(database_error)?;
             let line_items = line_rows
                 .into_iter()
                 .map(|line| {
                     Ok::<_, ApplicationError>(PaymentLineItem {
-                        name: if line.1.trim().is_empty() {
-                            line.0
+                        name: if line.variant_title.trim().is_empty() {
+                            line.product_title
                         } else {
-                            format!("{} — {}", line.0, line.1)
+                            format!("{} — {}", line.product_title, line.variant_title)
                         },
-                        sku: line.2,
-                        image_url: line.5,
-                        quantity: u32::try_from(line.3).map_err(unexpected_conversion)?,
-                        unit_amount_minor: line.4,
+                        sku: line.sku,
+                        image_url: line.image_url,
+                        quantity: u32::try_from(line.quantity).map_err(unexpected_conversion)?,
+                        unit_amount_minor: line.unit_price_amount_minor,
                     })
                 })
                 .collect::<Result<Vec<_>, ApplicationError>>()?;
@@ -515,8 +583,8 @@ impl PostgresStripeRepository {
             // Chaos only stores the address and the provider's final shipping amount.
             let shipping_options = Vec::new();
             Some(PaymentCheckoutDetails {
-                customer_email: contact.0,
-                customer_phone: contact.1,
+                customer_email: customer.contact_email,
+                customer_phone: customer.contact_phone,
                 shipping_address,
                 line_items,
                 shipping_countries,
@@ -529,29 +597,29 @@ impl PostgresStripeRepository {
         transaction.commit().await.map_err(database_error)?;
         let return_url = outbox_return_url(payload);
         Ok(PaymentCommand {
-            provider_account_id: row.2,
+            provider_account_id: context.provider_account_id,
             kind: if is_refund {
                 PaymentCommandKind::CreateRefund
             } else {
                 PaymentCommandKind::CreateCheckoutSession
             },
-            aggregate_id: row.8,
-            refund_id: row.9,
+            aggregate_id: context.order_id,
+            refund_id: context.refund_id,
             amount_minor: command_amount,
-            currency: CurrencyCode::parse(&row.1)?,
+            currency: CurrencyCode::parse(&context.currency)?,
             // Both callers (prepare_checkout_command, create_refund in
             // payments/mod.rs) overwrite this with their own stable
             // identifier immediately after this call returns.
             idempotency_key: aggregate_id.to_string(),
-            credential_secret_reference: row.3,
-            provider_payment_reference: row.4,
+            credential_secret_reference: context.credential_secret_reference,
+            provider_payment_reference: context.provider_payment_reference,
             checkout_details,
             return_url,
             order_context: OrderMetadataContext {
                 store_id,
-                shopper_id: row.5,
-                channel_id: row.6,
-                order_number: row.7,
+                shopper_id: context.shopper_id,
+                channel_id: context.channel_id,
+                order_number: context.order_number,
             },
         })
     }
@@ -597,10 +665,7 @@ impl PostgresStripeRepository {
     }
 }
 
-fn checkout_return_url(
-    return_url: &str,
-    order_id: uuid::Uuid,
-) -> Result<String, ApplicationError> {
+fn checkout_return_url(return_url: &str, order_id: uuid::Uuid) -> Result<String, ApplicationError> {
     let mut url = url::Url::parse(return_url).map_err(|_| invalid_outbox_payload())?;
     let mut query_pairs = url
         .query_pairs()
@@ -655,7 +720,10 @@ mod tests {
             pairs,
             vec![
                 ("source".into(), "email".into()),
-                ("order_id".into(), "00000000-0000-4000-8000-000000000001".into()),
+                (
+                    "order_id".into(),
+                    "00000000-0000-4000-8000-000000000001".into()
+                ),
             ]
         );
     }

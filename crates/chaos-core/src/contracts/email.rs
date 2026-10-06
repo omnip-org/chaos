@@ -98,12 +98,6 @@ pub struct EmailProviderAccountDetail {
     pub updated_at: OffsetDateTime,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EmailProviderAccountPage {
-    pub items: Vec<EmailProviderAccountDetail>,
-    pub has_more: bool,
-}
-
 #[derive(Debug)]
 pub struct EmailDelivery {
     pub provider_message_id: String,

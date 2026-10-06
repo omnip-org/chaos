@@ -1,11 +1,11 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    ApplicationError,
+    ApplicationError, Page,
     adapters::postgres::{EmailBrandWrite, EmailProviderAccountWrite, PostgresEmailRepository},
     contracts::{
         EmailAccountConfiguration, EmailBrandDetail, EmailProvider, EmailProviderAccountDetail,
-        EmailProviderAccountPage, EmailWebhookVerifier, IntegrationQueue, NOTIFICATION_EMAIL_QUEUE,
+        EmailWebhookVerifier, IntegrationQueue, NOTIFICATION_EMAIL_QUEUE,
         ORDER_FULFILLMENT_DELIVERED_TOPIC, ORDER_FULFILLMENT_SHIPPED_TOPIC,
         ORDER_PAYMENT_COMPLETED_TOPIC, ProviderAccountReader, VerifiedWebhookEvent,
     },
@@ -169,7 +169,7 @@ impl EmailProviderAccountAdministration {
         store_id: StoreId,
         after: Option<Uuid>,
         limit: u16,
-    ) -> Result<EmailProviderAccountPage, ApplicationError> {
+    ) -> Result<Page<EmailProviderAccountDetail>, ApplicationError> {
         self.repository
             .list_provider_accounts(actor, store_id, after, limit)
             .await

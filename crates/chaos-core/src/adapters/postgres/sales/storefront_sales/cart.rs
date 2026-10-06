@@ -1,10 +1,85 @@
-// Cart product resolution, pricing context, line management, and cart reads.
+use std::collections::HashMap;
 
-/// Resolves the Store's effective Price List when a new Cart is created. The
-/// Cart then retains this price_list_id for its lifetime. A Store trades in
-/// exactly one currency (`stores.currency`), and the shared resolver is also
-/// used by Storefront catalog reads.
-async fn select_price_list(
+use chaos_domain::{
+    CurrencyCode,
+    catalog::{ProductId, ProductOptionId, ProductOptionValueId, ProductVariantId},
+    pricing::{Money, PriceListId},
+    sales::{CartId, CartLine, CartStatus, ShopperId},
+    store::SalesChannelId,
+};
+use sqlx::{Postgres, Transaction};
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+use crate::{
+    ApplicationError,
+    contracts::{
+        CartDetail, CartLineItem, MachineActor, StorefrontMediaAsset, StorefrontMediaScope,
+        StorefrontSelectedOption, resolve_storefront_media,
+    },
+    error::database_error,
+};
+
+use super::repository::*;
+
+#[derive(sqlx::FromRow)]
+pub(super) struct ResolvedVariantRow {
+    pub product_id: Uuid,
+    pub product_title: String,
+    pub variant_title: String,
+    pub sku: Option<String>,
+    pub track_inventory: bool,
+    pub amount_minor: i64,
+}
+
+#[derive(sqlx::FromRow)]
+pub(super) struct LockedCartRow {
+    pub channel_id: Uuid,
+    pub price_list_id: Uuid,
+    pub currency: String,
+    pub status: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct CartHeaderRow {
+    id: Uuid,
+    shopper_id: Uuid,
+    price_list_id: Uuid,
+    currency: String,
+    status: String,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+}
+
+#[derive(sqlx::FromRow)]
+struct CartLineRow {
+    product_id: Uuid,
+    product_variant_id: Uuid,
+    product_title: String,
+    variant_title: String,
+    sku: Option<String>,
+    track_inventory: bool,
+    quantity: i32,
+    amount_minor: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct CartMediaRow {
+    product_id: Uuid,
+    media_id: Uuid,
+    scope: String,
+    option_id: Option<Uuid>,
+    option_value_id: Option<Uuid>,
+    product_variant_id: Option<Uuid>,
+    media_type: String,
+    kind: String,
+    alt_text: String,
+    position: i16,
+    url: String,
+}
+
+/// Selects the effective Price List that a new Cart retains for its lifetime.
+pub(super) async fn select_price_list(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     channel_id: SalesChannelId,
@@ -28,15 +103,16 @@ async fn select_price_list(
         .transpose()
 }
 
-async fn resolve_variant(
+pub(super) async fn resolve_variant(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     channel_id: SalesChannelId,
     price_list_id: PriceListId,
     variant_id: ProductVariantId,
-) -> Result<Option<(Uuid, String, String, Option<String>, bool, i64)>, ApplicationError> {
+) -> Result<Option<ResolvedVariantRow>, ApplicationError> {
     sqlx::query_as(
-        "SELECT product.id, product.title, variant.title, variant.sku::text, \
+        "SELECT product.id AS product_id, product.title AS product_title, \
+                variant.title AS variant_title, variant.sku::text AS sku, \
                 variant.track_inventory, price.amount_minor \
          FROM chaos_commerce.product_variants AS variant \
          INNER JOIN chaos_commerce.products AS product \
@@ -64,7 +140,7 @@ async fn resolve_variant(
     .map_err(database_error)
 }
 
-async fn insert_or_replace_line(
+pub(super) async fn insert_or_replace_line(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     cart_id: CartId,
@@ -88,7 +164,7 @@ async fn insert_or_replace_line(
     Ok(())
 }
 
-async fn bump_cart(
+pub(super) async fn bump_cart(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     cart_id: CartId,
@@ -105,24 +181,24 @@ async fn bump_cart(
     Ok(())
 }
 
-async fn lock_active_cart(
+pub(super) async fn lock_active_cart(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     cart_id: CartId,
-) -> Result<(Uuid, Uuid, String, String), ApplicationError> {
+) -> Result<LockedCartRow, ApplicationError> {
     let row = lock_cart(transaction, actor, cart_id).await?;
-    if row.3 != "active" {
+    if row.status != "active" {
         return Err(cart_not_active());
     }
     Ok(row)
 }
 
-async fn lock_cart(
+pub(super) async fn lock_cart(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     cart_id: CartId,
-) -> Result<(Uuid, Uuid, String, String), ApplicationError> {
-    let row = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
+) -> Result<LockedCartRow, ApplicationError> {
+    let row = sqlx::query_as::<_, LockedCartRow>(
         "SELECT cart.channel_id, cart.price_list_id, price_list.currency::text, \
                 cart.status::text \
          FROM chaos_commerce.carts AS cart \
@@ -141,7 +217,7 @@ async fn lock_cart(
     Ok(row)
 }
 
-async fn load_cart(
+pub(super) async fn load_cart(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     cart_id: CartId,
@@ -165,14 +241,14 @@ async fn load_cart(
         return Ok(None);
     };
     let channel_id = require_channel(actor)?;
-    let currency = parse_currency(&row.3)?;
-    let status = CartStatus::parse(&row.4).ok_or_else(corrupt_sales_state)?;
+    let currency = parse_currency(&row.currency)?;
+    let status = CartStatus::parse(&row.status).ok_or_else(corrupt_sales_state)?;
     let lines = refresh_cart_lines(
         transaction,
         actor,
         cart_id,
         channel_id,
-        PriceListId::from_uuid(row.2),
+        PriceListId::from_uuid(row.price_list_id),
         currency,
     )
     .await?;
@@ -187,23 +263,20 @@ async fn load_cart(
             total.checked_add(&Money::new(line.subtotal_amount_minor, currency))
         })?;
     Ok(Some(CartDetail {
-        id: CartId::from_uuid(row.0),
-        shopper_id: ShopperId::from_uuid(row.1),
-        price_list_id: PriceListId::from_uuid(row.2),
+        id: CartId::from_uuid(row.id),
+        shopper_id: ShopperId::from_uuid(row.shopper_id),
+        price_list_id: PriceListId::from_uuid(row.price_list_id),
         currency,
         status,
         lines: items,
         subtotal_amount_minor: subtotal.amount_minor(),
-        created_at: row.5,
-        updated_at: row.6,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
     }))
 }
 
-/// Media for each Cart line follows the same fallback contract as the catalog:
-/// exact Variant media, then media attached to one of the Variant's selected
-/// Option Values, then Product media. The selected Option Values are loaded in
-/// one query so a cart with many lines does not perform one media query per line.
-async fn load_cart_media(
+/// Resolves media in catalog order: Variant, selected Option Value, then Product.
+pub(super) async fn load_cart_media(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     lines: &[CartLine],
@@ -216,8 +289,11 @@ async fn load_cart_media(
         return Ok(HashMap::new());
     }
     let rows = sqlx::query_as::<_, CartMediaRow>(
-        "SELECT link.product_id, media.id, 'product'::text, NULL::uuid, NULL::uuid, NULL::uuid, \
-                media.media_type, media.media_kind::text, link.alt_text, link.position, media.public_url \
+        "SELECT link.product_id, media.id AS media_id, 'product'::text AS scope, \
+                NULL::uuid AS option_id, NULL::uuid AS option_value_id, \
+                NULL::uuid AS product_variant_id, media.media_type, \
+                media.media_kind::text AS kind, link.alt_text, link.position, \
+                media.public_url AS url \
          FROM chaos_commerce.product_media_assets AS link \
          INNER JOIN chaos_commerce.media_assets AS media \
             ON media.store_id=link.store_id AND media.id=link.media_asset_id \
@@ -258,38 +334,38 @@ async fn load_cart_media(
     .map_err(database_error)?;
     let mut by_product: HashMap<Uuid, Vec<StorefrontMediaAsset>> = HashMap::new();
     for row in rows {
-        let kind = match row.7.as_str() {
+        let kind = match row.kind.as_str() {
             "image" => chaos_domain::catalog::MediaKind::Image,
             "video" => chaos_domain::catalog::MediaKind::Video,
             _ => return Err(corrupt_sales_state()),
         };
         by_product
-            .entry(row.0)
+            .entry(row.product_id)
             .or_default()
             .push(StorefrontMediaAsset {
-                id: chaos_domain::catalog::MediaAssetId::from_uuid(row.1),
-                scope: match row.2.as_str() {
+                id: chaos_domain::catalog::MediaAssetId::from_uuid(row.media_id),
+                scope: match row.scope.as_str() {
                     "product" => StorefrontMediaScope::Product,
                     "option_value" => StorefrontMediaScope::OptionValue {
-                        option_id: ProductOptionId::from_uuid(row.3.ok_or_else(
-                            corrupt_sales_state,
-                        )?),
+                        option_id: ProductOptionId::from_uuid(
+                            row.option_id.ok_or_else(corrupt_sales_state)?,
+                        ),
                         option_value_id: ProductOptionValueId::from_uuid(
-                            row.4.ok_or_else(corrupt_sales_state)?,
+                            row.option_value_id.ok_or_else(corrupt_sales_state)?,
                         ),
                     },
                     "variant" => StorefrontMediaScope::Variant {
                         product_variant_id: ProductVariantId::from_uuid(
-                            row.5.ok_or_else(corrupt_sales_state)?,
+                            row.product_variant_id.ok_or_else(corrupt_sales_state)?,
                         ),
                     },
                     _ => return Err(corrupt_sales_state()),
                 },
-                media_type: row.6,
+                media_type: row.media_type,
                 kind,
-                alt_text: row.8,
-                position: u16::try_from(row.9).map_err(unexpected_conversion)?,
-                url: row.10,
+                alt_text: row.alt_text,
+                position: u16::try_from(row.position).map_err(unexpected_conversion)?,
+                url: row.url,
             });
     }
 
@@ -379,13 +455,16 @@ fn cart_line_item(
         unit_price_amount_minor: line.unit_price().amount_minor(),
         subtotal_amount_minor: subtotal.amount_minor(),
         media: media
-            .get(&(line.product_id().as_uuid(), line.product_variant_id().as_uuid()))
+            .get(&(
+                line.product_id().as_uuid(),
+                line.product_variant_id().as_uuid(),
+            ))
             .cloned()
             .unwrap_or_default(),
     })
 }
 
-async fn refresh_cart_lines(
+pub(super) async fn refresh_cart_lines(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     cart_id: CartId,
@@ -394,8 +473,9 @@ async fn refresh_cart_lines(
     currency: CurrencyCode,
 ) -> Result<Vec<CartLine>, ApplicationError> {
     let rows = sqlx::query_as::<_, CartLineRow>(
-        "SELECT product.id, variant.id, product.title, variant.title, \
-                variant.sku::text, variant.track_inventory, cart_line.quantity, \
+        "SELECT product.id AS product_id, variant.id AS product_variant_id, \
+                product.title AS product_title, variant.title AS variant_title, \
+                variant.sku::text AS sku, variant.track_inventory, cart_line.quantity, \
                 price.amount_minor \
          FROM chaos_commerce.cart_lines AS cart_line \
          INNER JOIN chaos_commerce.product_variants AS variant \
@@ -425,21 +505,21 @@ async fn refresh_cart_lines(
     rows.into_iter()
         .map(|row| {
             CartLine::new(
-                ProductId::from_uuid(row.0),
-                ProductVariantId::from_uuid(row.1),
-                row.2,
-                row.3,
-                row.4,
-                row.5,
-                u32::try_from(row.6).map_err(unexpected_conversion)?,
-                Money::new(row.7, currency),
+                ProductId::from_uuid(row.product_id),
+                ProductVariantId::from_uuid(row.product_variant_id),
+                row.product_title,
+                row.variant_title,
+                row.sku,
+                row.track_inventory,
+                u32::try_from(row.quantity).map_err(unexpected_conversion)?,
+                Money::new(row.amount_minor, currency),
             )
             .map_err(ApplicationError::from)
         })
         .collect()
 }
 
-async fn require_price_list_active(
+pub(super) async fn require_price_list_active(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     price_list_id: PriceListId,

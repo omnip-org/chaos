@@ -39,10 +39,6 @@ pub struct CartDetail {
     pub updated_at: OffsetDateTime,
 }
 
-pub struct CheckoutDraft {
-    pub order_id: OrderId,
-}
-
 pub struct OrderLineItem {
     pub product_id: ProductId,
     pub product_variant_id: ProductVariantId,
@@ -127,30 +123,8 @@ pub struct OrderDetail {
     pub updated_at: OffsetDateTime,
 }
 
-/// Storefront-only ownership and payment context not already represented by
-/// the validated `OrderDetail` aggregate.
-#[derive(sqlx::FromRow)]
-pub struct ShopperOrderContext {
-    pub store_id: uuid::Uuid,
-    pub channel_id: uuid::Uuid,
-    pub cart_id: uuid::Uuid,
-    pub payment_provider_account_id: uuid::Uuid,
-    pub payment_failure_code: Option<String>,
-}
-
-/// Shopper-owned Order plus the context needed by its private Storefront view.
-pub struct ShopperOrderDetail {
-    pub context: ShopperOrderContext,
-    pub detail: OrderDetail,
-}
-
 pub struct OrderListFilter {
     pub order_number: Option<String>,
     pub status: Option<OrderStatus>,
     pub email: Option<String>,
-}
-
-pub struct OrderPage {
-    pub items: Vec<OrderDetail>,
-    pub has_more: bool,
 }

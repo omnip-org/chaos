@@ -11,12 +11,12 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
-    ApplicationError,
+    ApplicationError, Page,
     adapters::postgres::PostgresStripeRepository,
     contracts::{
         AdminActor, MachineActor, PaymentClientAction, PaymentProviderRegistry,
         PaymentWebhookVerifierRegistry, RefundDetail, ShopperActor, StripeAccountConfiguration,
-        StripeAccountDetail, StripeAccountPage, VerifiedWebhookEvent, WebhookInbox,
+        StripeAccountDetail, VerifiedWebhookEvent, WebhookInbox,
     },
     store::StoreActor,
 };
@@ -87,7 +87,7 @@ impl StripeAccountAdministration {
         store_id: StoreId,
         after: Option<Uuid>,
         limit: u16,
-    ) -> Result<StripeAccountPage, ApplicationError> {
+    ) -> Result<Page<StripeAccountDetail>, ApplicationError> {
         self.repository.list(actor, store_id, after, limit).await
     }
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chaos_domain::{FieldViolation, catalog::ProductVariantId, store::StoreId};
 
 use crate::{
-    ApplicationError,
+    ApplicationError, Page,
     adapters::postgres::PostgresInventoryRepository,
     contracts::{AdminActor, InventoryAdjustment, VariantInventoryView},
 };
@@ -18,11 +18,6 @@ pub struct AdjustInventoryInput {
 
 pub struct InventoryManagement {
     repository: Arc<PostgresInventoryRepository>,
-}
-
-pub struct InventoryPage<T> {
-    pub items: Vec<T>,
-    pub has_more: bool,
 }
 
 impl InventoryManagement {
@@ -60,7 +55,7 @@ impl InventoryManagement {
         store_id: StoreId,
         after: Option<ProductVariantId>,
         limit: u16,
-    ) -> Result<InventoryPage<VariantInventoryView>, ApplicationError> {
+    ) -> Result<Page<VariantInventoryView>, ApplicationError> {
         let limit = limit.clamp(1, 100);
         let mut items = self
             .repository
@@ -71,7 +66,7 @@ impl InventoryManagement {
         if has_more {
             items.pop();
         }
-        Ok(InventoryPage { items, has_more })
+        Ok(Page { items, has_more })
     }
 }
 

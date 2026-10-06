@@ -10,7 +10,7 @@ use axum::{
 use chaos_core::{
     contracts::{CartDetail, CartLineItem, PaymentClientAction},
     payments::{CreateEmbeddedCheckoutInput, EmbeddedCheckoutResult},
-    sales::{CreateCartInput, CreateStripeCheckoutInput, RemoveCartLineInput, SetCartLineInput},
+    sales::CreateCheckoutInput,
 };
 use chaos_domain::{catalog::ProductVariantId, sales::CartId};
 use secrecy::ExposeSecret;
@@ -27,16 +27,16 @@ use super::{
     wire::{CartStatus, MediaResponse, PaymentClientActionType, PaymentProvider},
 };
 
-#[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/carts", get(get_active_cart).post(create_cart))
         .route("/carts/{cart_id}", get(get_cart))
-        .route("/carts/{cart_id}/lines/{product_variant_id}", put(set_cart_line).delete(remove_cart_line))
+        .route(
+            "/carts/{cart_id}/lines/{product_variant_id}",
+            put(set_cart_line).delete(remove_cart_line),
+        )
         .route("/carts/{cart_id}/checkout", post(create_embedded_checkout))
 }
-
-// ===== request contracts =====
 
 #[derive(Deserialize)]
 struct CartPath {
@@ -63,8 +63,6 @@ struct CreateEmbeddedCheckoutRequest {
     #[serde(default)]
     attribution: Option<CheckoutAttributionRequest>,
 }
-
-// ===== response contracts =====
 
 #[derive(Serialize)]
 struct CartResponse {
@@ -105,8 +103,8 @@ struct PaymentClientActionResponse {
     client_token: String,
 }
 
-impl CartResponse {
-    fn from_detail(cart: CartDetail) -> Self {
+impl From<CartDetail> for CartResponse {
+    fn from(cart: CartDetail) -> Self {
         Self {
             id: cart.id.as_uuid(),
             currency: cart.currency.as_str().to_owned(),
@@ -155,87 +153,72 @@ impl From<PaymentClientAction> for PaymentClientActionResponse {
     }
 }
 
-// ===== POST /carts =====
-
 async fn create_cart(
     State(state): State<ApiState>,
-    ShopperContext(actor): ShopperContext,
+    ShopperContext(shopper): ShopperContext,
 ) -> Result<PrivateApiResponse<CartResponse>, ApiError> {
-    let cart = state
-        .storefront_sales
-        .create_cart(CreateCartInput { actor })
-        .await?;
-    Ok(ApiResponse::created(CartResponse::from_detail(cart)).private())
+    let cart = state.storefront_sales.create_cart(shopper).await?;
+    Ok(ApiResponse::created(cart.into()).private())
 }
-
-// ===== GET /carts =====
 
 async fn get_active_cart(
     State(state): State<ApiState>,
-    ShopperContext(actor): ShopperContext,
+    ShopperContext(shopper): ShopperContext,
 ) -> Result<PrivateApiResponse<CartResponse>, ApiError> {
-    let cart = state.storefront_sales.get_active_cart(&actor).await?;
-    Ok(ApiResponse::ok(CartResponse::from_detail(cart)).private())
+    let cart = state.storefront_sales.get_active_cart(&shopper).await?;
+    Ok(ApiResponse::ok(cart.into()).private())
 }
-
-// ===== GET /carts/{cart_id} =====
 
 async fn get_cart(
     State(state): State<ApiState>,
-    ShopperContext(actor): ShopperContext,
+    ShopperContext(shopper): ShopperContext,
     ApiPath(path): ApiPath<CartPath>,
 ) -> Result<PrivateApiResponse<CartResponse>, ApiError> {
     let cart = state
         .storefront_sales
-        .get_cart(&actor, CartId::from_uuid(path.cart_id))
+        .get_cart(&shopper, CartId::from_uuid(path.cart_id))
         .await?;
-    Ok(ApiResponse::ok(CartResponse::from_detail(cart)).private())
+    Ok(ApiResponse::ok(cart.into()).private())
 }
-
-// ===== PUT /carts/{cart_id}/lines/{product_variant_id} =====
 
 async fn set_cart_line(
     State(state): State<ApiState>,
-    ShopperContext(actor): ShopperContext,
+    ShopperContext(shopper): ShopperContext,
     ApiPath(path): ApiPath<CartLinePath>,
     ApiJson(request): ApiJson<SetCartLineRequest>,
 ) -> Result<PrivateApiResponse<CartResponse>, ApiError> {
     let cart = state
         .storefront_sales
-        .set_cart_line(SetCartLineInput {
-            actor,
-            cart_id: CartId::from_uuid(path.cart_id),
-            product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
-            quantity: request.quantity,
-        })
+        .set_cart_line(
+            shopper,
+            CartId::from_uuid(path.cart_id),
+            ProductVariantId::from_uuid(path.product_variant_id),
+            request.quantity,
+        )
         .await?;
-    Ok(ApiResponse::ok(CartResponse::from_detail(cart)).private())
+    Ok(ApiResponse::ok(cart.into()).private())
 }
-
-// ===== DELETE /carts/{cart_id}/lines/{product_variant_id} =====
 
 async fn remove_cart_line(
     State(state): State<ApiState>,
-    ShopperContext(actor): ShopperContext,
+    ShopperContext(shopper): ShopperContext,
     ApiPath(path): ApiPath<CartLinePath>,
 ) -> Result<PrivateApiResponse<CartResponse>, ApiError> {
     let cart = state
         .storefront_sales
-        .remove_cart_line(RemoveCartLineInput {
-            actor,
-            cart_id: CartId::from_uuid(path.cart_id),
-            product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
-        })
+        .remove_cart_line(
+            shopper,
+            CartId::from_uuid(path.cart_id),
+            ProductVariantId::from_uuid(path.product_variant_id),
+        )
         .await?;
-    Ok(ApiResponse::ok(CartResponse::from_detail(cart)).private())
+    Ok(ApiResponse::ok(cart.into()).private())
 }
-
-// ===== POST /carts/{cart_id}/checkout =====
 
 async fn create_embedded_checkout(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    ShopperContext(actor): ShopperContext,
+    ShopperContext(shopper): ShopperContext,
     ApiPath(path): ApiPath<CartPath>,
     ApiJson(request): ApiJson<CreateEmbeddedCheckoutRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -247,10 +230,10 @@ async fn create_embedded_checkout(
         .and_then(|value| Uuid::parse_str(value).ok())
         .filter(|value| !value.is_nil())
         .ok_or_else(|| invalid_value("Idempotency-Key", "must be a valid UUID"))?;
-    let draft = state
+    let order_id = state
         .storefront_sales
-        .create_stripe_checkout(CreateStripeCheckoutInput {
-            actor: actor.clone(),
+        .create_checkout(CreateCheckoutInput {
+            shopper: shopper.clone(),
             cart_id: CartId::from_uuid(path.cart_id),
             return_url: request.return_url.clone(),
             payment_provider: request.payment_provider.into(),
@@ -262,8 +245,8 @@ async fn create_embedded_checkout(
     let checkout = state
         .payment_service
         .create_embedded_checkout(CreateEmbeddedCheckoutInput {
-            actor,
-            order_id: draft.order_id,
+            actor: shopper,
+            order_id,
             return_url: request.return_url,
             now,
         })

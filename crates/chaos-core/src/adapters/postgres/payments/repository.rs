@@ -1,51 +1,32 @@
-// Payment repository core wiring, provider implementations, and shared imports.
-
-use async_trait::async_trait;
 use crate::{
     ApplicationError,
-    error::database_error,
     contracts::{
-        AdminActor, MachineActor, OrderMetadataContext,
-        PaymentCheckoutDetails, PaymentClientAction, PaymentClientActionKind, PaymentLineItem,
-        StripeAccountConfiguration,
-        StripeAccountDetail, StripeAccountPage,
-        PaymentRefundObservation, PaymentRefundStatus, PaymentShippingAddress, PaymentCommand,
-        PaymentCommandKind, PaymentCommandResult, StripeWebhookConfiguration,
-        StripeWebhookConfigurationRepository, RefundDetail, ShopperActor,
+        AdminActor, MachineActor, PaymentClientAction, PaymentClientActionKind, ShopperActor,
+        StripeAccountDetail,
     },
+    error::database_error,
     store::StoreActor,
 };
 use chaos_domain::{
     CurrencyCode,
-    payments::{
-        PaymentAttemptStatus, Refund, RefundId, RefundStatus,
-    },
-    pricing::Money,
-    sales::{Order, OrderId, OrderPaymentStatus, OrderStatus},
-    stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
-    store::{SalesChannelId, StoreId},
+    sales::{OrderId, OrderPaymentStatus, OrderStatus},
+    store::StoreId,
+    stripe::{StripeAccount, StripeAccountId},
 };
-use serde_json::{Value, json};
 use secrecy::{ExposeSecret, SecretString};
+use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::adapters::postgres::{
-    analytics::{
-        OrderIdentityContext, merge_order_identity, publish_topic_event, purchase_event_payload,
-        splice_attribution,
-    },
-    sales::{consume_order_inventory, release_order_inventory},
-};
-
-type ProviderAccountRow = (
-    Uuid,
-    String,
-    bool,
-    OffsetDateTime,
-    OffsetDateTime,
-);
+#[derive(sqlx::FromRow)]
+pub(super) struct ProviderAccountRow {
+    id: Uuid,
+    display_name: String,
+    credentials_configured: bool,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+}
 
 #[derive(Clone)]
 pub(crate) struct RefundReconciliationContext {
@@ -58,7 +39,7 @@ pub(crate) struct RefundReconciliationContext {
 
 #[derive(Clone)]
 pub struct PostgresStripeRepository {
-    pool: PgPool,
+    pub(super) pool: PgPool,
 }
 
 pub(crate) struct OrderCheckoutPayment {
@@ -111,14 +92,14 @@ impl PostgresStripeRepository {
         Self { pool }
     }
 
-    async fn begin_machine(
+    pub(super) async fn begin_machine(
         &self,
         actor: &MachineActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         self.begin_context(None, actor.store_id.as_uuid()).await
     }
 
-    async fn begin_shopper(
+    pub(super) async fn begin_shopper(
         &self,
         shopper: &ShopperActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
@@ -132,7 +113,7 @@ impl PostgresStripeRepository {
         Ok(transaction)
     }
 
-    async fn begin_human(
+    pub(super) async fn begin_human(
         &self,
         actor: StoreActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
@@ -140,7 +121,7 @@ impl PostgresStripeRepository {
             .await
     }
 
-    async fn begin_admin(
+    pub(super) async fn begin_admin(
         &self,
         actor: &AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
@@ -151,7 +132,7 @@ impl PostgresStripeRepository {
         .await
     }
 
-    async fn begin_context(
+    pub(super) async fn begin_context(
         &self,
         user_id: Option<Uuid>,
         store_id: Uuid,
@@ -165,7 +146,7 @@ impl PostgresStripeRepository {
     }
 }
 
-async fn load_order_checkout_payment(
+pub(super) async fn load_order_checkout_payment(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     shopper_id: Uuid,
@@ -199,7 +180,9 @@ async fn load_order_checkout_payment(
     row.map(OrderCheckoutPaymentRow::into_payment).transpose()
 }
 
-fn parse_payment_client_action(value: Value) -> Result<Option<PaymentClientAction>, ApplicationError> {
+pub(super) fn parse_payment_client_action(
+    value: Value,
+) -> Result<Option<PaymentClientAction>, ApplicationError> {
     let Some(object) = value.as_object() else {
         return Err(corrupt_checkout_state());
     };
@@ -226,7 +209,7 @@ fn parse_payment_client_action(value: Value) -> Result<Option<PaymentClientActio
     }))
 }
 
-fn payment_client_action_json(action: &PaymentClientAction) -> Value {
+pub(super) fn payment_client_action_json(action: &PaymentClientAction) -> Value {
     json!({
         "type": action.kind.as_str(),
         "public_key": action.public_key.expose_secret(),
@@ -234,7 +217,7 @@ fn payment_client_action_json(action: &PaymentClientAction) -> Value {
     })
 }
 
-fn same_client_action(left: &PaymentClientAction, right: &PaymentClientAction) -> bool {
+pub(super) fn same_client_action(left: &PaymentClientAction, right: &PaymentClientAction) -> bool {
     left.kind == right.kind
         && left.public_key.expose_secret() == right.public_key.expose_secret()
         && left.client_token.expose_secret() == right.client_token.expose_secret()
@@ -244,7 +227,7 @@ pub(crate) fn checkout_provider_idempotency_key(order_id: OrderId) -> String {
     format!("checkout:{}", order_id.as_uuid())
 }
 
-async fn load_order_analytics_items(
+pub(super) async fn load_order_analytics_items(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: Uuid,
     order_id: Uuid,
@@ -272,9 +255,7 @@ async fn load_order_analytics_items(
         .collect()
 }
 
-// Shared transaction helpers and provider account reconstruction.
-
-async fn set_config(
+pub(super) async fn set_config(
     transaction: &mut Transaction<'static, Postgres>,
     key: &'static str,
     value: Uuid,
@@ -288,13 +269,13 @@ async fn set_config(
     Ok(())
 }
 
-fn unexpected_conversion(
+pub(super) fn unexpected_conversion(
     error: impl std::error::Error + Send + Sync + 'static,
 ) -> ApplicationError {
     ApplicationError::Unexpected(error.into())
 }
 
-fn outbox_aggregate_id(payload: &Value) -> Result<Uuid, ApplicationError> {
+pub(super) fn outbox_aggregate_id(payload: &Value) -> Result<Uuid, ApplicationError> {
     payload
         .get("aggregate_id")
         .and_then(Value::as_str)
@@ -302,53 +283,54 @@ fn outbox_aggregate_id(payload: &Value) -> Result<Uuid, ApplicationError> {
         .ok_or_else(invalid_outbox_payload)
 }
 
-fn outbox_amount(payload: &Value) -> Result<i64, ApplicationError> {
+pub(super) fn outbox_amount(payload: &Value) -> Result<i64, ApplicationError> {
     payload
         .get("amount_minor")
         .and_then(Value::as_i64)
         .ok_or_else(invalid_outbox_payload)
 }
 
-fn outbox_currency(payload: &Value) -> Result<&str, ApplicationError> {
+pub(super) fn outbox_currency(payload: &Value) -> Result<&str, ApplicationError> {
     payload
         .get("currency")
         .and_then(Value::as_str)
         .ok_or_else(invalid_outbox_payload)
 }
 
-fn outbox_return_url(payload: &Value) -> Option<String> {
+pub(super) fn outbox_return_url(payload: &Value) -> Option<String> {
     payload
         .get("return_url")
         .and_then(Value::as_str)
         .map(str::to_owned)
 }
 
-fn invalid_outbox_payload() -> ApplicationError {
+pub(super) fn invalid_outbox_payload() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("payment outbox payload is invalid"))
 }
 
-fn stripe_invalid_response() -> ApplicationError {
+pub(super) fn stripe_invalid_response() -> ApplicationError {
     ApplicationError::Unavailable {
         service: "stripe",
         source: anyhow::anyhow!("Stripe returned an invalid object reference"),
     }
 }
 
-fn order_not_found(order_id: OrderId) -> ApplicationError {
+pub(super) fn order_not_found(order_id: OrderId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "order",
         id: order_id.as_uuid().to_string(),
     }
 }
 
-async fn load_stripe_account(
+pub(super) async fn load_stripe_account(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
     id: StripeAccountId,
 ) -> Result<Option<StripeAccountDetail>, ApplicationError> {
     sqlx::query_as::<_, ProviderAccountRow>(
         "SELECT id, display_name, \
-                credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
+                credential_secret_reference IS NOT NULL \
+                    AND webhook_secret_reference IS NOT NULL AS credentials_configured, \
                 created_at, updated_at FROM chaos_integration.provider_accounts \
          WHERE store_id = $1 AND id = $2 AND capability = 'payment' AND provider = 'stripe'",
     )
@@ -361,21 +343,18 @@ async fn load_stripe_account(
     .transpose()
 }
 
-fn stripe_account_detail(
+pub(super) fn stripe_account_detail(
     row: ProviderAccountRow,
 ) -> Result<StripeAccountDetail, ApplicationError> {
     Ok(StripeAccountDetail {
-        account: StripeAccount::rehydrate(
-            StripeAccountId::from_uuid(row.0),
-            row.1,
-        )?,
-        credentials_configured: row.2,
-        created_at: row.3,
-        updated_at: row.4,
+        account: StripeAccount::rehydrate(StripeAccountId::from_uuid(row.id), row.display_name)?,
+        credentials_configured: row.credentials_configured,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
     })
 }
 
-fn map_provider_account_write_error(error: sqlx::Error) -> ApplicationError {
+pub(super) fn map_provider_account_write_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(database) = &error {
         let (code, message) = match database.constraint() {
             Some("provider_accounts_store_capability_provider_key") => (
@@ -389,66 +368,66 @@ fn map_provider_account_write_error(error: sqlx::Error) -> ApplicationError {
     database_error(error)
 }
 
-fn provider_account_not_found(id: StripeAccountId) -> ApplicationError {
+pub(super) fn provider_account_not_found(id: StripeAccountId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "payment_provider_account",
         id: id.as_uuid().to_string(),
     }
 }
 
-fn corrupt_state() -> ApplicationError {
+pub(super) fn corrupt_state() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!(
         "database contains invalid Payment Provider account state"
     ))
 }
 
-fn corrupt_checkout_state() -> ApplicationError {
+pub(super) fn corrupt_checkout_state() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!(
         "database contains invalid embedded checkout state"
     ))
 }
 
-fn provider_unavailable() -> ApplicationError {
+pub(super) fn provider_unavailable() -> ApplicationError {
     ApplicationError::Conflict {
         code: "payment_provider_unavailable",
         message: "no configured Payment Provider account is available",
     }
 }
 
-fn stripe_object_mismatch() -> ApplicationError {
+pub(super) fn stripe_object_mismatch() -> ApplicationError {
     ApplicationError::Conflict {
         code: "stripe_object_mismatch",
         message: "the Stripe object does not match the Payment Attempt",
     }
 }
 
-fn stripe_currency_mismatch() -> ApplicationError {
+pub(super) fn stripe_currency_mismatch() -> ApplicationError {
     ApplicationError::Conflict {
         code: "stripe_currency_mismatch",
         message: "the Stripe currency does not match the Payment Attempt",
     }
 }
 
-fn stripe_amount_mismatch() -> ApplicationError {
+pub(super) fn stripe_amount_mismatch() -> ApplicationError {
     ApplicationError::Conflict {
         code: "stripe_amount_mismatch",
         message: "the Stripe amount does not match the Checkout breakdown",
     }
 }
 
-fn corrupt_payment_state() -> ApplicationError {
+pub(super) fn corrupt_payment_state() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!(
         "database contains an unknown Payment state"
     ))
 }
 
-fn payment_event_out_of_order() -> ApplicationError {
+pub(super) fn payment_event_out_of_order() -> ApplicationError {
     ApplicationError::Conflict {
         code: "payment_event_out_of_order",
         message: "a payment capture arrived after the Order was cancelled or failed",
     }
 }
 
-fn corrupt_webhook_payload() -> ApplicationError {
+pub(super) fn corrupt_webhook_payload() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("verified webhook payload is invalid"))
 }

@@ -21,7 +21,51 @@ use chaos_domain::{
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-type MetadataAttachmentRow = (String, Uuid, String, Option<String>);
+#[derive(sqlx::FromRow)]
+struct ProductRow {
+    id: Uuid,
+    handle: String,
+    title: String,
+    description: String,
+    metadata: Option<serde_json::Value>,
+}
+
+#[derive(sqlx::FromRow)]
+struct VariantRow {
+    product_id: Uuid,
+    id: Uuid,
+    title: String,
+    sku: Option<String>,
+    track_inventory: bool,
+    available_quantity: i64,
+    amount_minor: i64,
+    currency: String,
+    metadata: Option<serde_json::Value>,
+}
+
+#[derive(sqlx::FromRow)]
+struct MediaRow {
+    product_id: Uuid,
+    id: Uuid,
+    scope: String,
+    option_id: Option<Uuid>,
+    option_value_id: Option<Uuid>,
+    product_variant_id: Option<Uuid>,
+    media_type: String,
+    kind: String,
+    alt_text: String,
+    position: i16,
+    url: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct MetadataAttachmentRow {
+    product_id: Uuid,
+    meta_path: String,
+    asset_id: Uuid,
+    media_type: String,
+    public_url: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct PostgresStorefrontCatalogRepository {
@@ -54,19 +98,7 @@ impl PostgresStorefrontCatalogRepository {
         product_id: ProductId,
         currency: Option<CurrencyCode>,
     ) -> Result<Vec<StorefrontCatalogVariant>, ApplicationError> {
-        let rows = sqlx::query_as::<
-            _,
-            (
-                Uuid,
-                String,
-                Option<String>,
-                bool,
-                i64,
-                i64,
-                String,
-                Option<serde_json::Value>,
-            ),
-        >(
+        let rows = sqlx::query_as::<_, VariantRow>(
             "WITH selected_price_list AS ( \
                  SELECT selected.id, selected.currency::text \
                  FROM chaos_commerce.stores AS store \
@@ -75,11 +107,10 @@ impl PostgresStorefrontCatalogRepository {
                  ) AS selected \
                  WHERE store.id = $1 \
              ) \
-            SELECT variant.id, variant.title, variant.sku::text, \
+            SELECT variant.product_id, variant.id, variant.title, variant.sku::text AS sku, \
                     variant.track_inventory, \
-                    variant.on_hand_quantity - variant.reserved_quantity, \
-                    price.amount_minor, selected.currency, \
-                    variant.meta \
+                    variant.on_hand_quantity - variant.reserved_quantity AS available_quantity, \
+                    price.amount_minor, selected.currency, variant.meta AS metadata \
              FROM chaos_commerce.product_variants AS variant \
              INNER JOIN selected_price_list AS selected ON true \
              INNER JOIN chaos_commerce.price_list_items AS price \
@@ -100,34 +131,10 @@ impl PostgresStorefrontCatalogRepository {
 
         let mut selections = variant_selected_options(transaction, actor, product_id).await?;
         rows.into_iter()
-            .map(
-                |(
-                    id,
-                    title,
-                    sku,
-                    track_inventory,
-                    available_quantity,
-                    amount_minor,
-                    currency,
-                    metadata,
-                )| {
-                    Ok(StorefrontCatalogVariant {
-                        id: ProductVariantId::from_uuid(id),
-                        title,
-                        sku,
-                        track_inventory,
-                        available_quantity,
-                        amount_minor,
-                        currency: CurrencyCode::parse(&currency).map_err(|_| {
-                            ApplicationError::Unexpected(anyhow::anyhow!(
-                                "database contains an invalid currency"
-                            ))
-                        })?,
-                        selected_options: selections.remove(&id).unwrap_or_default(),
-                        metadata,
-                    })
-                },
-            )
+            .map(|row| {
+                let selected_options = selections.remove(&row.id).unwrap_or_default();
+                catalog_variant(row, selected_options)
+            })
             .collect()
     }
 
@@ -203,30 +210,20 @@ impl PostgresStorefrontCatalogRepository {
         actor: &MachineActor,
         product_id: ProductId,
     ) -> Result<Vec<StorefrontMediaAsset>, ApplicationError> {
-        let rows = sqlx::query_as::<
-            _,
-            (
-                Uuid,
-                String,
-                Option<Uuid>,
-                Option<Uuid>,
-                Option<Uuid>,
-                String,
-                String,
-                String,
-                i16,
-                String,
-            ),
-        >(
-            "SELECT media.id, 'product'::text, NULL::uuid, NULL::uuid, NULL::uuid, \
-                    media.media_type,media.media_kind::text,link.alt_text,link.position,media.public_url \
+        let rows = sqlx::query_as::<_, MediaRow>(
+            "SELECT link.product_id, media.id, 'product'::text AS scope, \
+                    NULL::uuid AS option_id, NULL::uuid AS option_value_id, \
+                    NULL::uuid AS product_variant_id, media.media_type, \
+                    media.media_kind::text AS kind, link.alt_text, link.position, \
+                    media.public_url AS url \
              FROM chaos_commerce.product_media_assets AS link \
              INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id=link.store_id AND media.id=link.media_asset_id \
              WHERE link.store_id=$1 AND link.product_id=$2 \
                AND link.archived_at IS NULL AND media.status='ready' \
              UNION ALL \
-             SELECT media.id, 'option_value'::text, link.option_id, link.option_value_id, NULL::uuid, \
+             SELECT link.product_id, media.id, 'option_value'::text, link.option_id, \
+                    link.option_value_id, NULL::uuid, \
                     media.media_type,media.media_kind::text,link.alt_text,link.position,media.public_url \
              FROM chaos_commerce.product_option_value_media_assets AS link \
              INNER JOIN chaos_commerce.media_assets AS media \
@@ -241,7 +238,8 @@ impl PostgresStorefrontCatalogRepository {
              WHERE link.store_id=$1 AND link.product_id=$2 \
                AND link.archived_at IS NULL AND media.status='ready' \
              UNION ALL \
-             SELECT media.id, 'variant'::text, NULL::uuid, NULL::uuid, link.product_variant_id, \
+             SELECT link.product_id, media.id, 'variant'::text, NULL::uuid, NULL::uuid, \
+                    link.product_variant_id, \
                     media.media_type,media.media_kind::text,link.alt_text,link.position,media.public_url \
              FROM chaos_commerce.product_variant_media_assets AS link \
              INNER JOIN chaos_commerce.media_assets AS media \
@@ -251,65 +249,14 @@ impl PostgresStorefrontCatalogRepository {
                AND variant.id=link.product_variant_id AND variant.status='active' \
              WHERE link.store_id=$1 AND link.product_id=$2 \
                AND link.archived_at IS NULL AND media.status='ready' \
-             ORDER BY 9, 2, 1",
+             ORDER BY 10, 3, 2",
         )
         .bind(actor.store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_all(&mut **transaction)
         .await
         .map_err(database_error)?;
-        rows.into_iter()
-            .map(|row| {
-                let scope = match row.1.as_str() {
-                    "product" => crate::contracts::StorefrontMediaScope::Product,
-                    "option_value" => crate::contracts::StorefrontMediaScope::OptionValue {
-                        option_id: ProductOptionId::from_uuid(row.2.ok_or_else(|| {
-                            ApplicationError::Unexpected(anyhow::anyhow!(
-                                "database contains an Option Value media row without an Option"
-                            ))
-                        })?),
-                        option_value_id: ProductOptionValueId::from_uuid(row.3.ok_or_else(|| {
-                            ApplicationError::Unexpected(anyhow::anyhow!(
-                                "database contains an Option Value media row without an Option Value"
-                            ))
-                        })?),
-                    },
-                    "variant" => crate::contracts::StorefrontMediaScope::Variant {
-                        product_variant_id: ProductVariantId::from_uuid(row.4.ok_or_else(|| {
-                            ApplicationError::Unexpected(anyhow::anyhow!(
-                                "database contains a Variant media row without a Variant"
-                            ))
-                        })?),
-                    },
-                    _ => {
-                        return Err(ApplicationError::Unexpected(anyhow::anyhow!(
-                            "database contains an invalid Product media scope"
-                        )));
-                    }
-                };
-                Ok(StorefrontMediaAsset {
-                    id: MediaAssetId::from_uuid(row.0),
-                    scope,
-                    media_type: row.5,
-                    kind: match row.6.as_str() {
-                        "image" => MediaKind::Image,
-                        "video" => MediaKind::Video,
-                        _ => {
-                            return Err(ApplicationError::Unexpected(anyhow::anyhow!(
-                                "database contains an invalid Media kind"
-                            )));
-                        }
-                    },
-                    alt_text: row.7,
-                    position: u16::try_from(row.8).map_err(|_| {
-                        ApplicationError::Unexpected(anyhow::anyhow!(
-                            "database contains an invalid Media position"
-                        ))
-                    })?,
-                    url: row.9,
-                })
-            })
-            .collect()
+        rows.into_iter().map(media_asset).collect()
     }
 
     async fn rating(
@@ -340,8 +287,9 @@ impl PostgresStorefrontCatalogRepository {
         product_id: ProductId,
         metadata: Option<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, ApplicationError> {
-        let rows = sqlx::query_as::<_, (String, Uuid, String, Option<String>)>(
-            "SELECT link.meta_path, media.id, media.media_type, media.public_url \
+        let rows = sqlx::query_as::<_, MetadataAttachmentRow>(
+            "SELECT link.product_id, link.meta_path, media.id AS asset_id, \
+                    media.media_type, media.public_url \
              FROM chaos_commerce.product_meta_media_assets AS link \
              INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id=link.store_id AND media.id=link.media_asset_id \
@@ -357,41 +305,12 @@ impl PostgresStorefrontCatalogRepository {
         if rows.is_empty() {
             return Ok(metadata);
         }
-        let mut metadata = metadata.ok_or_else(|| {
+        let metadata = metadata.ok_or_else(|| {
             ApplicationError::Unexpected(anyhow::anyhow!(
                 "Product metadata Media attachment has no Product metadata object"
             ))
         })?;
-        for (meta_path, asset_id, media_type, public_url) in rows {
-            let public_url = public_url.ok_or_else(|| {
-                ApplicationError::Unexpected(anyhow::anyhow!(
-                    "ready Product metadata Media attachment has no public URL"
-                ))
-            })?;
-            let node = metadata.pointer_mut(&meta_path).ok_or_else(|| {
-                ApplicationError::Unexpected(anyhow::anyhow!(
-                    "Product metadata Media attachment points to a missing metadata path"
-                ))
-            })?;
-            let expected_asset_id = asset_id.to_string();
-            let Some(node) = node.as_object_mut() else {
-                return Err(ApplicationError::Unexpected(anyhow::anyhow!(
-                    "Product metadata Media attachment does not point to an object"
-                )));
-            };
-            if node
-                .get("media_asset_id")
-                .and_then(serde_json::Value::as_str)
-                != Some(expected_asset_id.as_str())
-            {
-                return Err(ApplicationError::Unexpected(anyhow::anyhow!(
-                    "Product metadata Media attachment does not match its metadata reference"
-                )));
-            }
-            node.insert("media_type".into(), serde_json::Value::String(media_type));
-            node.insert("url".into(), serde_json::Value::String(public_url));
-        }
-        Ok(Some(metadata))
+        Ok(Some(apply_metadata_attachments(metadata, rows)?))
     }
 
     async fn collections(
@@ -439,20 +358,7 @@ impl PostgresStorefrontCatalogRepository {
         if product_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let rows = sqlx::query_as::<
-            _,
-            (
-                Uuid,
-                Uuid,
-                String,
-                Option<String>,
-                bool,
-                i64,
-                i64,
-                String,
-                Option<serde_json::Value>,
-            ),
-        >(
+        let rows = sqlx::query_as::<_, VariantRow>(
             "WITH selected_price_list AS ( \
                  SELECT selected.id, selected.currency::text \
                  FROM chaos_commerce.stores AS store \
@@ -461,10 +367,10 @@ impl PostgresStorefrontCatalogRepository {
                  ) AS selected \
                  WHERE store.id = $1 \
              ) \
-            SELECT variant.product_id, variant.id, variant.title, variant.sku::text, \
+            SELECT variant.product_id, variant.id, variant.title, variant.sku::text AS sku, \
                     variant.track_inventory, \
-                    variant.on_hand_quantity - variant.reserved_quantity, \
-                    price.amount_minor, selected.currency, variant.meta \
+                    variant.on_hand_quantity - variant.reserved_quantity AS available_quantity, \
+                    price.amount_minor, selected.currency, variant.meta AS metadata \
              FROM chaos_commerce.product_variants AS variant \
              INNER JOIN selected_price_list AS selected ON true \
              INNER JOIN chaos_commerce.price_list_items AS price \
@@ -486,34 +392,10 @@ impl PostgresStorefrontCatalogRepository {
         let mut selections =
             variant_selected_options_for_products(transaction, actor, product_ids).await?;
         let mut variants_by_product: HashMap<Uuid, Vec<StorefrontCatalogVariant>> = HashMap::new();
-        for (
-            product_id,
-            id,
-            title,
-            sku,
-            track_inventory,
-            available_quantity,
-            amount_minor,
-            currency,
-            metadata,
-        ) in rows
-        {
-            let selected_options = selections.remove(&(product_id, id)).unwrap_or_default();
-            let variant = StorefrontCatalogVariant {
-                id: ProductVariantId::from_uuid(id),
-                title,
-                sku,
-                track_inventory,
-                available_quantity,
-                amount_minor,
-                currency: CurrencyCode::parse(&currency).map_err(|_| {
-                    ApplicationError::Unexpected(anyhow::anyhow!(
-                        "database contains an invalid currency"
-                    ))
-                })?,
-                selected_options,
-                metadata,
-            };
+        for row in rows {
+            let product_id = row.product_id;
+            let selected_options = selections.remove(&(product_id, row.id)).unwrap_or_default();
+            let variant = catalog_variant(row, selected_options)?;
             variants_by_product
                 .entry(product_id)
                 .or_default()
@@ -611,24 +493,12 @@ impl PostgresStorefrontCatalogRepository {
         if product_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let rows = sqlx::query_as::<
-            _,
-            (
-                Uuid,
-                Uuid,
-                String,
-                Option<Uuid>,
-                Option<Uuid>,
-                Option<Uuid>,
-                String,
-                String,
-                String,
-                i16,
-                String,
-            ),
-        >(
-            "SELECT link.product_id, media.id, 'product'::text, NULL::uuid, NULL::uuid, NULL::uuid, \
-                    media.media_type, media.media_kind::text, link.alt_text, link.position, media.public_url \
+        let rows = sqlx::query_as::<_, MediaRow>(
+            "SELECT link.product_id, media.id, 'product'::text AS scope, \
+                    NULL::uuid AS option_id, NULL::uuid AS option_value_id, \
+                    NULL::uuid AS product_variant_id, media.media_type, \
+                    media.media_kind::text AS kind, link.alt_text, link.position, \
+                    media.public_url AS url \
              FROM chaos_commerce.product_media_assets AS link \
              INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id = link.store_id AND media.id = link.media_asset_id \
@@ -668,75 +538,12 @@ impl PostgresStorefrontCatalogRepository {
         .await
         .map_err(database_error)?;
         let mut media_by_product: HashMap<Uuid, Vec<StorefrontMediaAsset>> = HashMap::new();
-        for (
-            product_id,
-            id,
-            scope_name,
-            option_id,
-            option_value_id,
-            product_variant_id,
-            media_type,
-            kind,
-            alt_text,
-            position,
-            url,
-        ) in rows
-        {
-            let kind = match kind.as_str() {
-                "image" => MediaKind::Image,
-                "video" => MediaKind::Video,
-                _ => {
-                    return Err(ApplicationError::Unexpected(anyhow::anyhow!(
-                        "database contains an invalid Media kind"
-                    )));
-                }
-            };
+        for row in rows {
+            let product_id = row.product_id;
             media_by_product
                 .entry(product_id)
                 .or_default()
-                .push(StorefrontMediaAsset {
-                    id: MediaAssetId::from_uuid(id),
-                    scope: match scope_name.as_str() {
-                        "product" => crate::contracts::StorefrontMediaScope::Product,
-                        "option_value" => crate::contracts::StorefrontMediaScope::OptionValue {
-                            option_id: ProductOptionId::from_uuid(option_id.ok_or_else(|| {
-                                ApplicationError::Unexpected(anyhow::anyhow!(
-                                    "database contains an Option Value media row without an Option"
-                                ))
-                            })?),
-                            option_value_id: ProductOptionValueId::from_uuid(
-                                option_value_id.ok_or_else(|| {
-                                    ApplicationError::Unexpected(anyhow::anyhow!(
-                                        "database contains an Option Value media row without an Option Value"
-                                    ))
-                                })?,
-                            ),
-                        },
-                        "variant" => crate::contracts::StorefrontMediaScope::Variant {
-                            product_variant_id: ProductVariantId::from_uuid(
-                                product_variant_id.ok_or_else(|| {
-                                    ApplicationError::Unexpected(anyhow::anyhow!(
-                                        "database contains a Variant media row without a Variant"
-                                    ))
-                                })?,
-                            ),
-                        },
-                        _ => {
-                            return Err(ApplicationError::Unexpected(anyhow::anyhow!(
-                                "database contains an invalid Product media scope"
-                            )));
-                        }
-                    },
-                    media_type,
-                    kind,
-                    alt_text,
-                    position: u16::try_from(position).map_err(|_| {
-                        ApplicationError::Unexpected(anyhow::anyhow!(
-                            "database contains an invalid Media position"
-                        ))
-                    })?,
-                    url,
-                });
+                .push(media_asset(row)?);
         }
         Ok(media_by_product)
     }
@@ -827,8 +634,9 @@ impl PostgresStorefrontCatalogRepository {
             return Ok(HashMap::new());
         }
         let product_ids: Vec<Uuid> = products.iter().map(|(id, _)| *id).collect();
-        let rows = sqlx::query_as::<_, (Uuid, String, Uuid, String, Option<String>)>(
-            "SELECT link.product_id, link.meta_path, media.id, media.media_type, media.public_url \
+        let rows = sqlx::query_as::<_, MetadataAttachmentRow>(
+            "SELECT link.product_id, link.meta_path, media.id AS asset_id, \
+                    media.media_type, media.public_url \
              FROM chaos_commerce.product_meta_media_assets AS link \
              INNER JOIN chaos_commerce.media_assets AS media \
                 ON media.store_id = link.store_id AND media.id = link.media_asset_id \
@@ -846,11 +654,11 @@ impl PostgresStorefrontCatalogRepository {
             .map(|(id, metadata)| (*id, metadata.clone()))
             .collect();
         let mut attachments_by_product: HashMap<Uuid, Vec<MetadataAttachmentRow>> = HashMap::new();
-        for (product_id, meta_path, asset_id, media_type, public_url) in rows {
+        for row in rows {
             attachments_by_product
-                .entry(product_id)
+                .entry(row.product_id)
                 .or_default()
-                .push((meta_path, asset_id, media_type, public_url));
+                .push(row);
         }
         for (product_id, attachments) in attachments_by_product {
             let metadata = metadata_by_product
@@ -864,37 +672,10 @@ impl PostgresStorefrontCatalogRepository {
                         "Product metadata Media attachment has no Product metadata object"
                     ))
                 })?;
-            let mut metadata = metadata;
-            for (meta_path, asset_id, media_type, public_url) in attachments {
-                let public_url = public_url.ok_or_else(|| {
-                    ApplicationError::Unexpected(anyhow::anyhow!(
-                        "ready Product metadata Media attachment has no public URL"
-                    ))
-                })?;
-                let node = metadata.pointer_mut(&meta_path).ok_or_else(|| {
-                    ApplicationError::Unexpected(anyhow::anyhow!(
-                        "Product metadata Media attachment points to a missing metadata path"
-                    ))
-                })?;
-                let expected_asset_id = asset_id.to_string();
-                let Some(node) = node.as_object_mut() else {
-                    return Err(ApplicationError::Unexpected(anyhow::anyhow!(
-                        "Product metadata Media attachment does not point to an object"
-                    )));
-                };
-                if node
-                    .get("media_asset_id")
-                    .and_then(serde_json::Value::as_str)
-                    != Some(expected_asset_id.as_str())
-                {
-                    return Err(ApplicationError::Unexpected(anyhow::anyhow!(
-                        "Product metadata Media attachment does not match its metadata reference"
-                    )));
-                }
-                node.insert("media_type".into(), serde_json::Value::String(media_type));
-                node.insert("url".into(), serde_json::Value::String(public_url));
-            }
-            metadata_by_product.insert(product_id, Some(metadata));
+            metadata_by_product.insert(
+                product_id,
+                Some(apply_metadata_attachments(metadata, attachments)?),
+            );
         }
         Ok(metadata_by_product)
     }
@@ -915,10 +696,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         let mut scan_after = after;
         let mut products = Vec::with_capacity(usize::from(limit));
         while products.len() < usize::from(limit) {
-            let rows = sqlx::query_as::<
-                _,
-                (Uuid, String, String, String, Option<serde_json::Value>),
-            >(
+            let rows = sqlx::query_as::<_, ProductRow>(
                 "WITH selected_collection AS ( \
                      SELECT collection.id \
                      FROM chaos_commerce.collections AS collection \
@@ -937,8 +715,8 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                        ON selected.id = member.collection_id \
                      WHERE member.store_id = $1 \
                  ) \
-                SELECT product.id, product.handle::text, product.title, product.description, \
-                        product.meta \
+                SELECT product.id, product.handle::text AS handle, product.title, \
+                        product.description, product.meta AS metadata \
                  FROM chaos_commerce.products AS product \
                  INNER JOIN chaos_commerce.stores AS store \
                    ON store.id = product.store_id \
@@ -980,7 +758,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                 break;
             }
             let rows_len = rows.len();
-            let product_ids: Vec<Uuid> = rows.iter().map(|row| row.0).collect();
+            let product_ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
             let mut variants_by_product =
                 Self::variants_for_products(&mut transaction, actor, &product_ids, currency)
                     .await?;
@@ -1004,13 +782,13 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                 Self::rating_for_products(&mut transaction, actor, &display_product_ids).await?;
             let metadata_inputs: Vec<(Uuid, Option<serde_json::Value>)> = rows
                 .iter()
-                .filter(|row| display_product_ids.contains(&row.0))
-                .map(|row| (row.0, row.4.clone()))
+                .filter(|row| display_product_ids.contains(&row.id))
+                .map(|row| (row.id, row.metadata.clone()))
                 .collect();
             let mut metadata_by_product =
                 Self::metadata_for_products(&mut transaction, actor, &metadata_inputs).await?;
-            for (id, handle, title, description, metadata) in rows {
-                let id = ProductId::from_uuid(id);
+            for row in rows {
+                let id = ProductId::from_uuid(row.id);
                 scan_after = Some(id);
                 if let Some(variants) = variants_by_product.remove(&id.as_uuid()) {
                     if variants.is_empty() {
@@ -1024,13 +802,13 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                     let metadata = metadata_by_product
                         .remove(&id.as_uuid())
                         .flatten()
-                        .or(metadata);
+                        .or(row.metadata);
                     let rating = rating_by_product.remove(&id.as_uuid());
                     products.push(StorefrontCatalogProduct {
                         id,
-                        handle,
-                        title,
-                        description,
+                        handle: row.handle,
+                        title: row.title,
+                        description: row.description,
                         options,
                         variants,
                         media,
@@ -1058,9 +836,9 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         handle: &str,
     ) -> Result<Option<StorefrontCatalogProduct>, ApplicationError> {
         let mut transaction = self.begin(actor).await?;
-        let row = sqlx::query_as::<_, (Uuid, String, String, String, Option<serde_json::Value>)>(
-            "SELECT product.id, product.handle::text, product.title, product.description, \
-                    product.meta \
+        let row = sqlx::query_as::<_, ProductRow>(
+            "SELECT product.id, product.handle::text AS handle, product.title, \
+                    product.description, product.meta AS metadata \
              FROM chaos_commerce.products AS product \
              INNER JOIN chaos_commerce.stores AS store \
                ON store.id = product.store_id \
@@ -1083,16 +861,16 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
-        let Some((id, handle, title, description, metadata)) = row else {
+        let Some(row) = row else {
             transaction.commit().await.map_err(database_error)?;
             return Ok(None);
         };
-        let id = ProductId::from_uuid(id);
+        let id = ProductId::from_uuid(row.id);
         let variants = Self::variants(&mut transaction, actor, id, currency).await?;
         let options = Self::options(&mut transaction, actor, id).await?;
         let media = Self::media(&mut transaction, actor, id).await?;
         let collections = Self::collections(&mut transaction, actor, id).await?;
-        let metadata = Self::metadata(&mut transaction, actor, id, metadata).await?;
+        let metadata = Self::metadata(&mut transaction, actor, id, row.metadata).await?;
         let rating = Self::rating(&mut transaction, actor, id).await?;
         transaction.commit().await.map_err(database_error)?;
         if variants.is_empty() {
@@ -1100,9 +878,9 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         }
         Ok(Some(StorefrontCatalogProduct {
             id,
-            handle,
-            title,
-            description,
+            handle: row.handle,
+            title: row.title,
+            description: row.description,
             options,
             variants,
             media,
@@ -1111,6 +889,120 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             rating,
         }))
     }
+}
+
+fn catalog_variant(
+    row: VariantRow,
+    selected_options: Vec<StorefrontSelectedOption>,
+) -> Result<StorefrontCatalogVariant, ApplicationError> {
+    Ok(StorefrontCatalogVariant {
+        id: ProductVariantId::from_uuid(row.id),
+        title: row.title,
+        sku: row.sku,
+        track_inventory: row.track_inventory,
+        available_quantity: row.available_quantity,
+        amount_minor: row.amount_minor,
+        currency: CurrencyCode::parse(&row.currency).map_err(|_| {
+            ApplicationError::Unexpected(anyhow::anyhow!("database contains an invalid currency"))
+        })?,
+        selected_options,
+        metadata: row.metadata,
+    })
+}
+
+fn media_asset(row: MediaRow) -> Result<StorefrontMediaAsset, ApplicationError> {
+    let scope = match row.scope.as_str() {
+        "product" => crate::contracts::StorefrontMediaScope::Product,
+        "option_value" => crate::contracts::StorefrontMediaScope::OptionValue {
+            option_id: ProductOptionId::from_uuid(row.option_id.ok_or_else(|| {
+                ApplicationError::Unexpected(anyhow::anyhow!(
+                    "database contains an Option Value media row without an Option"
+                ))
+            })?),
+            option_value_id: ProductOptionValueId::from_uuid(row.option_value_id.ok_or_else(
+                || {
+                    ApplicationError::Unexpected(anyhow::anyhow!(
+                        "database contains an Option Value media row without an Option Value"
+                    ))
+                },
+            )?),
+        },
+        "variant" => crate::contracts::StorefrontMediaScope::Variant {
+            product_variant_id: ProductVariantId::from_uuid(row.product_variant_id.ok_or_else(
+                || {
+                    ApplicationError::Unexpected(anyhow::anyhow!(
+                        "database contains a Variant media row without a Variant"
+                    ))
+                },
+            )?),
+        },
+        _ => {
+            return Err(ApplicationError::Unexpected(anyhow::anyhow!(
+                "database contains an invalid Product media scope"
+            )));
+        }
+    };
+    let kind = match row.kind.as_str() {
+        "image" => MediaKind::Image,
+        "video" => MediaKind::Video,
+        _ => {
+            return Err(ApplicationError::Unexpected(anyhow::anyhow!(
+                "database contains an invalid Media kind"
+            )));
+        }
+    };
+    Ok(StorefrontMediaAsset {
+        id: MediaAssetId::from_uuid(row.id),
+        scope,
+        media_type: row.media_type,
+        kind,
+        alt_text: row.alt_text,
+        position: u16::try_from(row.position).map_err(|_| {
+            ApplicationError::Unexpected(anyhow::anyhow!(
+                "database contains an invalid Media position"
+            ))
+        })?,
+        url: row.url,
+    })
+}
+
+fn apply_metadata_attachments(
+    mut metadata: serde_json::Value,
+    attachments: Vec<MetadataAttachmentRow>,
+) -> Result<serde_json::Value, ApplicationError> {
+    for attachment in attachments {
+        let public_url = attachment.public_url.ok_or_else(|| {
+            ApplicationError::Unexpected(anyhow::anyhow!(
+                "ready Product metadata Media attachment has no public URL"
+            ))
+        })?;
+        let node = metadata.pointer_mut(&attachment.meta_path).ok_or_else(|| {
+            ApplicationError::Unexpected(anyhow::anyhow!(
+                "Product metadata Media attachment points to a missing metadata path"
+            ))
+        })?;
+        let Some(node) = node.as_object_mut() else {
+            return Err(ApplicationError::Unexpected(anyhow::anyhow!(
+                "Product metadata Media attachment does not point to an object"
+            )));
+        };
+        let expected_asset_id = attachment.asset_id.to_string();
+        if node
+            .get("media_asset_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_asset_id.as_str())
+        {
+            return Err(ApplicationError::Unexpected(anyhow::anyhow!(
+                "Product metadata Media attachment does not match its metadata reference"
+            )));
+        }
+        node.insert(
+            "media_type".into(),
+            serde_json::Value::String(attachment.media_type),
+        );
+        node.insert("url".into(), serde_json::Value::String(public_url));
+    }
+    Ok(metadata)
 }
 
 async fn variant_selected_options(

@@ -1,4 +1,17 @@
-// Payment provider account configuration persistence.
+use super::repository::*;
+
+use chaos_domain::{
+    store::StoreId,
+    stripe::{StripeAccount, StripeAccountId},
+};
+use uuid::Uuid;
+
+use crate::{
+    ApplicationError, Page,
+    contracts::{StripeAccountConfiguration, StripeAccountDetail},
+    error::database_error,
+    store::StoreActor,
+};
 
 impl PostgresStripeRepository {
     pub(crate) async fn list(
@@ -7,11 +20,12 @@ impl PostgresStripeRepository {
         store_id: StoreId,
         after: Option<Uuid>,
         limit: u16,
-    ) -> Result<StripeAccountPage, ApplicationError> {
+    ) -> Result<Page<StripeAccountDetail>, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         let rows = sqlx::query_as::<_, ProviderAccountRow>(
             "SELECT id, display_name, \
-                    credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
+                    credential_secret_reference IS NOT NULL \
+                        AND webhook_secret_reference IS NOT NULL AS credentials_configured, \
              created_at, updated_at \
              FROM chaos_integration.provider_accounts \
              WHERE store_id = $1 AND capability = 'payment' AND provider = 'stripe' \
@@ -31,7 +45,7 @@ impl PostgresStripeRepository {
             .map(stripe_account_detail)
             .collect::<Result<Vec<_>, _>>()?;
         transaction.commit().await.map_err(database_error)?;
-        Ok(StripeAccountPage { items, has_more })
+        Ok(Page { items, has_more })
     }
 
     pub(crate) async fn get(
@@ -94,11 +108,7 @@ impl PostgresStripeRepository {
         .bind(store_id.as_uuid())
         .bind(account.id().as_uuid())
         .bind(account.display_name())
-        .bind(
-            configuration
-                .credential_secret_reference
-                .expose_reference(),
-        )
+        .bind(configuration.credential_secret_reference.expose_reference())
         .bind(configuration.webhook_secret_reference.expose_reference())
         .execute(&mut *transaction)
         .await

@@ -7,13 +7,12 @@ use chaos_domain::{
 use time::OffsetDateTime;
 
 use crate::{
-    ApplicationError,
+    ApplicationError, Page,
     adapters::postgres::PostgresCollectionRepository,
     contracts::{
         AdminActor, CollectionDetail, CollectionPublicationRecord, CreateCollectionRecord,
         MachineActor, StorefrontCollectionItem,
     },
-    store::Page,
 };
 
 pub struct CreateCollectionInput {

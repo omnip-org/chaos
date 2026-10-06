@@ -12,7 +12,6 @@ use crate::http::{
 
 use super::attribution::{SessionAttributionRequest, shopper_session_context};
 
-#[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/shopper/sessions", post(create_session))
@@ -31,8 +30,6 @@ struct ShopperSessionResponse {
     shopper_id: Uuid,
     shopper_token: String,
 }
-
-// ===== POST /shopper/sessions =====
 
 async fn create_session(
     State(state): State<ApiState>,
@@ -55,23 +52,16 @@ async fn create_session(
     .private())
 }
 
-// ===== POST /shopper/sessions/touch =====
-
-/// Refreshes `shoppers.attribution.last_seen` with the caller's current
-/// journey UTM, for a returning visitor who came back through a different
-/// campaign. Requires a shopper token; `first_seen` is never touched, and
-/// an attribution body with no UTM is a server-side no-op. Returns
-/// `{ "data": null }` with `200`.
 async fn touch_session(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    ShopperContext(actor): ShopperContext,
+    ShopperContext(shopper): ShopperContext,
     ApiJson(request): ApiJson<ShopperSessionRequest>,
 ) -> Result<ApiResponse<()>, ApiError> {
     state
         .storefront_sales
-        .refresh_shopper_seen(
-            &actor,
+        .touch_shopper(
+            &shopper,
             shopper_session_context(request.attribution.as_ref(), &headers),
         )
         .await?;

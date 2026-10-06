@@ -10,3 +10,12 @@ export function fnv1a32(input: string, seed = 2_166_136_261): number {
   }
   return hash >>> 0;
 }
+
+export function scopedStorageKey(
+  prefix: string,
+  baseUrl: string,
+  publishableKey: string,
+): string {
+  const hash = fnv1a32(`${baseUrl}\0${publishableKey}`);
+  return `${prefix}.${hash.toString(36)}`;
+}

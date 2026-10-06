@@ -1,7 +1,7 @@
 //! Storefront order search and shopper-owned order details.
 
 use axum::{Router, extract::State, http::header, response::IntoResponse, routing::get};
-use chaos_core::contracts::{OrderDetail, OrderFulfillmentItem, OrderLineItem, ShopperOrderDetail};
+use chaos_core::contracts::{OrderDetail, OrderFulfillmentItem, OrderLineItem};
 use chaos_domain::sales::OrderId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -13,14 +13,11 @@ use crate::http::{
 
 use super::wire::{FulfillmentStatus, OrderPaymentStatus, OrderStatus};
 
-#[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/orders/search", get(lookup_order))
         .route("/orders/{order_id}/details", get(get_own_order))
 }
-
-// ===== request contracts =====
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,8 +30,6 @@ struct OrderSearchQuery {
 struct OrderPath {
     order_id: Uuid,
 }
-
-// ===== response contracts =====
 
 #[derive(Serialize)]
 struct OrderLineResponse {
@@ -179,9 +174,8 @@ struct OwnOrderResponse {
     shipping_country_code: Option<String>,
 }
 
-impl From<ShopperOrderDetail> for OwnOrderResponse {
-    fn from(order: ShopperOrderDetail) -> Self {
-        let detail = order.detail;
+impl From<OrderDetail> for OwnOrderResponse {
+    fn from(detail: OrderDetail) -> Self {
         let contact_email = detail.identity.contact().email().map(str::to_owned);
         let contact_phone = detail.identity.contact().phone().map(str::to_owned);
         let billing_address = detail.identity.billing_address();
@@ -238,8 +232,6 @@ impl From<ShopperOrderDetail> for OwnOrderResponse {
     }
 }
 
-// ===== GET /orders/search =====
-
 async fn lookup_order(
     State(state): State<ApiState>,
     PublishableChannel(actor): PublishableChannel,
@@ -255,8 +247,6 @@ async fn lookup_order(
     ))
 }
 
-// ===== GET /orders/{order_id}/details =====
-
 async fn get_own_order(
     State(state): State<ApiState>,
     ShopperContext(shopper): ShopperContext,
@@ -271,7 +261,7 @@ async fn get_own_order(
 
 #[cfg(test)]
 mod tests {
-    use chaos_core::contracts::{OrderDetail, ShopperOrderContext};
+    use chaos_core::contracts::OrderDetail;
     use chaos_domain::{
         CurrencyCode,
         fulfillment::FulfillmentStatus as DomainFulfillmentStatus,
@@ -290,44 +280,35 @@ mod tests {
     #[test]
     fn own_order_serializes_validated_statuses_without_leaking_internal_fields() {
         let order_id = Uuid::from_u128(1);
-        let response = OwnOrderResponse::from(ShopperOrderDetail {
-            context: ShopperOrderContext {
-                store_id: Uuid::from_u128(2),
-                channel_id: Uuid::from_u128(3),
-                cart_id: Uuid::from_u128(4),
-                payment_provider_account_id: Uuid::from_u128(5),
-                payment_failure_code: None,
-            },
-            detail: OrderDetail {
-                id: OrderId::from_uuid(order_id),
-                order_number: OrderNumber::parse("W-00000000").unwrap(),
-                shopper_id: ShopperId::from_uuid(Uuid::from_u128(6)),
-                price_list_id: PriceListId::from_uuid(Uuid::from_u128(7)),
-                currency: CurrencyCode::parse("USD").unwrap(),
-                status: DomainOrderStatus::Confirmed,
-                payment_status: DomainOrderPaymentStatus::Paid,
-                fulfillment_status: DomainFulfillmentStatus::Pending,
-                payment_provider: None,
-                payment_provider_reference_id: None,
-                identity: OrderIdentity::new(
-                    OrderContact::new(None::<String>, None).unwrap(),
-                    None,
-                    None,
-                ),
-                subtotal_amount_minor: 1_000,
-                discount_amount_minor: 100,
-                tax_amount_minor: 80,
-                shipping_amount_minor: 20,
-                total_amount_minor: 1_000,
-                amounts_finalized_at: None,
-                refunded_amount_minor: 0,
-                lines: Vec::new(),
-                payment_attempt: None,
-                refunds: Vec::new(),
-                fulfillments: Vec::new(),
-                created_at: OffsetDateTime::UNIX_EPOCH,
-                updated_at: OffsetDateTime::UNIX_EPOCH,
-            },
+        let response = OwnOrderResponse::from(OrderDetail {
+            id: OrderId::from_uuid(order_id),
+            order_number: OrderNumber::parse("W-00000000").unwrap(),
+            shopper_id: ShopperId::from_uuid(Uuid::from_u128(6)),
+            price_list_id: PriceListId::from_uuid(Uuid::from_u128(7)),
+            currency: CurrencyCode::parse("USD").unwrap(),
+            status: DomainOrderStatus::Confirmed,
+            payment_status: DomainOrderPaymentStatus::Paid,
+            fulfillment_status: DomainFulfillmentStatus::Pending,
+            payment_provider: None,
+            payment_provider_reference_id: None,
+            identity: OrderIdentity::new(
+                OrderContact::new(None::<String>, None).unwrap(),
+                None,
+                None,
+            ),
+            subtotal_amount_minor: 1_000,
+            discount_amount_minor: 100,
+            tax_amount_minor: 80,
+            shipping_amount_minor: 20,
+            total_amount_minor: 1_000,
+            amounts_finalized_at: None,
+            refunded_amount_minor: 0,
+            lines: Vec::new(),
+            payment_attempt: None,
+            refunds: Vec::new(),
+            fulfillments: Vec::new(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
         });
 
         let json = serde_json::to_value(response).unwrap();

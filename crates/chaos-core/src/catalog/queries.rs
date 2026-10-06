@@ -6,15 +6,10 @@ use chaos_domain::{
 };
 
 use crate::{
-    ApplicationError,
+    ApplicationError, Page,
     adapters::postgres::PostgresCatalogReadRepository,
     contracts::{AdminActor, CatalogProductDetail, CatalogProductListItem},
 };
-
-pub struct ProductPage {
-    pub items: Vec<CatalogProductListItem>,
-    pub has_more: bool,
-}
 
 pub struct CatalogQueries {
     repository: Arc<PostgresCatalogReadRepository>,
@@ -33,7 +28,7 @@ impl CatalogQueries {
         limit: u16,
         query: Option<&str>,
         status: Option<ProductStatus>,
-    ) -> Result<ProductPage, ApplicationError> {
+    ) -> Result<Page<CatalogProductListItem>, ApplicationError> {
         let limit = limit.clamp(1, 100);
         let query = query.filter(|value| !value.trim().is_empty());
         let mut items = self
@@ -48,7 +43,7 @@ impl CatalogQueries {
         if has_more {
             items.pop();
         }
-        Ok(ProductPage { items, has_more })
+        Ok(Page { items, has_more })
     }
 
     pub async fn get_product(

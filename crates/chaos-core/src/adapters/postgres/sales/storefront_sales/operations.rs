@@ -1,4 +1,37 @@
-// Cart-to-Order commands and the Stripe Embedded Checkout handoff.
+use chaos_domain::{
+    catalog::{ProductId, ProductVariantId},
+    pricing::{Money, PriceListId},
+    sales::{Cart, CartId, CartLine, CartStatus, OrderId, OrderNumber, ShopperId},
+    store::SalesChannelId,
+};
+use serde_json::Value;
+use sqlx::{Postgres, Transaction};
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+use crate::{
+    ApplicationError,
+    contracts::{CartDetail, MachineActor, OrderDetail, ShopperActor},
+    error::database_error,
+    sales::CheckoutRequest,
+};
+
+use super::{
+    cart::{
+        bump_cart, insert_or_replace_line, load_cart, load_cart_media, lock_active_cart, lock_cart,
+        refresh_cart_lines, require_price_list_active, resolve_variant, select_price_list,
+    },
+    repository::*,
+};
+
+#[derive(sqlx::FromRow)]
+struct ExistingCheckoutRow {
+    order_id: Uuid,
+    order_status: String,
+    idempotency_key: Option<Uuid>,
+    payment_status: String,
+    request_fingerprint: Option<Vec<u8>>,
+}
 
 async fn reserve_inventory_for_cart(
     transaction: &mut Transaction<'static, Postgres>,
@@ -35,24 +68,20 @@ impl PostgresStorefrontSalesRepository {
         require_channel(actor)?;
         let shopper_id = ShopperId::new();
         let mut transaction = self.begin(actor).await?;
-        sqlx::query("INSERT INTO chaos_commerce.shoppers (id, store_id, attribution) VALUES ($1, $2, $3)")
-            .bind(shopper_id.as_uuid())
-            .bind(actor.store_id.as_uuid())
-            .bind(attribution)
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
+        sqlx::query(
+            "INSERT INTO chaos_commerce.shoppers (id, store_id, attribution) VALUES ($1, $2, $3)",
+        )
+        .bind(shopper_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(attribution)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
         transaction.commit().await.map_err(database_error)?;
         Ok(shopper_id)
     }
 
-    /// Overwrites `attribution.last_seen` for an existing shopper without
-    /// touching `first_seen` — the returning-visitor "last touch" refresh.
-    /// `snapshot` is a `shopper_seen_snapshot` object (never `None`: the
-    /// caller drops empty refreshes before reaching here). `COALESCE` seeds a
-    /// missing `attribution` (a first session that carried nothing) so the
-    /// `last_seen` write still lands. RLS `store_isolation` plus the explicit
-    /// `id` predicate scope it to this shopper.
+    /// Replaces `last_seen` while preserving the original `first_seen` snapshot.
     pub(crate) async fn refresh_shopper_last_seen(
         &self,
         shopper: &ShopperActor,
@@ -85,9 +114,7 @@ impl PostgresStorefrontSalesRepository {
         let channel_id = require_channel(actor)?;
         let mut transaction = self.begin_shopper(shopper).await?;
 
-        // Cart creation is an idempotent session operation. The partial
-        // unique index is the database guard; this read also makes repeated
-        // requests return the canonical active Cart without minting another.
+        // Repeated creates return the active Cart guarded by the partial unique index.
         if let Some(cart_id) = sqlx::query_scalar::<_, Uuid>(
             "SELECT id FROM chaos_commerce.carts \
              WHERE store_id = $1 AND channel_id = $2 AND shopper_id = $3 \
@@ -172,9 +199,7 @@ impl PostgresStorefrontSalesRepository {
         .await
         .map_err(database_error)?;
         let detail = match cart_id {
-            Some(cart_id) => {
-                load_cart(&mut transaction, actor, CartId::from_uuid(cart_id)).await?
-            }
+            Some(cart_id) => load_cart(&mut transaction, actor, CartId::from_uuid(cart_id)).await?,
             None => None,
         };
         transaction.commit().await.map_err(database_error)?;
@@ -185,11 +210,13 @@ impl PostgresStorefrontSalesRepository {
         &self,
         shopper: &ShopperActor,
         cart_id: CartId,
-    ) -> Result<Option<CartDetail>, ApplicationError> {
+    ) -> Result<CartDetail, ApplicationError> {
         let actor = &shopper.machine;
         let mut transaction = self.begin_shopper(shopper).await?;
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
-        let detail = load_cart(&mut transaction, actor, cart_id).await?;
+        let detail = load_cart(&mut transaction, actor, cart_id)
+            .await?
+            .ok_or_else(|| cart_not_found(cart_id))?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
     }
@@ -205,17 +232,17 @@ impl PostgresStorefrontSalesRepository {
         let mut transaction = self.begin_shopper(shopper).await?;
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
         let header = lock_active_cart(&mut transaction, actor, cart_id).await?;
-        let currency = parse_currency(&header.2)?;
+        let currency = parse_currency(&header.currency)?;
         let row = resolve_variant(
             &mut transaction,
             actor,
-            SalesChannelId::from_uuid(header.0),
-            PriceListId::from_uuid(header.1),
+            SalesChannelId::from_uuid(header.channel_id),
+            PriceListId::from_uuid(header.price_list_id),
             product_variant_id,
         )
         .await?
         .ok_or_else(|| variant_unavailable(product_variant_id))?;
-        if row.4 {
+        if row.track_inventory {
             let available: Option<i64> = sqlx::query_scalar(
                 "SELECT on_hand_quantity - reserved_quantity \
                  FROM chaos_commerce.product_variants \
@@ -231,14 +258,14 @@ impl PostgresStorefrontSalesRepository {
             }
         }
         let line = CartLine::new(
-            ProductId::from_uuid(row.0),
+            ProductId::from_uuid(row.product_id),
             product_variant_id,
-            row.1,
-            row.2,
-            row.3,
-            row.4,
+            row.product_title,
+            row.variant_title,
+            row.sku,
+            row.track_inventory,
             quantity,
-            Money::new(row.5, currency),
+            Money::new(row.amount_minor, currency),
         )?;
         insert_or_replace_line(&mut transaction, actor, cart_id, &line).await?;
         bump_cart(&mut transaction, actor, cart_id).await?;
@@ -259,7 +286,6 @@ impl PostgresStorefrontSalesRepository {
         let actor = &shopper.machine;
         let mut transaction = self.begin_shopper(shopper).await?;
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
-        // Serializes against concurrent line mutations and rejects a non-active Cart.
         lock_active_cart(&mut transaction, actor, cart_id).await?;
         sqlx::query(
             "DELETE FROM chaos_commerce.cart_lines WHERE store_id = $1 \
@@ -279,18 +305,18 @@ impl PostgresStorefrontSalesRepository {
         Ok(detail)
     }
 
-    pub(crate) async fn create_stripe_checkout(
+    pub(crate) async fn create_checkout(
         &self,
         shopper: &ShopperActor,
         cart_id: CartId,
-        request: StripeCheckoutRequest,
-    ) -> Result<CheckoutDraft, ApplicationError> {
+        request: CheckoutRequest,
+    ) -> Result<OrderId, ApplicationError> {
         let actor = &shopper.machine;
         let channel_id = require_channel(actor)?;
         let mut transaction = self.begin_shopper(shopper).await?;
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
 
-        if let Some(draft) = existing_checkout_draft(
+        if let Some(order_id) = existing_checkout_order_id(
             &mut transaction,
             actor,
             shopper.shopper_id,
@@ -300,7 +326,7 @@ impl PostgresStorefrontSalesRepository {
         .await?
         {
             transaction.commit().await.map_err(database_error)?;
-            return Ok(draft);
+            return Ok(order_id);
         }
 
         // The Cart row is the serialization boundary for checkout creation.
@@ -308,8 +334,8 @@ impl PostgresStorefrontSalesRepository {
         // released, so the second request must re-read it instead of creating
         // another Order or inventory reservation.
         let header = lock_cart(&mut transaction, actor, cart_id).await?;
-        if header.3 != "active" {
-            if let Some(draft) = existing_checkout_draft(
+        if header.status != "active" {
+            if let Some(order_id) = existing_checkout_order_id(
                 &mut transaction,
                 actor,
                 shopper.shopper_id,
@@ -319,19 +345,19 @@ impl PostgresStorefrontSalesRepository {
             .await?
             {
                 transaction.commit().await.map_err(database_error)?;
-                return Ok(draft);
+                return Ok(order_id);
             }
             return Err(cart_not_active());
         }
-        if header.0 != channel_id.as_uuid() {
+        if header.channel_id != channel_id.as_uuid() {
             return Err(cart_not_found(cart_id));
         }
-        let currency = parse_currency(&header.2)?;
+        let currency = parse_currency(&header.currency)?;
 
         require_price_list_active(
             &mut transaction,
             actor,
-            PriceListId::from_uuid(header.1),
+            PriceListId::from_uuid(header.price_list_id),
             currency,
             request.now,
         )
@@ -341,7 +367,7 @@ impl PostgresStorefrontSalesRepository {
             actor,
             cart_id,
             channel_id,
-            PriceListId::from_uuid(header.1),
+            PriceListId::from_uuid(header.price_list_id),
             currency,
         )
         .await?;
@@ -363,7 +389,7 @@ impl PostgresStorefrontSalesRepository {
             cart_id,
             actor.store_id,
             channel_id,
-            PriceListId::from_uuid(header.1),
+            PriceListId::from_uuid(header.price_list_id),
             currency,
             CartStatus::Active,
             lines.clone(),
@@ -388,12 +414,8 @@ impl PostgresStorefrontSalesRepository {
         .await
         .map_err(database_error)?
         .ok_or_else(payment_provider_unavailable)?;
-        // The checkout transaction owns the complete handoff: freeze the Cart,
-        // reserve stock, create the pending Order, and persist its immutable
-        // line snapshot. Any later failure rolls the whole handoff back. The
-        // client idempotency key and request fingerprint are stamped onto the
-        // Cart here (one checkout per Cart); a reused key from another Cart
-        // trips `carts_checkout_idempotency_key_key`.
+        // Freeze the Cart and record idempotency before reserving stock and
+        // creating the Order; the transaction rolls the complete handoff back.
         let cart_locked = sqlx::query(
             "UPDATE chaos_commerce.carts SET status = 'locked'::chaos_commerce.cart_status, \
                     updated_at = $3, attribution = $4, \
@@ -414,11 +436,7 @@ impl PostgresStorefrontSalesRepository {
             return Err(cart_not_active());
         }
         reserve_inventory_for_cart(&mut transaction, actor, &cart).await?;
-        // `order_number` is 8 random Crockford chars (~2^40). `ON CONFLICT
-        // DO NOTHING` on the per-store number leaves rows_affected at 0 on the
-        // near-impossible collision without aborting the checkout transaction,
-        // so we regenerate and retry a handful of times. The one-order-per-cart
-        // unique index still raises.
+        // Retry random Order-number collisions without aborting the transaction.
         let mut order_number = generate_order_number()?;
         let mut attempt = 0;
         let order_created = loop {
@@ -461,11 +479,8 @@ impl PostgresStorefrontSalesRepository {
         let order_id = requested_order_id;
         insert_order_lines(&mut transaction, actor, order_id, &cart, request.now).await?;
 
-        let draft = CheckoutDraft {
-            order_id,
-        };
         transaction.commit().await.map_err(database_error)?;
-        Ok(draft)
+        Ok(order_id)
     }
 
     /// Resolves an Order from its printed number plus the contact email on the
@@ -516,47 +531,43 @@ impl PostgresStorefrontSalesRepository {
         &self,
         shopper: &ShopperActor,
         order_id: OrderId,
-    ) -> Result<Option<ShopperOrderDetail>, ApplicationError> {
+    ) -> Result<Option<OrderDetail>, ApplicationError> {
         let actor = &shopper.machine;
         let mut transaction = self.begin(actor).await?;
-        let context = sqlx::query_as::<_, ShopperOrderContext>(
-            "SELECT order_row.store_id, order_row.channel_id, order_row.cart_id, \
-                    order_row.payment_provider_account_id, order_row.payment_failure_code \
-             FROM chaos_commerce.orders AS order_row \
+        let owned: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM chaos_commerce.orders AS order_row \
              WHERE order_row.store_id = $1 AND order_row.channel_id = $2 \
-               AND order_row.shopper_id = $3 AND order_row.id = $4",
+               AND order_row.shopper_id = $3 AND order_row.id = $4)",
         )
         .bind(actor.store_id.as_uuid())
         .bind(actor.channel_id.map(SalesChannelId::as_uuid))
         .bind(shopper.shopper_id.as_uuid())
         .bind(order_id.as_uuid())
-        .fetch_optional(&mut *transaction)
+        .fetch_one(&mut *transaction)
         .await
         .map_err(database_error)?;
-        let order = match context {
-            Some(context) => load_order(&mut transaction, actor, order_id)
-                .await?
-                .map(|detail| ShopperOrderDetail { context, detail }),
-            None => None,
+        let order = if owned {
+            load_order(&mut transaction, actor, order_id).await?
+        } else {
+            None
         };
         transaction.commit().await.map_err(database_error)?;
         Ok(order)
     }
 }
 
-async fn existing_checkout_draft(
+async fn existing_checkout_order_id(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     shopper_id: ShopperId,
     cart_id: CartId,
-    request: &StripeCheckoutRequest,
-) -> Result<Option<CheckoutDraft>, ApplicationError> {
-    let row = sqlx::query_as::<_, (Uuid, String, Option<Uuid>, String, Option<Vec<u8>>)>(
-        // Checkout idempotency now lives on the Cart (one Order per Cart); the
-        // Order still carries id/status/currency/subtotal for the draft.
-        "SELECT sales_order.id, sales_order.status::text, \
-                cart.checkout_idempotency_key, sales_order.payment_status::text, \
-                cart.checkout_request_fingerprint \
+    request: &CheckoutRequest,
+) -> Result<Option<OrderId>, ApplicationError> {
+    let row = sqlx::query_as::<_, ExistingCheckoutRow>(
+        "SELECT sales_order.id AS order_id, sales_order.status::text AS order_status, \
+                cart.checkout_idempotency_key AS idempotency_key, \
+                sales_order.payment_status::text AS payment_status, \
+                cart.checkout_request_fingerprint AS request_fingerprint \
          FROM chaos_commerce.orders AS sales_order \
          INNER JOIN chaos_commerce.carts AS cart \
            ON cart.store_id = sales_order.store_id AND cart.id = sales_order.cart_id \
@@ -574,21 +585,19 @@ async fn existing_checkout_draft(
         return Ok(None);
     };
 
-    if row.2 != Some(request.idempotency_key) {
+    if row.idempotency_key != Some(request.idempotency_key) {
         return Err(checkout_cart_already_started());
     }
-    if let Some(stored_fingerprint) = row.4 {
+    if let Some(stored_fingerprint) = row.request_fingerprint {
         let requested_fingerprint = checkout_request_fingerprint(actor, request);
         if stored_fingerprint.as_slice() != requested_fingerprint.as_slice() {
             return Err(idempotency_key_reused());
         }
     }
-    if row.1 != "pending" || row.3 != "pending" {
+    if row.order_status != "pending" || row.payment_status != "pending" {
         return Err(checkout_cart_already_started());
     }
-    Ok(Some(CheckoutDraft {
-        order_id: OrderId::from_uuid(row.0),
-    }))
+    Ok(Some(OrderId::from_uuid(row.order_id)))
 }
 
 async fn insert_order_lines(
@@ -598,15 +607,15 @@ async fn insert_order_lines(
     cart: &Cart,
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
-    // Snapshot the presentation image the shopper saw for each line. Resolution
-    // follows the same exact Variant -> Option Value -> Product fallback as the
-    // Cart read; the URL is frozen here because Order lines are immutable history
-    // and the Worker builds the Stripe session from this table alone.
+    // Freeze the Cart's resolved image URL into the immutable Order line.
     let media = load_cart_media(transaction, actor, cart.lines()).await?;
     for (position, line) in cart.lines().iter().enumerate() {
         let subtotal = line.subtotal()?;
         let image_url = media
-            .get(&(line.product_id().as_uuid(), line.product_variant_id().as_uuid()))
+            .get(&(
+                line.product_id().as_uuid(),
+                line.product_variant_id().as_uuid(),
+            ))
             .and_then(|assets| {
                 assets
                     .iter()

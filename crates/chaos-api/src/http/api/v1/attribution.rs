@@ -52,16 +52,16 @@ struct MetaAttributionRequest {
 pub(super) fn checkout_attribution_input(
     attribution: Option<&CheckoutAttributionRequest>,
     headers: &HeaderMap,
-) -> Option<CheckoutAttributionInput> {
+) -> CheckoutAttributionInput {
     let meta = attribution.and_then(|value| value.meta.as_ref());
-    Some(CheckoutAttributionInput {
+    CheckoutAttributionInput {
         meta_fbc: meta.and_then(|value| value.fbc.clone()),
         meta_fbp: meta.and_then(|value| value.fbp.clone()),
         client_ip_address: client_ip_address(headers),
         client_user_agent: client_user_agent(headers),
         source_url: attribution.and_then(|value| value.source_url.clone()),
         utm: utm_tags(attribution.and_then(|value| value.utm.as_ref())),
-    })
+    }
 }
 
 pub(super) fn shopper_session_context(

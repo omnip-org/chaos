@@ -6,95 +6,36 @@ use chaos_domain::{
     integration::PaymentProvider,
     sales::{CartId, OrderId},
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use time::OffsetDateTime;
-use url::Url;
+use uuid::Uuid;
 
 use crate::{
     ApplicationError,
     adapters::postgres::PostgresStorefrontSalesRepository,
-    contracts::{CartDetail, CheckoutDraft, MachineActor, ShopperActor},
+    contracts::{CartDetail, MachineActor, OrderDetail, ShopperActor},
 };
 
+mod attribution;
 mod order_management;
+pub use attribution::{CheckoutAttributionInput, ShopperSessionContext, UtmTags};
+use attribution::{checkout_attribution_value, shopper_seen_snapshot, shopper_session_attribution};
 pub use order_management::{ChangeOrderStatusInput, OrderManagement};
 
-pub struct CreateCartInput {
-    pub actor: ShopperActor,
-}
-
-/// Request-side context captured when a shopper session is first issued and
-/// stored on `chaos_commerce.shoppers.attribution`, so later attribution and support
-/// lookups can see where the visitor came from. All fields are best-effort:
-/// the browser controls most of them and any of them can be absent.
-#[derive(Default)]
-pub struct ShopperSessionContext {
-    pub user_agent: Option<String>,
-    pub ip_address: Option<String>,
-    pub utm: UtmTags,
-}
-
-/// Standard `utm_*` campaign tags, minus the redundant `utm_` prefix.
-#[derive(Default)]
-pub struct UtmTags {
-    pub source: Option<String>,
-    pub medium: Option<String>,
-    pub campaign: Option<String>,
-    pub term: Option<String>,
-    pub content: Option<String>,
-}
-
-pub struct SetCartLineInput {
-    pub actor: ShopperActor,
-    pub cart_id: CartId,
-    pub product_variant_id: ProductVariantId,
-    pub quantity: u32,
-}
-
-pub struct RemoveCartLineInput {
-    pub actor: ShopperActor,
-    pub cart_id: CartId,
-    pub product_variant_id: ProductVariantId,
-}
-
-pub struct CreateStripeCheckoutInput {
-    pub actor: ShopperActor,
+pub struct CreateCheckoutInput {
+    pub shopper: ShopperActor,
     pub cart_id: CartId,
     pub return_url: String,
     pub payment_provider: PaymentProvider,
     pub now: OffsetDateTime,
-    pub idempotency_key: uuid::Uuid,
-    /// Ad-platform attribution the browser read off its own cookies at
-    /// checkout time (e.g. Meta's `fbc`/`fbp`). Stored on the Cart so the
-    /// payment webhook can attach it to the server-side Purchase event later
-    /// without correlating a separate browser-recorded event.
-    pub attribution: Option<CheckoutAttributionInput>,
+    pub idempotency_key: Uuid,
+    pub attribution: CheckoutAttributionInput,
 }
 
-/// Namespaced by ad platform so a future platform is an additive field, not a
-/// schema or contract change. Only Meta is wired up today: it's the only
-/// platform Chaos sends a server-side conversion event for.
-#[derive(Default)]
-pub struct CheckoutAttributionInput {
-    pub meta_fbc: Option<String>,
-    pub meta_fbp: Option<String>,
-    /// Captured by the API layer from the checkout request itself (not
-    /// trusted from the client) — see `carts.rs`'s handler.
-    pub client_ip_address: Option<String>,
-    pub client_user_agent: Option<String>,
-    /// The checkout page's own URL, read by the browser from
-    /// `window.location`. Not platform-specific, so it sits alongside
-    /// `meta_*` rather than inside a platform namespace.
-    pub source_url: Option<String>,
-    /// Campaign tags the browser read off the checkout page URL. Like
-    /// `source_url`, not tied to any one ad platform.
-    pub utm: UtmTags,
-}
-
-pub(crate) struct StripeCheckoutRequest {
+pub(crate) struct CheckoutRequest {
     pub payment_provider: PaymentProvider,
     pub now: OffsetDateTime,
-    pub idempotency_key: uuid::Uuid,
+    pub idempotency_key: Uuid,
     pub return_url: String,
     pub attribution: Option<Value>,
 }
@@ -119,94 +60,83 @@ impl StorefrontSales {
             .await
     }
 
-    /// Refreshes `attribution.last_seen` for a shopper whose session already
-    /// exists — a returning visitor who arrived through a different campaign.
-    /// `first_seen` is never touched. A context that sanitizes down to nothing
-    /// (no UTM, no UA, no IP) is a no-op: last-touch enrichment must never
-    /// blank an existing `last_seen`.
-    pub async fn refresh_shopper_seen(
+    pub async fn touch_shopper(
         &self,
-        actor: &ShopperActor,
+        shopper: &ShopperActor,
         context: ShopperSessionContext,
     ) -> Result<(), ApplicationError> {
-        actor.machine.require_sales_channel()?;
+        shopper.machine.require_sales_channel()?;
         let Some(snapshot) = shopper_seen_snapshot(context) else {
             return Ok(());
         };
         self.repository
-            .refresh_shopper_last_seen(actor, snapshot)
+            .refresh_shopper_last_seen(shopper, snapshot)
             .await
     }
 
-    pub async fn create_cart(
-        &self,
-        input: CreateCartInput,
-    ) -> Result<CartDetail, ApplicationError> {
-        input.actor.machine.require_sales_channel()?;
-        self.repository.create_cart(&input.actor).await
+    pub async fn create_cart(&self, shopper: ShopperActor) -> Result<CartDetail, ApplicationError> {
+        shopper.machine.require_sales_channel()?;
+        self.repository.create_cart(&shopper).await
     }
 
     pub async fn get_active_cart(
         &self,
-        actor: &ShopperActor,
+        shopper: &ShopperActor,
     ) -> Result<CartDetail, ApplicationError> {
-        actor.machine.require_sales_channel()?;
+        shopper.machine.require_sales_channel()?;
         self.repository
-            .get_active_cart(actor)
+            .get_active_cart(shopper)
             .await?
             .ok_or_else(active_cart_not_found)
     }
 
     pub async fn get_cart(
         &self,
-        actor: &ShopperActor,
+        shopper: &ShopperActor,
         cart_id: CartId,
     ) -> Result<CartDetail, ApplicationError> {
-        actor.machine.require_sales_channel()?;
-        self.repository
-            .get_cart(actor, cart_id)
-            .await?
-            .ok_or_else(|| cart_not_found(cart_id))
+        shopper.machine.require_sales_channel()?;
+        self.repository.get_cart(shopper, cart_id).await
     }
 
     pub async fn set_cart_line(
         &self,
-        input: SetCartLineInput,
+        shopper: ShopperActor,
+        cart_id: CartId,
+        product_variant_id: ProductVariantId,
+        quantity: u32,
     ) -> Result<CartDetail, ApplicationError> {
-        input.actor.machine.require_sales_channel()?;
-        if !(1..=999).contains(&input.quantity) {
+        shopper.machine.require_sales_channel()?;
+        if !(1..=999).contains(&quantity) {
             return Err(validation("quantity", "must be between 1 and 999"));
         }
         self.repository
-            .set_cart_line(
-                &input.actor,
-                input.cart_id,
-                input.product_variant_id,
-                input.quantity,
-            )
+            .set_cart_line(&shopper, cart_id, product_variant_id, quantity)
             .await
     }
 
     pub async fn remove_cart_line(
         &self,
-        input: RemoveCartLineInput,
+        shopper: ShopperActor,
+        cart_id: CartId,
+        product_variant_id: ProductVariantId,
     ) -> Result<CartDetail, ApplicationError> {
-        input.actor.machine.require_sales_channel()?;
+        shopper.machine.require_sales_channel()?;
         self.repository
-            .remove_cart_line(&input.actor, input.cart_id, input.product_variant_id)
+            .remove_cart_line(&shopper, cart_id, product_variant_id)
             .await
     }
 
-    pub async fn create_stripe_checkout(
+    pub async fn create_checkout(
         &self,
-        input: CreateStripeCheckoutInput,
-    ) -> Result<CheckoutDraft, ApplicationError> {
-        input.actor.machine.require_sales_channel()?;
+        input: CreateCheckoutInput,
+    ) -> Result<OrderId, ApplicationError> {
+        input.shopper.machine.require_sales_channel()?;
         self.repository
-            .create_stripe_checkout(
-                &input.actor,
+            .create_checkout(
+                &input.shopper,
                 input.cart_id,
-                StripeCheckoutRequest {
+                CheckoutRequest {
                     payment_provider: input.payment_provider,
                     now: input.now,
                     idempotency_key: input.idempotency_key,
@@ -217,16 +147,12 @@ impl StorefrontSales {
             .await
     }
 
-    /// Guest Order lookup by the printed Order number and the contact email on
-    /// the Order. Both must match within the caller's Store and Sales Channel;
-    /// every miss — unknown number, wrong email, malformed input — returns the
-    /// same `NotFound` so the endpoint is not an Order-number oracle.
     pub async fn lookup_order(
         &self,
         actor: &MachineActor,
         order_number: &str,
         email: &str,
-    ) -> Result<crate::contracts::OrderDetail, ApplicationError> {
+    ) -> Result<OrderDetail, ApplicationError> {
         actor.require_sales_channel()?;
         self.repository
             .lookup_order(actor, order_number, email)
@@ -241,7 +167,7 @@ impl StorefrontSales {
         &self,
         shopper: &ShopperActor,
         order_id: OrderId,
-    ) -> Result<crate::contracts::ShopperOrderDetail, ApplicationError> {
+    ) -> Result<OrderDetail, ApplicationError> {
         shopper.machine.require_sales_channel()?;
         self.repository
             .get_shopper_order(shopper, order_id)
@@ -250,108 +176,6 @@ impl StorefrontSales {
                 resource: "order",
                 id: order_id.as_uuid().to_string(),
             })
-    }
-}
-
-/// Drop invalid or oversized attribution rather than fail checkout over it —
-/// this is enrichment for a later Meta CAPI call, not something a shopper's
-/// purchase should ever block on. Meta-owned identifiers remain opaque; this
-/// boundary only rejects unsafe strings and invalid source URLs, and sheds UTM
-/// enrichment before the Cart's JSONB size limit can be reached.
-const MAX_CHECKOUT_ATTRIBUTION_JSON_BYTES: usize = 3 * 1024;
-
-fn checkout_attribution_value(input: Option<CheckoutAttributionInput>) -> Option<Value> {
-    let input = input?;
-    let mut meta = serde_json::Map::new();
-    for (key, value) in [
-        ("fbc", input.meta_fbc),
-        ("fbp", input.meta_fbp),
-        ("client_ip_address", input.client_ip_address),
-        ("client_user_agent", input.client_user_agent),
-    ] {
-        if let Some(value) = sanitized_attribution_string(value) {
-            meta.insert(key.into(), Value::String(value));
-        }
-    }
-    let utm = utm_map(input.utm);
-    let mut attribution = serde_json::Map::new();
-    if let Some(source_url) = sanitized_source_url(input.source_url) {
-        attribution.insert("source_url".into(), Value::String(source_url));
-    }
-    if !utm.is_empty() {
-        attribution.insert("utm".into(), Value::Object(utm));
-    }
-    if !meta.is_empty() {
-        attribution.insert("meta".into(), Value::Object(meta));
-    }
-    if serde_json::to_vec(&attribution)
-        .is_ok_and(|value| value.len() > MAX_CHECKOUT_ATTRIBUTION_JSON_BYTES)
-    {
-        attribution.remove("utm");
-    }
-    (!attribution.is_empty()).then_some(Value::Object(attribution))
-}
-
-fn sanitized_attribution_string(value: Option<String>) -> Option<String> {
-    value.filter(|value| {
-        !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
-    })
-}
-
-fn sanitized_source_url(value: Option<String>) -> Option<String> {
-    let value = sanitized_attribution_string(value)?;
-    let url = Url::parse(&value).ok()?;
-    (matches!(url.scheme(), "http" | "https") && url.host_str().is_some()).then_some(value)
-}
-
-/// Shape the acquisition snapshot into `{ "first_seen": .., "last_seen": .. }`
-/// for `chaos_commerce.shoppers.attribution`. Both are identical at create; there is
-/// no per-visit refresh, so `last_seen` only diverges if a future touch path
-/// writes it.
-fn shopper_session_attribution(context: ShopperSessionContext) -> Option<Value> {
-    let snapshot = shopper_seen_snapshot(context)?;
-    Some(json!({ "first_seen": snapshot.clone(), "last_seen": snapshot }))
-}
-
-fn shopper_seen_snapshot(context: ShopperSessionContext) -> Option<Value> {
-    let mut snapshot = serde_json::Map::new();
-    for (key, value) in [
-        ("user_agent", context.user_agent),
-        ("ip", context.ip_address),
-    ] {
-        if let Some(value) = sanitized_attribution_string(value) {
-            snapshot.insert(key.into(), Value::String(value));
-        }
-    }
-    let utm = utm_map(context.utm);
-    if !utm.is_empty() {
-        snapshot.insert("utm".into(), Value::Object(utm));
-    }
-    (!snapshot.is_empty()).then_some(Value::Object(snapshot))
-}
-
-/// The `utm_*`-keyed subset of an attribution snapshot; empty when no tag
-/// survived sanitizing. Shared by checkout attribution and shopper sessions.
-fn utm_map(utm: UtmTags) -> serde_json::Map<String, Value> {
-    let mut map = serde_json::Map::new();
-    for (key, value) in [
-        ("utm_source", utm.source),
-        ("utm_medium", utm.medium),
-        ("utm_campaign", utm.campaign),
-        ("utm_term", utm.term),
-        ("utm_content", utm.content),
-    ] {
-        if let Some(value) = sanitized_attribution_string(value) {
-            map.insert(key.into(), Value::String(value));
-        }
-    }
-    map
-}
-
-fn cart_not_found(cart_id: CartId) -> ApplicationError {
-    ApplicationError::NotFound {
-        resource: "cart",
-        id: cart_id.as_uuid().to_string(),
     }
 }
 
@@ -368,100 +192,5 @@ fn validation(field: &'static str, reason: &'static str) -> ApplicationError {
             field,
             reason: reason.into(),
         }],
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn checkout_attribution_keeps_opaque_meta_ids_and_drops_invalid_source_url() {
-        let attribution = checkout_attribution_value(Some(CheckoutAttributionInput {
-            meta_fbc: Some("future-format-click-id".into()),
-            meta_fbp: Some("future-format-browser-id".into()),
-            source_url: Some("javascript:alert(1)".into()),
-            ..CheckoutAttributionInput::default()
-        }))
-        .expect("meta identifiers produce attribution");
-
-        assert_eq!(attribution["meta"]["fbc"], "future-format-click-id");
-        assert_eq!(attribution["meta"]["fbp"], "future-format-browser-id");
-        assert!(attribution.get("source_url").is_none());
-    }
-
-    #[test]
-    fn checkout_attribution_drops_utm_before_the_storage_limit() {
-        let long = "x".repeat(512);
-        let attribution = checkout_attribution_value(Some(CheckoutAttributionInput {
-            meta_fbc: Some(long.clone()),
-            meta_fbp: Some(long.clone()),
-            client_ip_address: Some("2001:db8::1".into()),
-            client_user_agent: Some(long.clone()),
-            source_url: Some(format!("https://shop.example/{}", "x".repeat(480))),
-            utm: UtmTags {
-                source: Some(long.clone()),
-                medium: Some(long.clone()),
-                campaign: Some(long.clone()),
-                term: Some(long.clone()),
-                content: Some(long),
-            },
-        }))
-        .expect("higher-priority attribution remains");
-
-        assert!(attribution.get("utm").is_none());
-        assert!(
-            serde_json::to_vec(&attribution).unwrap().len() <= MAX_CHECKOUT_ATTRIBUTION_JSON_BYTES
-        );
-        assert!(attribution["meta"].get("fbc").is_some());
-        assert!(attribution.get("source_url").is_some());
-    }
-
-    #[test]
-    fn shopper_session_attribution_records_first_and_last_seen_with_nested_utm() {
-        let context = ShopperSessionContext {
-            user_agent: Some("Mozilla/5.0".into()),
-            ip_address: Some("203.0.113.7".into()),
-            utm: UtmTags {
-                source: Some("newsletter".into()),
-                medium: Some("email".into()),
-                ..UtmTags::default()
-            },
-        };
-
-        let attribution = shopper_session_attribution(context).expect("some attribution");
-
-        let expected = json!({
-            "user_agent": "Mozilla/5.0",
-            "ip": "203.0.113.7",
-            "utm": {"utm_source": "newsletter", "utm_medium": "email"},
-        });
-        assert_eq!(attribution["first_seen"], expected);
-        assert_eq!(attribution["last_seen"], expected);
-    }
-
-    #[test]
-    fn shopper_session_attribution_is_none_when_nothing_was_captured() {
-        assert!(shopper_session_attribution(ShopperSessionContext::default()).is_none());
-    }
-
-    #[test]
-    fn last_seen_refresh_snapshot_is_none_without_utm_so_refresh_is_a_noop() {
-        // `refresh_shopper_seen` short-circuits on `None` and never issues the
-        // UPDATE — a bare last-touch request must not blank an existing
-        // `last_seen`. UA/IP alone still produce a snapshot.
-        assert!(shopper_seen_snapshot(ShopperSessionContext::default()).is_none());
-
-        let utm_only = ShopperSessionContext {
-            utm: UtmTags {
-                source: Some("meta".into()),
-                ..UtmTags::default()
-            },
-            ..ShopperSessionContext::default()
-        };
-        let snapshot = shopper_seen_snapshot(utm_only).expect("utm produces a snapshot");
-        assert_eq!(snapshot["utm"], json!({ "utm_source": "meta" }));
-        assert!(snapshot.get("first_seen").is_none());
-        assert!(snapshot.get("last_seen").is_none());
     }
 }

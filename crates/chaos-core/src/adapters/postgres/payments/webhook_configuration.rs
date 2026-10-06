@@ -1,4 +1,14 @@
-// Payment provider webhook configuration persistence.
+use super::repository::*;
+
+use async_trait::async_trait;
+use chaos_domain::stripe::{PaymentSecretReference, StripeAccountId};
+use uuid::Uuid;
+
+use crate::{
+    ApplicationError,
+    contracts::{StripeWebhookConfiguration, StripeWebhookConfigurationRepository},
+    error::database_error,
+};
 
 #[async_trait]
 impl StripeWebhookConfigurationRepository for PostgresStripeRepository {

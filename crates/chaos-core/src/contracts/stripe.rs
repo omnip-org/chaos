@@ -25,11 +25,6 @@ pub struct StripeAccountDetail {
     pub updated_at: OffsetDateTime,
 }
 
-pub struct StripeAccountPage {
-    pub items: Vec<StripeAccountDetail>,
-    pub has_more: bool,
-}
-
 pub struct PaymentAttemptDetail {
     pub order_id: OrderId,
     pub amount_minor: i64,

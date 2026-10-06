@@ -293,6 +293,17 @@ try {
 
 ## Development
 
+`src/client.ts` is the public facade and coordinates the typed resource
+classes. Its stateful infrastructure is kept under `src/internal/`:
+
+- `transport.ts` owns HTTP headers, URLs, JSON and API error decoding.
+- `shopper-session.ts` owns the shopper credential, attribution and browser
+  persistence.
+- `storefront-events.ts` owns Pixel/GA4 projection and checkout-return markers.
+
+Resource classes contain Storefront operations and recovery rules; they do
+not construct authentication headers or access browser storage directly.
+
 ```sh
 npm run build --prefix packages/js
 npm test --prefix packages/js

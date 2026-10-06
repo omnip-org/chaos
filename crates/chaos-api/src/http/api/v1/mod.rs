@@ -13,7 +13,7 @@ use crate::http::ApiState;
 mod attribution;
 mod carts;
 mod collections;
-mod order;
+mod orders;
 mod products;
 mod shopper;
 mod wire;
@@ -26,7 +26,7 @@ pub(crate) fn routes() -> Router<ApiState> {
         .merge(collections::routes())
         .merge(shopper::routes())
         .merge(carts::routes())
-        .merge(order::routes())
+        .merge(orders::routes())
         .layer(middleware::from_fn(storefront_cache_boundary))
 }
 

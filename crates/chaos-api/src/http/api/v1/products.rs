@@ -6,7 +6,7 @@ use axum::{
     routing::{get, post},
 };
 use chaos_core::{
-    catalog::SubmitReviewInput,
+    catalog::{ListStorefrontProductsInput, SubmitReviewInput},
     contracts::{
         ReviewPageCursor, ReviewSummary, StorefrontCatalogProduct, StorefrontCatalogVariant,
         StorefrontProductCollection, StorefrontProductOption, StorefrontProductOptionValue,
@@ -27,15 +27,15 @@ use crate::http::{
 
 use super::wire::{MediaResponse, ReviewStatus};
 
-#[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/products", get(list_products))
         .route("/products/{handle}", get(get_product))
-        .route("/products/{product_id}/reviews", post(submit_review).get(list_reviews))
+        .route(
+            "/products/{product_id}/reviews",
+            post(submit_review).get(list_reviews),
+        )
 }
-
-// ===== request contracts =====
 
 #[derive(Deserialize)]
 struct CatalogQuery {
@@ -56,7 +56,6 @@ struct ProductPath {
     handle: String,
 }
 
-/// Shared by `POST` and `GET /products/{product_id}/reviews`.
 #[derive(Deserialize)]
 struct ReviewProductPath {
     product_id: Uuid,
@@ -79,8 +78,6 @@ struct ReviewListQuery {
     cursor: Option<String>,
     limit: Option<u16>,
 }
-
-// ===== response contracts =====
 
 #[derive(Serialize)]
 struct ProductVariantResponse {
@@ -296,8 +293,6 @@ impl From<ReviewSummary> for ReviewResponse {
     }
 }
 
-// ===== GET /products =====
-
 async fn list_products(
     State(state): State<ApiState>,
     PublishableChannel(actor): PublishableChannel,
@@ -314,25 +309,27 @@ async fn list_products(
         .storefront_catalog
         .list_products(
             &actor,
-            query.currency.as_deref(),
-            query.q.as_deref(),
-            query.collection.as_deref(),
-            after,
-            limit,
+            ListStorefrontProductsInput {
+                currency: query.currency.as_deref(),
+                search: query.q.as_deref(),
+                collection: query.collection.as_deref(),
+                after,
+                limit,
+            },
         )
         .await?;
-    let next_cursor = page.has_more.then(|| {
+    let next_cursor = if page.has_more {
         page.items
             .last()
             .map(|item| encode_cursor(item.id.as_uuid(), CursorKind::Product))
-    });
+    } else {
+        None
+    };
     Ok(
         ApiResponse::ok(page.items.into_iter().map(Into::into).collect())
-            .with_meta(page_meta(page.has_more, next_cursor.flatten())),
+            .with_meta(page_meta(page.has_more, next_cursor)),
     )
 }
-
-// ===== GET /products/{handle} =====
 
 async fn get_product(
     State(state): State<ApiState>,
@@ -346,8 +343,6 @@ async fn get_product(
         .await?;
     Ok(ApiResponse::ok(product.into()))
 }
-
-// ===== POST /products/{product_id}/reviews =====
 
 async fn submit_review(
     State(state): State<ApiState>,
@@ -371,8 +366,6 @@ async fn submit_review(
     Ok(ApiResponse::created(MutationResponse { id: id.as_uuid() }))
 }
 
-// ===== GET /products/{product_id}/reviews =====
-
 async fn list_reviews(
     State(state): State<ApiState>,
     PublishableChannel(actor): PublishableChannel,
@@ -389,21 +382,20 @@ async fn list_reviews(
         .storefront_reviews
         .list_for_product(&actor, ProductId::from_uuid(path.product_id), after, limit)
         .await?;
-    let next_cursor = page
-        .has_more
-        .then(|| {
-            page.items
-                .iter()
-                .rev()
-                .find(|item| item.parent_review_id.is_none())
-                .map(|item| {
-                    encode_review_cursor(ReviewPageCursor {
-                        sort_at: item.reviewed_at.unwrap_or(item.created_at),
-                        id: item.id,
-                    })
+    let next_cursor = if page.has_more {
+        page.items
+            .iter()
+            .rev()
+            .find(|item| item.parent_review_id.is_none())
+            .map(|item| {
+                encode_review_cursor(ReviewPageCursor {
+                    sort_at: item.reviewed_at.unwrap_or(item.created_at),
+                    id: item.id,
                 })
-        })
-        .flatten();
+            })
+    } else {
+        None
+    };
     Ok(ApiResponse::ok(nest_replies(page.items)).with_meta(page_meta(page.has_more, next_cursor)))
 }
 

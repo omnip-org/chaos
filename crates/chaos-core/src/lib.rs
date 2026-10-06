@@ -17,5 +17,7 @@ pub mod webhooks;
 
 mod email_templates;
 mod error;
+mod page;
 
 pub use error::ApplicationError;
+pub use page::Page;

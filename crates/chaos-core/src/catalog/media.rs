@@ -10,7 +10,7 @@ use chaos_domain::{
 use time::{Duration, OffsetDateTime};
 
 use crate::{
-    ApplicationError,
+    ApplicationError, Page,
     adapters::postgres::PostgresMediaAssetRepository,
     contracts::{
         AdminActor, CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation,
@@ -70,11 +70,6 @@ pub struct ListMediaAssetsInput {
     pub kind: Option<MediaKind>,
     pub sha256_hex: Option<String>,
     pub file_name: Option<String>,
-}
-
-pub struct MediaAssetPage {
-    pub items: Vec<MediaAssetItem>,
-    pub has_more: bool,
 }
 
 pub struct AttachProductMediaInput {
@@ -407,7 +402,7 @@ impl MediaAdministration {
     pub async fn list_assets(
         &self,
         input: ListMediaAssetsInput,
-    ) -> Result<MediaAssetPage, ApplicationError> {
+    ) -> Result<Page<MediaAssetItem>, ApplicationError> {
         let limit = input.limit.clamp(1, 100);
         if let Some(digest) = &input.sha256_hex
             && (digest.len() != 64
@@ -439,7 +434,7 @@ impl MediaAdministration {
         if has_more {
             items.pop();
         }
-        Ok(MediaAssetPage { items, has_more })
+        Ok(Page { items, has_more })
     }
 
     pub async fn attach_product(

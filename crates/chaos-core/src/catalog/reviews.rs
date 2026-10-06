@@ -11,10 +11,9 @@ use chaos_domain::{
 use time::OffsetDateTime;
 
 use crate::{
-    ApplicationError,
+    ApplicationError, Page,
     adapters::postgres::PostgresReviewRepository,
     contracts::{AdminActor, MachineActor, ReviewPageCursor, ReviewSummary},
-    store::Page,
 };
 
 pub struct SubmitReviewInput {

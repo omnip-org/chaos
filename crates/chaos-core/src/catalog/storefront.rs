@@ -6,15 +6,18 @@ use chaos_domain::{
 };
 
 use crate::{
-    ApplicationError,
+    ApplicationError, Page,
     contracts::{
         MachineActor, StorefrontCatalogProduct, StorefrontCatalogRepository, StorefrontContext,
     },
 };
 
-pub struct StorefrontProductPage {
-    pub items: Vec<StorefrontCatalogProduct>,
-    pub has_more: bool,
+pub struct ListStorefrontProductsInput<'a> {
+    pub currency: Option<&'a str>,
+    pub search: Option<&'a str>,
+    pub collection: Option<&'a str>,
+    pub after: Option<ProductId>,
+    pub limit: u16,
 }
 
 pub struct StorefrontCatalog {
@@ -33,30 +36,26 @@ impl StorefrontCatalog {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn list_products(
         &self,
         actor: &MachineActor,
-        currency: Option<&str>,
-        query: Option<&str>,
-        collection: Option<&str>,
-        after: Option<ProductId>,
-        limit: u16,
-    ) -> Result<StorefrontProductPage, ApplicationError> {
+        input: ListStorefrontProductsInput<'_>,
+    ) -> Result<Page<StorefrontCatalogProduct>, ApplicationError> {
         Self::context(actor)?;
-        let currency = parse_currency(currency)?;
-        let collection = collection
+        let currency = parse_currency(input.currency)?;
+        let collection = input
+            .collection
             .map(|value| CollectionHandle::parse(value.to_owned()))
             .transpose()?;
-        let limit = limit.clamp(1, 100);
+        let limit = input.limit.clamp(1, 100);
         let mut items = self
             .repository
             .list_products(
                 actor,
                 currency,
-                query,
+                input.search,
                 collection.as_ref().map(CollectionHandle::as_str),
-                after,
+                input.after,
                 limit + 1,
             )
             .await?;
@@ -64,7 +63,7 @@ impl StorefrontCatalog {
         if has_more {
             items.pop();
         }
-        Ok(StorefrontProductPage { items, has_more })
+        Ok(Page { items, has_more })
     }
 
     pub async fn get_product_by_handle(
@@ -160,7 +159,16 @@ mod tests {
         let mut key = actor();
         key.channel_id = None;
         let result = catalog
-            .list_products(&key, None, None, None, None, 20)
+            .list_products(
+                &key,
+                ListStorefrontProductsInput {
+                    currency: None,
+                    search: None,
+                    collection: None,
+                    after: None,
+                    limit: 20,
+                },
+            )
             .await;
         assert!(matches!(result, Err(ApplicationError::Forbidden)));
     }

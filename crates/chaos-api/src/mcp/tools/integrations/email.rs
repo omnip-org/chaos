@@ -1,8 +1,6 @@
 use chaos_core::{
-    contracts::{
-        EmailAccountConfiguration, EmailBrandDetail, EmailProviderAccountDetail,
-        EmailProviderAccountPage,
-    },
+    Page,
+    contracts::{EmailAccountConfiguration, EmailBrandDetail, EmailProviderAccountDetail},
     email::{
         ConfigureEmailBrandInput, CreateEmailProviderAccountInput, ResetEmailBrandInput,
         UpdateEmailProviderAccountInput,
@@ -382,7 +380,10 @@ fn invalid_id(field: &'static str) -> CallToolResult {
     }))
 }
 
-fn email_accounts_json(page: EmailProviderAccountPage, public_base_url: &str) -> serde_json::Value {
+fn email_accounts_json(
+    page: Page<EmailProviderAccountDetail>,
+    public_base_url: &str,
+) -> serde_json::Value {
     let next_cursor = page
         .has_more
         .then(|| page.items.last().map(|account| account.id))

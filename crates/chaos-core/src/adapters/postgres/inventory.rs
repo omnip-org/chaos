@@ -1,14 +1,21 @@
-use crate::{
-    ApplicationError,
-    error::database_error,
-    contracts::{AdminActor, InventoryAdjustment, VariantInventoryView},
-};
 use chaos_domain::{catalog::ProductVariantId, inventory::InventoryBalance, store::StoreId};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-type VariantInventoryRow = (Uuid, i64, i64, OffsetDateTime);
+use crate::{
+    ApplicationError,
+    contracts::{AdminActor, InventoryAdjustment, VariantInventoryView},
+    error::database_error,
+};
+
+#[derive(sqlx::FromRow)]
+struct VariantInventoryRow {
+    id: Uuid,
+    on_hand_quantity: i64,
+    reserved_quantity: i64,
+    updated_at: OffsetDateTime,
+}
 
 #[derive(Clone)]
 pub struct PostgresInventoryRepository {
@@ -20,23 +27,6 @@ impl PostgresInventoryRepository {
         Self { pool }
     }
 
-    async fn begin_for_admin(
-        &self,
-        actor: &AdminActor,
-    ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
-        let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        crate::adapters::postgres::database::set_admin_context(
-            &mut transaction,
-            actor.audit_user_id(),
-            actor.store_id(),
-        )
-        .await
-        .map_err(database_error)?;
-        Ok(transaction)
-    }
-}
-
-impl PostgresInventoryRepository {
     pub(crate) async fn adjust_variant_inventory(
         &self,
         actor: AdminActor,
@@ -55,12 +45,13 @@ impl PostgresInventoryRepository {
         .await
         .map_err(database_error)?
         .ok_or_else(invalid_inventory_selection)?;
-        let next_on_hand = on_hand
-            .checked_add(adjustment.delta_quantity)
-            .ok_or_else(|| ApplicationError::Conflict {
-                code: "inventory_overflow",
-                message: "inventory arithmetic overflowed",
-            })?;
+        let next_on_hand =
+            on_hand
+                .checked_add(adjustment.delta_quantity)
+                .ok_or(ApplicationError::Conflict {
+                    code: "inventory_overflow",
+                    message: "inventory arithmetic overflowed",
+                })?;
         if next_on_hand < reserved {
             return Err(ApplicationError::Conflict {
                 code: "inventory_reserved",
@@ -119,13 +110,62 @@ impl PostgresInventoryRepository {
         transaction.commit().await.map_err(database_error)?;
         Ok(Some(rows.into_iter().map(variant_inventory).collect()))
     }
+
+    async fn begin_for_admin(
+        &self,
+        actor: &AdminActor,
+    ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        crate::adapters::postgres::database::set_admin_context(
+            &mut transaction,
+            actor.audit_user_id(),
+            actor.store_id(),
+        )
+        .await
+        .map_err(database_error)?;
+        Ok(transaction)
+    }
 }
 
 fn variant_inventory(row: VariantInventoryRow) -> VariantInventoryView {
     VariantInventoryView {
-        product_variant_id: ProductVariantId::from_uuid(row.0),
-        on_hand_quantity: row.1,
-        reserved_quantity: row.2,
-        updated_at: row.3,
+        product_variant_id: ProductVariantId::from_uuid(row.id),
+        on_hand_quantity: row.on_hand_quantity,
+        reserved_quantity: row.reserved_quantity,
+        updated_at: row.updated_at,
+    }
+}
+
+async fn require_store(
+    transaction: &mut Transaction<'static, Postgres>,
+    store_id: StoreId,
+) -> Result<(), ApplicationError> {
+    if store_exists(transaction, store_id).await? {
+        Ok(())
+    } else {
+        Err(ApplicationError::NotFound {
+            resource: "store",
+            id: store_id.as_uuid().to_string(),
+        })
+    }
+}
+
+async fn store_exists(
+    transaction: &mut Transaction<'static, Postgres>,
+    store_id: StoreId,
+) -> Result<bool, ApplicationError> {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM chaos_commerce.stores WHERE id = $1)")
+        .bind(store_id.as_uuid())
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(database_error)
+}
+
+fn invalid_inventory_selection() -> ApplicationError {
+    ApplicationError::Validation {
+        violations: vec![chaos_domain::FieldViolation {
+            field: "product_variant_id",
+            reason: "must reference an inventory-tracked variant in the Store".into(),
+        }],
     }
 }

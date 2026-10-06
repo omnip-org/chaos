@@ -118,17 +118,17 @@ pub use media::{
     AttachProductVariantMediaInput, AttachReviewMediaInput, BatchReplaceProductMediaInput,
     BatchReplaceProductMediaOutput, BatchReplaceProductMediaTarget, CompleteMediaUploadInput,
     CreateMediaUploadInput, CreatedMediaAsset, ListMediaAssetsInput, MediaAdministration,
-    MediaAssetPage, ProductMediaItemInput, ProductMediaMutationOutput,
-    ProductMediaReplacementOutput, ProductMediaTarget, ProductMetaMediaMutationOutput,
-    RefreshMediaUploadInput, ReplaceProductMediaInput, ReplaceProductOptionValueMediaInput,
-    ReplaceProductVariantMediaInput, RestoreMediaAssetInput,
+    ProductMediaItemInput, ProductMediaMutationOutput, ProductMediaReplacementOutput,
+    ProductMediaTarget, ProductMetaMediaMutationOutput, RefreshMediaUploadInput,
+    ReplaceProductMediaInput, ReplaceProductOptionValueMediaInput, ReplaceProductVariantMediaInput,
+    RestoreMediaAssetInput,
 };
-pub use queries::{CatalogQueries, ProductPage};
+pub use queries::CatalogQueries;
 pub use reviews::{
     AddReviewReplyInput, ApproveReviewInput, CreateManualReviewInput, RejectReviewInput,
     ReviewAdministration, StorefrontReviews, SubmitReviewInput,
 };
-pub use storefront::{StorefrontCatalog, StorefrontProductPage};
+pub use storefront::{ListStorefrontProductsInput, StorefrontCatalog};
 pub use workspace::{
     ProductMediaResolutionSource, ProductWorkspaceQueries, ResolvedProductMedia,
     resolve_product_media,

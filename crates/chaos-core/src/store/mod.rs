@@ -11,7 +11,7 @@ pub use publishable_keys::{
     CreatePublishableKeyInput, CreatePublishableKeyOutput, PublishableKeyAuthentication,
     PublishableKeyManagement,
 };
-pub use queries::{Page, StoreActor, StoreQueries};
+pub use queries::{StoreActor, StoreQueries};
 pub use store_administration::{
     ChangeSalesChannelStatusInput, ChangeStoreStatusInput, CreateSalesChannelInput,
     SetShippingCountryInput, StoreAdministration, UpdateSalesChannelInput, UpdateStoreInput,

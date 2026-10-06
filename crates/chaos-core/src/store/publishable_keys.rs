@@ -1,14 +1,12 @@
 use std::sync::Arc;
 
 use crate::{
-    ApplicationError,
+    ApplicationError, Page,
     adapters::postgres::DefaultPublishableKeyGenerator,
     adapters::postgres::PostgresPublishableKeyRepository,
     contracts::{AdminActor, MachineActor, PublishableKeyListItem},
 };
 use chaos_domain::store::{PublishableKey, PublishableKeyId, SalesChannelId, StoreId, StoreRole};
-
-use super::Page;
 
 pub struct CreatePublishableKeyInput {
     pub actor: AdminActor,

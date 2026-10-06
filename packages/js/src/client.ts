@@ -1,14 +1,9 @@
-import { ChaosApiError, apiErrorFromResponse } from "./errors.js";
-import {
-  ChaosStorefrontAnalytics,
-  type AnalyticsOptions,
-} from "./events/browser.js";
-import { fnv1a32 } from "./internal/hash.js";
-import {
-  firstTouchUtmTags,
-  lastTouchUtmTags,
-  recordPageUtm,
-} from "./internal/utm.js";
+import { ChaosApiError } from "./errors.js";
+import type { AnalyticsOptions } from "./events/browser.js";
+import type { ViewContentAnalyticsInput } from "./events/types.js";
+import { StorefrontEventCoordinator } from "./internal/storefront-events.js";
+import { ShopperSessionStore } from "./internal/shopper-session.js";
+import { StorefrontTransport } from "./internal/transport.js";
 import { CartResource } from "./resources/cart.js";
 import { CatalogResource } from "./resources/catalog.js";
 import { OrdersResource } from "./resources/orders.js";
@@ -18,7 +13,6 @@ import {
   ShopperSessionResource,
   requireShopperSession,
 } from "./resources/shopper-session.js";
-import type { ViewContentAnalyticsInput } from "./events/types.js";
 import type {
   CartLineMutation,
   ConfirmedPurchaseOrderInput,
@@ -30,17 +24,8 @@ import type {
   ShopperSession,
 } from "./types.js";
 
-const SHOPPER_TOKEN_STORAGE_PREFIX = "chaos.storefront.shopper_token";
-const SHOPPER_ID_STORAGE_PREFIX = "chaos.storefront.shopper_id";
-const CHECKOUT_ORDER_STORAGE_PREFIX = "chaos.storefront.checkout_order";
-const CHECKOUT_ORDER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_CART_SNAPSHOT_TTL_MS = 30_000;
 
-/**
- * Meta Pixel/GA4 event delivery, keyed by destination: pass `metaPixel` to
- * turn on Pixel, `ga4` to turn on GA4, omit either to leave it off — there
- * is no separate enable flag.
- */
 export type StorefrontEventsOptions = Omit<AnalyticsOptions, "publishableKey">;
 
 export interface ClientOptions {
@@ -69,20 +54,20 @@ export interface ClientOptions {
   /**
    * How long (ms) a cart body returned by the API is reused to serve the read
    * that `cart.addLine`/`setLine`/`removeLine` do before their write, instead
-   * of a separate `GET /carts/{id}`. 0 disables it — every mutation re-reads.
-   * Defaults to 30000.
+   * of a separate `GET /carts/{id}`. 0 disables it. Defaults to 30000.
    */
   cartSnapshotTtlMs?: number;
-  /** Millisecond clock used for the cart snapshot TTL; defaults to Date.now. */
+  /** Millisecond clock used for cart snapshots and checkout markers. */
   now?: () => number;
 }
 
-/** @internal */
-export interface RequestOptions<Query extends object = Record<string, never>> {
+export interface RequestOptions<
+  Query extends object = Record<string, never>,
+> {
   method?: "GET" | "POST" | "PUT" | "DELETE";
   query?: Query;
   body?: unknown;
-  /** Attaches the shopper token, acquiring one if the browser has not created a Shopper session yet. */
+  /** Attaches the shopper token, acquiring one when configured to do so. */
   requiresShopperToken?: boolean;
   /** Override the client's invalid-token retry for a specific request. */
   retryShopperToken?: boolean;
@@ -92,31 +77,17 @@ export interface RequestOptions<Query extends object = Record<string, never>> {
   idempotencyKey?: string;
 }
 
+/** Public Storefront facade; protocol, session and event state live internally. */
 export class ChaosStorefrontClient {
   readonly publishableKey: string;
   readonly baseUrl: string;
-  private readonly fetchImpl: typeof fetch;
-  private readonly storage: Pick<
-    Storage,
-    "getItem" | "setItem" | "removeItem"
-  > | null;
-  private readonly shopperTokenStorageKey: string;
-  private readonly shopperIdStorageKey: string;
-  private readonly checkoutOrderStorageKey: string;
-  private readonly checkoutStorage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
-  private readonly autoAcquireShopperToken: boolean;
-  private readonly retryInvalidShopperToken: boolean;
-  private readonly analytics: ChaosStorefrontAnalytics | null;
   readonly randomUUID: () => string;
   readonly now: () => number;
-  private shopperTokenCache: string | null = null;
-  private pendingShopperSession: Promise<string> | null = null;
-  /** See `warnIfAnalyticsUnreachable`. */
-  private analyticsUnreachableWarned = false;
-  /** True once this client mints its own session, so the `last_seen` refresh
-   * (which only makes sense for a session that predates this page load) is
-   * suppressed — the new session already recorded `last_seen == first_seen`. */
-  private sessionMintedHere = false;
+
+  private readonly transport: StorefrontTransport;
+  private readonly sessions: ShopperSessionStore;
+  private readonly events: StorefrontEventCoordinator;
+  private readonly retryInvalidShopperToken: boolean;
 
   readonly catalog: CatalogResource;
   readonly shopperSession: ShopperSessionResource;
@@ -126,73 +97,40 @@ export class ChaosStorefrontClient {
   readonly reviews: ReviewsResource;
 
   constructor(options: ClientOptions) {
-    if (!options.publishableKey) {
-      throw new TypeError("publishableKey is required");
-    }
+    if (!options.publishableKey) throw new TypeError("publishableKey is required");
+
     this.publishableKey = options.publishableKey;
     this.baseUrl = (options.baseUrl ?? "/api/v1").replace(/\/+$/, "");
-    this.fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
-    this.storage =
-      options.storage !== undefined
-        ? options.storage
-        : (globalThis.localStorage ?? null);
-    this.shopperTokenStorageKey = scopedStorageKey(
-      SHOPPER_TOKEN_STORAGE_PREFIX,
-      this.baseUrl,
-      this.publishableKey,
-    );
-    this.shopperIdStorageKey = scopedStorageKey(
-      SHOPPER_ID_STORAGE_PREFIX,
-      this.baseUrl,
-      this.publishableKey,
-    );
-    this.checkoutOrderStorageKey = scopedStorageKey(
-      CHECKOUT_ORDER_STORAGE_PREFIX,
-      this.baseUrl,
-      this.publishableKey,
-    );
-    try {
-      this.checkoutStorage = options.events?.sessionStorage ?? globalThis.sessionStorage ?? null;
-    } catch {
-      this.checkoutStorage = null;
-    }
-    this.autoAcquireShopperToken = options.autoAcquireShopperToken ?? true;
-    this.retryInvalidShopperToken = options.retryInvalidShopperToken ?? false;
-    this.analytics = options.events
-      ? new ChaosStorefrontAnalytics({
-          // `publishableKey` here only namespaces the analytics module's own
-          // local-storage keys; it doesn't need to be a real Chaos key.
-          publishableKey: `${this.baseUrl}\0${this.publishableKey}`,
-          ...options.events,
-        })
-      : null;
     this.randomUUID =
-      options.randomUUID ??
-      globalThis.crypto?.randomUUID.bind(globalThis.crypto);
+      options.randomUUID ?? globalThis.crypto?.randomUUID.bind(globalThis.crypto);
     this.now = options.now ?? (() => Date.now());
-    if (!this.fetchImpl) {
-      throw new TypeError(
-        "fetch is required (pass options.fetch in environments without a global fetch)",
-      );
-    }
     if (!this.randomUUID) {
       throw new TypeError(
         "randomUUID is required (pass options.randomUUID in environments without globalThis.crypto)",
       );
     }
-    try {
-      this.shopperTokenCache =
-        this.storage?.getItem(this.shopperTokenStorageKey) ?? null;
-    } catch {
-      this.shopperTokenCache = null;
-    }
-    if (this.shopperTokenCache) this.restoreShopperId();
 
-    // One capture per page load: first touch (once) and last touch (every
-    // load that carries utm_*). Later checkout and session-refresh
-    // reads draw on these instead of the live URL, which an MPA navigation
-    // strips.
-    recordPageUtm(this.storage);
+    this.transport = new StorefrontTransport({
+      publishableKey: this.publishableKey,
+      baseUrl: this.baseUrl,
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+    });
+    this.events = new StorefrontEventCoordinator({
+      publishableKey: this.publishableKey,
+      baseUrl: this.baseUrl,
+      now: this.now,
+      ...(options.events ? { events: options.events } : {}),
+    });
+    this.sessions = new ShopperSessionStore({
+      publishableKey: this.publishableKey,
+      baseUrl: this.baseUrl,
+      autoAcquire: options.autoAcquireShopperToken ?? true,
+      ...(options.storage !== undefined ? { storage: options.storage } : {}),
+      setAnalyticsShopperId: (shopperId) => this.events.setShopperId(shopperId),
+      clearAnalyticsShopperId: () => this.events.clearShopperId(),
+    });
+    this.retryInvalidShopperToken =
+      options.retryInvalidShopperToken ?? false;
 
     this.catalog = new CatalogResource(this);
     this.shopperSession = new ShopperSessionResource(this);
@@ -206,165 +144,67 @@ export class ChaosStorefrontClient {
   }
 
   getShopperToken(): string | null {
-    return this.shopperTokenCache;
+    return this.sessions.token;
   }
 
   setShopperToken(token: string | null): void {
-    const tokenChanged = token !== this.shopperTokenCache;
-    this.shopperTokenCache = token;
-    try {
-      if (token) {
-        this.storage?.setItem(this.shopperTokenStorageKey, token);
-      } else {
-        this.storage?.removeItem(this.shopperTokenStorageKey);
-      }
-    } catch {
-      // Storage is optional; the in-memory token remains usable.
-    }
-    if (!token || tokenChanged) {
-      try {
-        this.storage?.removeItem(this.shopperIdStorageKey);
-      } catch {
-        // Storage is optional; shopper authentication still works in memory.
-      }
-      this.analytics?.clearShopperId();
-    }
+    this.sessions.setToken(token);
   }
 
-  private installShopperSession(session: ShopperSession): void {
-    this.setShopperToken(session.shopper_token);
-    try {
-      this.storage?.setItem(this.shopperIdStorageKey, session.shopper_id);
-    } catch {
-      // Analytics identity persistence is optional.
-    }
-    this.analytics?.setShopperId(session.shopper_id);
-  }
-
-  private restoreShopperId(): void {
-    try {
-      const shopperId = this.storage?.getItem(this.shopperIdStorageKey);
-      if (shopperId) this.analytics?.setShopperId(shopperId);
-    } catch {
-      // Analytics identity persistence is optional.
-    }
-  }
-
-  /**
-   * UTM body for shopper-session creation — the visitor's first touch,
-   * persisted so an MPA navigation that drops `utm_*` from the URL still
-   * forwards it. The server records this as
-   * `shoppers.attribution.first_seen` and never rewrites it.
-   * @internal
-   */
+  /** @internal First-touch attribution used when creating a shopper session. */
   firstTouchUtm(): CheckoutUtm | undefined {
-    return firstTouchUtmTags(this.storage);
+    return this.sessions.firstTouchUtm();
   }
 
-  /**
-   * UTM body for the `last_seen` session refresh — the entry point of the
-   * visitor's current journey, overwritten on every page load that carries
-   * `utm_*`. Same source the checkout `attribution.utm` body draws on.
-   * @internal
-   */
+  /** @internal Last-touch attribution used by checkout and session refresh. */
   lastTouchUtm(): CheckoutUtm | undefined {
-    return lastTouchUtmTags(this.storage);
+    return this.sessions.lastTouchUtm();
   }
 
-  /** The storage backing token and UTM persistence, for the resources that
-   * assemble attribution. `null` when persistence is disabled. @internal */
-  get attributionStorage():
-    | Pick<Storage, "getItem" | "setItem">
-    | null {
-    return this.storage;
+  /** @internal Storage used to assemble checkout attribution. */
+  get attributionStorage(): Pick<Storage, "getItem" | "setItem"> | null {
+    return this.sessions.attributionStorage;
   }
 
-  /**
-   * Explicitly acquires a shopper session when one is not already cached.
-   * Concurrent callers share the same in-flight request.
-   */
+  /** Acquires one shopper session; concurrent callers share the request. */
   async acquireShopperToken(): Promise<string> {
-    if (this.shopperTokenCache) return this.shopperTokenCache;
-    if (!this.pendingShopperSession) {
-      this.pendingShopperSession = this.issueShopperSession()
-        .then((response) => response.data.shopper_token)
-        .finally(() => {
-          this.pendingShopperSession = null;
-        });
-    }
-    return this.pendingShopperSession;
+    return this.sessions.acquire(() => this.issueShopperSession());
   }
 
-  private async ensureShopperToken(): Promise<string> {
-    if (this.shopperTokenCache) return this.shopperTokenCache;
-    if (!this.autoAcquireShopperToken) {
-      throw new ChaosApiError(
-        401,
-        "shopper_token_required",
-        "a shopper token is required for this request",
-      );
-    }
-    return this.acquireShopperToken();
-  }
-
-  /** @internal Creates and installs a new shopper identity. */
+  /** @internal Creates, validates and installs a new shopper identity. */
   async issueShopperSession(): Promise<DataEnvelope<ShopperSession>> {
     const utm = this.firstTouchUtm();
-    const response = await this.request<unknown>("/shopper/sessions", {
-      method: "POST",
-      body: utm ? { attribution: { utm } } : {},
-    });
+    const response = await this.transport.request<unknown>(
+      "/shopper/sessions",
+      {
+        method: "POST",
+        body: utm ? { attribution: { utm } } : {},
+      },
+    );
     const envelope = requireShopperSession(response);
-    this.installShopperSession(envelope.data);
-    this.sessionMintedHere = true;
+    this.sessions.install(envelope.data);
     return envelope;
   }
 
   /** @internal Whether this client created the current shopper identity. */
   get shopperSessionWasMintedHere(): boolean {
-    return this.sessionMintedHere;
+    return this.sessions.wasMintedHere;
   }
 
-  /**
-   * Refreshes `shoppers.attribution.last_seen` with the current journey's
-   * `utm_*` for a shopper whose session already exists — a returning visitor
-   * who came back through a different ad. A no-op unless there is a stored
-   * token, a persisted last-touch, and this browser-tab session has not
-   * already refreshed. Fire-and-forget: failures are swallowed, never
-   * surfaced to the cart path that triggered it.
-   * @internal
-   */
+  /** @internal Best-effort last-touch refresh for a returning shopper. */
   refreshLastSeen(): void {
-    if (!this.shopperTokenCache || this.sessionMintedHere) return;
-    const utm = this.lastTouchUtm();
+    const utm = this.sessions.takeLastSeenUtm();
     if (!utm) return;
-    let session: Pick<Storage, "getItem" | "setItem"> | null;
-    try {
-      session = globalThis.sessionStorage ?? null;
-    } catch {
-      session = null;
-    }
-    const throttleKey = `${this.shopperTokenStorageKey}.last_seen_synced`;
-    try {
-      if (session?.getItem(throttleKey)) return;
-    } catch {
-      // Unreadable sessionStorage — fall through and refresh anyway.
-    }
-    try {
-      session?.setItem(throttleKey, "1");
-    } catch {
-      // Can't throttle; the refresh below is idempotent server-side anyway.
-    }
     void this.request("/shopper/sessions/touch", {
       method: "POST",
       body: { attribution: { utm } },
       requiresShopperToken: true,
     }).catch(() => {
-      // last_seen is best-effort enrichment; a checkout must never depend on it.
+      // Attribution enrichment must never fail the cart flow that triggered it.
     });
   }
 
-  /** @internal */
+  /** Low-level Storefront request entry point used by the typed resources. */
   async request<T, Query extends object = Record<string, never>>(
     path: string,
     options: RequestOptions<Query> = {},
@@ -378,124 +218,41 @@ export class ChaosStorefrontClient {
 
   /** @internal Used by CartResource after a successful line mutation. */
   recordCartMutation(mutation: CartLineMutation): void {
-    this.warnIfAnalyticsUnreachable("recordCartMutation");
-    try {
-      this.analytics?.recordCartMutation(mutation);
-    } catch {
-      // The cart mutation already succeeded; analytics must remain best-effort.
-    }
+    this.events.recordCartMutation(mutation);
   }
 
-  /** @internal Used by PaymentsResource after a successful checkout creation. */
+  /** @internal Used by PaymentsResource after checkout creation. */
   recordCheckoutCreation(
     creation: EmbeddedCheckoutStart | EmbeddedCheckoutCreation,
   ): void {
-    this.warnIfAnalyticsUnreachable("recordCheckoutCreation");
-    try {
-      this.analytics?.recordCheckoutCreation(creation);
-    } catch {
-      // The checkout already exists; analytics must remain best-effort.
-    }
+    this.events.recordCheckoutCreation(creation);
   }
 
-  /** @internal A fresh checkout in this tab may generate a browser Purchase on return. */
+  /** @internal Marks a fresh checkout as eligible for browser Purchase. */
   rememberCheckoutOrder(orderId: string): void {
-    try {
-      this.checkoutStorage?.setItem(
-        this.checkoutOrderStorageKey,
-        JSON.stringify({ orderId, startedAt: this.now() }),
-      );
-    } catch {
-      // The payment handoff must work even when session storage is blocked.
-    }
+    this.events.rememberCheckoutOrder(orderId);
   }
 
   /** @internal Called only after a shopper-owned Order read. */
   async recordCheckoutPurchase(order: OwnOrder): Promise<void> {
-    if (order.status !== "confirmed" ||
-        !["paid", "partially_refunded", "refunded"].includes(order.payment_status)) return;
-    try {
-      const stored = this.checkoutStorage?.getItem(this.checkoutOrderStorageKey);
-      if (!stored) return;
-      const marker: unknown = JSON.parse(stored);
-      if (!marker || typeof marker !== "object") return;
-      const { orderId, startedAt } = marker as Record<string, unknown>;
-      if (orderId !== order.id || typeof startedAt !== "number" ||
-          this.now() - startedAt < 0 || this.now() - startedAt > CHECKOUT_ORDER_MAX_AGE_MS) return;
-      await this.analytics?.setMetaOrderIdentity(order);
-      this.recordConfirmedPurchase(order);
-    } catch {
-      // Analytics and browser storage are best-effort after payment.
-    }
-  }
-
-  /**
-   * Manual projection for a server-confirmed Order. Checkout return pages
-   * should use `orders.getCheckoutOrder`, which verifies shopper ownership
-   * and limits browser delivery to the current checkout.
-   */
-  recordConfirmedPurchase(order: ConfirmedPurchaseOrderInput): void {
-    this.warnIfAnalyticsUnreachable("recordConfirmedPurchase");
-    try {
-      this.analytics?.recordConfirmedPurchase(order);
-    } catch {
-      // The order is already confirmed; analytics must remain best-effort.
-    }
-  }
-
-  /**
-   * Projects a search to Meta Pixel/GA4. `CatalogResource.listProducts`
-   * calls this automatically when `q` is set. Call it again from a
-   * browser-hydrated component for a search-results page that resolves `q`
-   * server-side (e.g. an SSR-rendered `/products?q=...` route) — that
-   * automatic call runs with no browser present and can never reach Pixel/GA4
-   * from there.
-   */
-  recordSearch(input: { query: string }): void {
-    this.warnIfAnalyticsUnreachable("recordSearch");
-    try {
-      this.analytics?.search(input);
-    } catch {
-      // The search already ran; analytics must remain best-effort.
-    }
-  }
-
-  /**
-   * Projects a product view to Meta Pixel/GA4. `CatalogResource.getProduct`
-   * calls this automatically with the product's first variant's price; call
-   * it again with the shopper's actual `productVariantId` once they pick one
-   * (e.g. a color swatch) so ViewContent's `content_ids` line up with the
-   * variant-level ids AddToCart/Purchase already report.
-   */
-  recordViewContent(input: ViewContentAnalyticsInput): void {
-    this.warnIfAnalyticsUnreachable("recordViewContent");
-    try {
-      this.analytics?.viewContent(input);
-    } catch {
-      // The product already loaded; analytics must remain best-effort.
-    }
-  }
-
-  /**
-   * Warns once per client instance the first time a `record*` projection
-   * runs with no `document` and no `events` configured — a call from SSR
-   * (or any non-browser environment) can structurally never reach Meta
-   * Pixel/GA4, unlike a browser call with `events` simply left unset (a
-   * legitimate choice not to track), which never warns. This exists because
-   * every `record*` method is best-effort and silently no-ops otherwise —
-   * `catalog.getProduct`'s automatic ViewContent going unreported from an
-   * Astro/Next-style SSR data fetch is exactly the failure mode this catches.
-   */
-  private warnIfAnalyticsUnreachable(method: string): void {
-    if (this.analytics || typeof document !== "undefined" || this.analyticsUnreachableWarned) {
-      return;
-    }
-    this.analyticsUnreachableWarned = true;
-    console.warn(
-      `[chaos-js] ChaosStorefrontClient.${method}() ran with no \`document\` present, so it can ` +
-        "never reach Meta Pixel/GA4 from here (this is normal during SSR). Call the matching " +
-        "record* method again from a browser-hydrated component instead of relying on this call.",
+    await this.events.recordCheckoutPurchase(order, (confirmed) =>
+      this.recordConfirmedPurchase(confirmed),
     );
+  }
+
+  /** Projects a server-confirmed Order to configured browser providers. */
+  recordConfirmedPurchase(order: ConfirmedPurchaseOrderInput): void {
+    this.events.recordConfirmedPurchase(order);
+  }
+
+  /** Projects a storefront search to configured browser providers. */
+  recordSearch(input: { query: string }): void {
+    this.events.recordSearch(input);
+  }
+
+  /** Projects a product or selected variant view to browser providers. */
+  recordViewContent(input: ViewContentAnalyticsInput): void {
+    this.events.recordViewContent(input);
   }
 
   private async requestWithShopperTokenRetry<
@@ -506,86 +263,28 @@ export class ChaosStorefrontClient {
     options: RequestOptions<Query>,
     retryShopperToken: boolean,
   ): Promise<T> {
-    const method = options.method ?? "GET";
-    const headers: Record<string, string> = {
-      "X-Chaos-Publishable-Key": this.publishableKey,
-    };
-
-    if (options.body !== undefined) {
-      headers["content-type"] = "application/json";
-    }
-    if (options.requestId) {
-      headers["X-Request-ID"] = options.requestId;
-    }
-    if (options.idempotencyKey) {
-      headers["Idempotency-Key"] = options.idempotencyKey;
-    }
-    if (options.requiresShopperToken) {
-      headers["X-Chaos-Shopper-Token"] = await this.ensureShopperToken();
-    }
-    const requestUrl = this.buildUrl(path, options.query ?? {});
-
-    const init: RequestInit = { method, headers };
-    if (options.body !== undefined) {
-      init.body = JSON.stringify(options.body);
-    }
-    const response = await this.fetchImpl(requestUrl, init);
-
-    if (!response.ok) {
-      const error = await apiErrorFromResponse(response);
+    const shopperToken = options.requiresShopperToken
+      ? await this.sessions.require(() => this.issueShopperSession())
+      : undefined;
+    try {
+      return await this.transport.request<T, Query>(
+        path,
+        options,
+        shopperToken,
+      );
+    } catch (error) {
       if (
         retryShopperToken &&
         options.requiresShopperToken &&
+        error instanceof ChaosApiError &&
         error.status === 401 &&
         error.code === "shopper_token_invalid" &&
-        this.shopperTokenCache
+        this.sessions.token
       ) {
-        this.setShopperToken(null);
+        this.sessions.setToken(null);
         return this.requestWithShopperTokenRetry(path, options, false);
       }
       throw error;
     }
-    if (
-      response.status === 204 ||
-      response.headers.get("content-length") === "0"
-    ) {
-      return undefined as T;
-    }
-    return (await response.json()) as T;
   }
-
-  private buildUrl(path: string, query: object): string {
-    const origin = globalThis.location?.origin;
-    const isAbsolute = /^https?:\/\//.test(this.baseUrl);
-    const search = new URLSearchParams();
-    for (const [key, value] of Object.entries(query)) {
-      if (value !== undefined && value !== null) search.set(key, String(value));
-    }
-    const queryString = search.toString();
-
-    if (isAbsolute || origin) {
-      const url = new URL(
-        `${this.baseUrl}${path}`,
-        isAbsolute ? undefined : origin,
-      );
-      url.search = queryString;
-      return url.toString();
-    }
-
-    // No absolute baseUrl and no global `location` (e.g. Node/SSR without an
-    // explicit origin): fall back to a path-only URL string, which fetch
-    // implementations resolve against their own base.
-    return queryString
-      ? `${this.baseUrl}${path}?${queryString}`
-      : `${this.baseUrl}${path}`;
-  }
-}
-
-function scopedStorageKey(
-  prefix: string,
-  baseUrl: string,
-  publishableKey: string,
-): string {
-  const hash = fnv1a32(`${baseUrl}\0${publishableKey}`);
-  return `${prefix}.${hash.toString(36)}`;
 }

@@ -7,9 +7,9 @@ use chaos_domain::{
 use time::OffsetDateTime;
 
 use crate::{
-    ApplicationError,
+    ApplicationError, Page,
     adapters::postgres::PostgresOrderManagementRepository,
-    contracts::{AdminActor, OrderDetail, OrderListFilter, OrderPage},
+    contracts::{AdminActor, OrderDetail, OrderListFilter},
 };
 
 pub struct ChangeOrderStatusInput {
@@ -48,7 +48,7 @@ impl OrderManagement {
         after: Option<uuid::Uuid>,
         limit: u16,
         filter: OrderListFilter,
-    ) -> Result<OrderPage, ApplicationError> {
+    ) -> Result<Page<OrderDetail>, ApplicationError> {
         self.repository
             .list_orders(actor, store_id, after, limit, &filter)
             .await

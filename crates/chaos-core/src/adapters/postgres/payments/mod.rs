@@ -1,11 +1,8 @@
-//! Payment provider configuration, payment attempts, webhooks, and payment outbox work.
-//!
-//! The implementation is split by business responsibility while keeping one repository
-//! module namespace. This makes the payment workflow discoverable without changing the
-//! repository wiring used by the application layer.
+mod commands;
+mod events;
+mod provider_accounts;
+mod repository;
+mod webhook_configuration;
 
-include!("repository_core.rs");
-include!("provider_accounts.rs");
-include!("webhook_configuration.rs");
-include!("payment_commands.rs");
-include!("events.rs");
+pub(crate) use repository::OrderCheckoutPayment;
+pub use repository::PostgresStripeRepository;

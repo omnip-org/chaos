@@ -1,26 +1,89 @@
-// Payment outbox records, provider event application, order settlement, cancellation, and refund state.
+use super::repository::*;
 
-type RefundDetailRow = (
-    Uuid,
-    String,
-    i64,
-    Option<String>,
-    Option<String>,
-    OffsetDateTime,
-    OffsetDateTime,
-);
+use chaos_domain::{
+    CurrencyCode,
+    payments::{RefundId, RefundStatus},
+    sales::{Order, OrderId, OrderStatus},
+    store::StoreId,
+};
+use serde_json::{Value, json};
+use sqlx::{Postgres, Transaction};
+use time::OffsetDateTime;
+use uuid::Uuid;
 
-/// contact_email, contact_phone, shipping_full_name, shipping_locality,
-/// shipping_administrative_area, shipping_postal_code, shipping_country_code.
-type OrderIdentityRow = (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
+use crate::{
+    ApplicationError,
+    adapters::postgres::{
+        analytics::{
+            OrderIdentityContext, merge_order_identity, publish_topic_event,
+            purchase_event_payload, splice_attribution,
+        },
+        sales::{consume_order_inventory, release_order_inventory},
+    },
+    contracts::{AdminActor, PaymentRefundObservation, PaymentRefundStatus, RefundDetail},
+    error::database_error,
+};
+
+#[derive(sqlx::FromRow)]
+struct RefundDetailRow {
+    id: Uuid,
+    status: String,
+    amount_minor: i64,
+    provider_reference_id: Option<String>,
+    failure_code: Option<String>,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+}
+
+#[derive(sqlx::FromRow)]
+struct OrderIdentityRow {
+    contact_email: Option<String>,
+    contact_phone: Option<String>,
+    shipping_full_name: Option<String>,
+    shipping_locality: Option<String>,
+    shipping_administrative_area: Option<String>,
+    shipping_postal_code: Option<String>,
+    shipping_country_code: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct LockedPaymentOrderRow {
+    order_status: String,
+    payment_status: String,
+    shopper_id: Uuid,
+    currency: String,
+    cart_id: Uuid,
+}
+
+#[derive(sqlx::FromRow)]
+struct RefundObservationRow {
+    id: Uuid,
+    order_id: Uuid,
+    amount_minor: i64,
+    status: String,
+    failure_code: Option<String>,
+}
+
+pub(super) struct PaymentEvent<'a> {
+    pub store_id: StoreId,
+    pub order_id: OrderId,
+    pub provider_account_id: Uuid,
+    pub event_type: &'a str,
+    pub failure_code: Option<String>,
+    pub payload: &'a Value,
+    pub now: OffsetDateTime,
+}
+
+pub(super) struct RefundEvent<'a> {
+    pub store_id: StoreId,
+    pub refund_id: Option<RefundId>,
+    pub provider_account_id: Uuid,
+    pub event_type: &'a str,
+    pub provider_reference_id: String,
+    pub failure_code: Option<String>,
+    pub payload: &'a Value,
+    pub now: OffsetDateTime,
+}
 
 /// Updates the Order's `payment_status` summary only when it still matches
 /// one of `from_statuses`, so an out-of-order or replayed webhook cannot
@@ -101,7 +164,7 @@ async fn recompute_order_refund_summary(
     Ok(())
 }
 
-async fn load_refund_reconciliation_context(
+pub(super) async fn load_refund_reconciliation_context(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
     provider_account_id: Uuid,
@@ -128,15 +191,15 @@ async fn load_refund_reconciliation_context(
     .fetch_optional(&mut **transaction)
     .await
     .map_err(database_error)?;
-    Ok(row.map(|(order_id, credential_secret_reference)| {
-        RefundReconciliationContext {
+    Ok(row.map(
+        |(order_id, credential_secret_reference)| RefundReconciliationContext {
             store_id,
             order_id: OrderId::from_uuid(order_id),
             provider_account_id,
             credential_secret_reference,
             payment_provider_reference: payment_provider_reference.to_owned(),
-        }
-    }))
+        },
+    ))
 }
 
 impl PostgresStripeRepository {
@@ -157,12 +220,13 @@ impl PostgresStripeRepository {
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
-        let (provider_account_id, payment_provider_reference) = row
-            .ok_or_else(|| order_not_found(order_id))?;
-        let payment_provider_reference = payment_provider_reference.ok_or(ApplicationError::Conflict {
-            code: "stripe_payment_intent_missing",
-            message: "the Order has no Stripe PaymentIntent",
-        })?;
+        let (provider_account_id, payment_provider_reference) =
+            row.ok_or_else(|| order_not_found(order_id))?;
+        let payment_provider_reference =
+            payment_provider_reference.ok_or(ApplicationError::Conflict {
+                code: "stripe_payment_intent_missing",
+                message: "the Order has no Stripe PaymentIntent",
+            })?;
         let context = load_refund_reconciliation_context(
             &mut transaction,
             store_id,
@@ -176,35 +240,36 @@ impl PostgresStripeRepository {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn apply_payment_event(
+pub(super) async fn apply_payment_event(
     transaction: &mut Transaction<'static, Postgres>,
-    store_id: StoreId,
-    order_id: OrderId,
-    provider_account_id: Uuid,
-    event_type: &str,
-    failure_code: Option<String>,
-    provider_payload: &Value,
-    now: OffsetDateTime,
+    event: PaymentEvent<'_>,
 ) -> Result<OrderId, ApplicationError> {
+    let PaymentEvent {
+        store_id,
+        order_id,
+        provider_account_id,
+        event_type,
+        failure_code,
+        payload,
+        now,
+    } = event;
     let captured = matches!(event_type, "payment.authorized" | "payment.captured");
     let failed = matches!(event_type, "payment.failed" | "payment.cancelled");
     let expired = event_type == "payment.expired";
     if !captured && !failed && !expired {
         return Err(corrupt_webhook_payload());
     }
-    let (order_status, payment_status, shopper_id, _channel_id, currency, cart_id):
-        (String, String, Uuid, Uuid, String, Uuid) = sqlx::query_as(
-            "SELECT status::text, payment_status::text, shopper_id, channel_id, currency::text, \
-                    cart_id \
+    let order = sqlx::query_as::<_, LockedPaymentOrderRow>(
+        "SELECT status::text AS order_status, payment_status::text AS payment_status, \
+                    shopper_id, currency::text AS currency, cart_id \
              FROM chaos_commerce.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
-        )
-        .bind(store_id.as_uuid())
-        .bind(order_id.as_uuid())
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(database_error)?
-        .ok_or_else(|| order_not_found(order_id))?;
+    )
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| order_not_found(order_id))?;
 
     let provider_bound = sqlx::query(
         "UPDATE chaos_commerce.orders \
@@ -224,23 +289,17 @@ async fn apply_payment_event(
     }
 
     if captured {
-        if order_status != "pending" {
-            if payment_status == "failed" || order_status == "cancelled" {
+        if order.order_status != "pending" {
+            if order.payment_status == "failed" || order.order_status == "cancelled" {
                 return Err(payment_event_out_of_order());
             }
             return Ok(order_id);
         }
-        let applied = update_order_payment_status(
-            transaction,
-            store_id,
-            order_id,
-            &["pending"],
-            "paid",
-            now,
-        )
-        .await?;
+        let applied =
+            update_order_payment_status(transaction, store_id, order_id, &["pending"], "paid", now)
+                .await?;
         if !applied {
-            if payment_status == "failed" {
+            if order.payment_status == "failed" {
                 return Err(payment_event_out_of_order());
             }
             return Ok(order_id);
@@ -253,41 +312,28 @@ async fn apply_payment_event(
         .fetch_one(&mut **transaction)
         .await
         .map_err(database_error)?;
-        if let Some(snapshot) =
-            StripeCheckoutSnapshot::from_payload(provider_payload, store_id, order_id)?
-        {
+        if let Some(snapshot) = StripeCheckoutSnapshot::from_payload(payload, store_id, order_id)? {
             event_amount =
                 apply_stripe_checkout_snapshot(transaction, store_id, order_id, &snapshot, now)
                     .await?;
         }
-        confirm_paid_order(transaction, store_id, order_id, &order_status, now).await?;
-        let items = load_order_analytics_items(
-            transaction,
-            store_id.as_uuid(),
-            order_id.as_uuid(),
-        )
-        .await?;
+        confirm_paid_order(transaction, store_id, order_id, &order.order_status, now).await?;
+        let items =
+            load_order_analytics_items(transaction, store_id.as_uuid(), order_id.as_uuid()).await?;
         let cart_attribution: Option<Value> = sqlx::query_scalar(
             "SELECT attribution FROM chaos_commerce.carts WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
-        .bind(cart_id)
+        .bind(order.cart_id)
         .fetch_one(&mut **transaction)
         .await
         .map_err(database_error)?;
-        let (
-            contact_email,
-            contact_phone,
-            shipping_full_name,
-            shipping_locality,
-            shipping_administrative_area,
-            shipping_postal_code,
-            shipping_country_code,
-        ): OrderIdentityRow = sqlx::query_as(
-            "SELECT order_row.contact_email::text, order_row.contact_phone, \
+        let identity = sqlx::query_as::<_, OrderIdentityRow>(
+            "SELECT order_row.contact_email::text AS contact_email, order_row.contact_phone, \
                     order_row.shipping_full_name, \
                     order_row.shipping_locality, order_row.shipping_administrative_area, \
-                    order_row.shipping_postal_code, order_row.shipping_country_code::text \
+                    order_row.shipping_postal_code, \
+                    order_row.shipping_country_code::text AS shipping_country_code \
              FROM chaos_commerce.orders AS order_row \
              WHERE order_row.store_id = $1 AND order_row.id = $2",
         )
@@ -296,12 +342,12 @@ async fn apply_payment_event(
         .fetch_one(&mut **transaction)
         .await
         .map_err(database_error)?;
-        let occurred_at = provider_event_time(provider_payload, now);
+        let occurred_at = provider_event_time(payload, now);
         let mut properties = json!({
             "_source": "server",
             "order_id": order_id.as_uuid(),
             "value_minor": event_amount,
-            "currency": currency,
+            "currency": order.currency,
             "items": items,
         });
         if let Some(attribution) = &cart_attribution {
@@ -310,13 +356,13 @@ async fn apply_payment_event(
         merge_order_identity(
             &mut properties,
             OrderIdentityContext {
-                email: contact_email.as_deref(),
-                phone: contact_phone.as_deref(),
-                full_name: shipping_full_name.as_deref(),
-                locality: shipping_locality.as_deref(),
-                administrative_area: shipping_administrative_area.as_deref(),
-                postal_code: shipping_postal_code.as_deref(),
-                country_code: shipping_country_code.as_deref(),
+                email: identity.contact_email.as_deref(),
+                phone: identity.contact_phone.as_deref(),
+                full_name: identity.shipping_full_name.as_deref(),
+                locality: identity.shipping_locality.as_deref(),
+                administrative_area: identity.shipping_administrative_area.as_deref(),
+                postal_code: identity.shipping_postal_code.as_deref(),
+                country_code: identity.shipping_country_code.as_deref(),
             },
         );
         publish_topic_event(
@@ -325,7 +371,7 @@ async fn apply_payment_event(
             purchase_event_payload(
                 store_id.as_uuid(),
                 order_id.as_uuid(),
-                shopper_id,
+                order.shopper_id,
                 occurred_at,
                 properties,
             ),
@@ -360,7 +406,7 @@ async fn apply_payment_event(
         if !applied {
             return Ok(order_id);
         }
-        cancel_pending_order(transaction, store_id, order_id, &order_status, now).await?;
+        cancel_pending_order(transaction, store_id, order_id, &order.order_status, now).await?;
     }
     Ok(order_id)
 }
@@ -539,47 +585,57 @@ fn stripe_address(
     value: &Value,
     name: Option<&str>,
 ) -> Result<Option<StripeAddressSnapshot>, ApplicationError> {
-	let Some(line1) = value.get("line1").and_then(Value::as_str).and_then(non_empty_text)
-	else {
-		return Ok(None);
-	};
-	let Some(city) = value.get("city").and_then(Value::as_str).and_then(non_empty_text) else {
-		return Ok(None);
-	};
-	let Some(country) = value.get("country").and_then(Value::as_str).and_then(non_empty_text)
-	else {
-		return Ok(None);
-	};
-	let Some(full_name) = name.and_then(non_empty_text) else {
-		return Ok(None);
-	};
+    let Some(line1) = value
+        .get("line1")
+        .and_then(Value::as_str)
+        .and_then(non_empty_text)
+    else {
+        return Ok(None);
+    };
+    let Some(city) = value
+        .get("city")
+        .and_then(Value::as_str)
+        .and_then(non_empty_text)
+    else {
+        return Ok(None);
+    };
+    let Some(country) = value
+        .get("country")
+        .and_then(Value::as_str)
+        .and_then(non_empty_text)
+    else {
+        return Ok(None);
+    };
+    let Some(full_name) = name.and_then(non_empty_text) else {
+        return Ok(None);
+    };
     let country = country.to_ascii_uppercase();
     if country.len() != 2 || !country.bytes().all(|byte| byte.is_ascii_uppercase()) {
         return Err(corrupt_webhook_payload());
-	}
-	Ok(Some(StripeAddressSnapshot {
-		full_name,
-		line1,
-		line2: value
-			.get("line2")
-			.and_then(Value::as_str)
-			.and_then(non_empty_text),
-		city,
-		state: value
-			.get("state")
-			.and_then(Value::as_str)
-			.and_then(non_empty_text),
-		postal_code: value
-			.get("postal_code")
-			.and_then(Value::as_str)
-			.and_then(non_empty_text),
-		country,
-	}))
+    }
+    Ok(Some(StripeAddressSnapshot {
+        full_name,
+        line1,
+        line2: value
+            .get("line2")
+            .and_then(Value::as_str)
+            .and_then(non_empty_text),
+        city,
+        state: value
+            .get("state")
+            .and_then(Value::as_str)
+            .and_then(non_empty_text),
+        postal_code: value
+            .get("postal_code")
+            .and_then(Value::as_str)
+            .and_then(non_empty_text),
+        country,
+    }))
 }
 
 fn non_empty_text(value: &str) -> Option<String> {
-	let value = value.trim();
-	(!value.is_empty()).then(|| value.to_owned())
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 fn valid_e164(value: &str) -> bool {
@@ -600,7 +656,10 @@ fn normalize_phone(raw: &str) -> Option<String> {
     if valid_e164(trimmed) {
         return Some(trimmed.to_owned());
     }
-    if trimmed.contains('+') || trimmed.is_empty() || !trimmed.bytes().all(|byte| byte.is_ascii_digit()) {
+    if trimmed.contains('+')
+        || trimmed.is_empty()
+        || !trimmed.bytes().all(|byte| byte.is_ascii_digit())
+    {
         return None;
     }
     let candidate = format!("+{trimmed}");
@@ -702,8 +761,12 @@ async fn update_inline_address(
         &address.country,
     );
     let query = match kind {
-        "billing" => "UPDATE chaos_commerce.orders SET billing_full_name=$3, billing_address_line1=$4, billing_address_line2=$5, billing_locality=$6, billing_administrative_area=$7, billing_postal_code=$8, billing_country_code=$9, updated_at=$10 WHERE store_id=$1 AND id=$2",
-        "shipping" => "UPDATE chaos_commerce.orders SET shipping_full_name=$3, shipping_address_line1=$4, shipping_address_line2=$5, shipping_locality=$6, shipping_administrative_area=$7, shipping_postal_code=$8, shipping_country_code=$9, updated_at=$10 WHERE store_id=$1 AND id=$2",
+        "billing" => {
+            "UPDATE chaos_commerce.orders SET billing_full_name=$3, billing_address_line1=$4, billing_address_line2=$5, billing_locality=$6, billing_administrative_area=$7, billing_postal_code=$8, billing_country_code=$9, updated_at=$10 WHERE store_id=$1 AND id=$2"
+        }
+        "shipping" => {
+            "UPDATE chaos_commerce.orders SET shipping_full_name=$3, shipping_address_line1=$4, shipping_address_line2=$5, shipping_locality=$6, shipping_administrative_area=$7, shipping_postal_code=$8, shipping_country_code=$9, updated_at=$10 WHERE store_id=$1 AND id=$2"
+        }
         _ => return Err(corrupt_webhook_payload()),
     };
     sqlx::query(query)
@@ -765,7 +828,6 @@ async fn cancel_pending_order(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn confirm_paid_order(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
@@ -800,7 +862,7 @@ async fn confirm_paid_order(
     .map_err(database_error)?;
     if let Some(cart_id) = cart_id {
         sqlx::query(
-        "UPDATE chaos_commerce.carts SET status = 'completed'::chaos_commerce.cart_status, \
+            "UPDATE chaos_commerce.carts SET status = 'completed'::chaos_commerce.cart_status, \
                 payment_client_action = NULL, updated_at = $3 \
              WHERE store_id = $1 AND id = $2",
         )
@@ -821,19 +883,21 @@ async fn confirm_paid_order(
 /// outside Chaos (e.g. from the Stripe Dashboard) — that case is resolved
 /// through the PaymentIntent reference and the Refund row is created here,
 /// on first sight.
-#[allow(clippy::too_many_arguments)]
-async fn apply_refund_event(
+pub(super) async fn apply_refund_event(
     transaction: &mut Transaction<'static, Postgres>,
-    store_id: StoreId,
-    refund_id: Option<RefundId>,
-    provider_account_id: Uuid,
-    event_type: &str,
-    provider_reference_id: String,
-    failure_code: Option<String>,
-    provider_payload: &Value,
-    now: OffsetDateTime,
+    event: RefundEvent<'_>,
 ) -> Result<OrderId, ApplicationError> {
-    let object = provider_payload
+    let RefundEvent {
+        store_id,
+        refund_id,
+        provider_account_id,
+        event_type,
+        provider_reference_id,
+        failure_code,
+        payload,
+        now,
+    } = event;
+    let object = payload
         .get("stripe_event")
         .and_then(|event| event.get("data"))
         .and_then(|data| data.get("object"))
@@ -1108,8 +1172,9 @@ async fn upsert_refund_observation(
         return Err(stripe_currency_mismatch());
     }
 
-    let provider_row: Option<(Uuid, Uuid, i64, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, order_id, amount_minor, status::text, failure_code FROM chaos_commerce.order_refunds \
+    let provider_row = sqlx::query_as::<_, RefundObservationRow>(
+        "SELECT id, order_id, amount_minor, status::text AS status, failure_code \
+         FROM chaos_commerce.order_refunds \
          WHERE store_id = $1 AND payment_provider_account_id = $2 \
            AND payment_provider_reference_id = $3 FOR UPDATE",
     )
@@ -1120,8 +1185,8 @@ async fn upsert_refund_observation(
     .await
     .map_err(database_error)?;
     let chaos_row = if let Some(chaos_refund_id) = observation.chaos_refund_id {
-        sqlx::query_as::<_, (Uuid, Uuid, i64, String, Option<String>)>(
-            "SELECT id, order_id, amount_minor, status::text, failure_code \
+        sqlx::query_as::<_, RefundObservationRow>(
+            "SELECT id, order_id, amount_minor, status::text AS status, failure_code \
              FROM chaos_commerce.order_refunds \
              WHERE store_id = $1 AND id = $2 AND order_id = $3 FOR UPDATE",
         )
@@ -1135,7 +1200,7 @@ async fn upsert_refund_observation(
         None
     };
     if let (Some(provider_row), Some(chaos_row)) = (provider_row.as_ref(), chaos_row.as_ref())
-        && provider_row.0 != chaos_row.0
+        && provider_row.id != chaos_row.id
     {
         return Err(ApplicationError::Conflict {
             code: "refund_reconciliation_identity_mismatch",
@@ -1146,22 +1211,18 @@ async fn upsert_refund_observation(
     let observed_status = local_refund_status(observation.status);
     let observed_failure_code = local_refund_failure_code(observation);
     match existing {
-        Some((
-            refund_id,
-            order_id,
-            amount_minor,
-            current_status,
-            current_failure_code,
-        )) => {
-            if order_id != context.order_id.as_uuid() || amount_minor != observation.amount_minor {
+        Some(refund) => {
+            if refund.order_id != context.order_id.as_uuid()
+                || refund.amount_minor != observation.amount_minor
+            {
                 return Err(ApplicationError::Conflict {
                     code: "refund_reconciliation_amount_mismatch",
                     message: "the Stripe Refund amount does not match the local Refund",
                 });
             }
-            let status = reconcile_refund_status(&current_status, observation.status);
+            let status = reconcile_refund_status(&refund.status, observation.status);
             let failure_code = match status {
-                "failed" => observed_failure_code.or(current_failure_code),
+                "failed" => observed_failure_code.or(refund.failure_code),
                 _ => None,
             };
             sqlx::query(
@@ -1170,7 +1231,7 @@ async fn upsert_refund_observation(
                  WHERE store_id = $1 AND id = $2",
             )
             .bind(context.store_id.as_uuid())
-            .bind(refund_id)
+            .bind(refund.id)
             .bind(&observation.provider_reference_id)
             .bind(status)
             .bind(failure_code)
@@ -1248,13 +1309,8 @@ impl PostgresStripeRepository {
         for observation in observations {
             upsert_refund_observation(&mut transaction, context, observation, now).await?;
         }
-        recompute_order_refund_summary(
-            &mut transaction,
-            context.store_id,
-            context.order_id,
-            now,
-        )
-        .await?;
+        recompute_order_refund_summary(&mut transaction, context.store_id, context.order_id, now)
+            .await?;
         let refunded_amount_minor: i64 = sqlx::query_scalar(
             "SELECT refunded_amount_minor FROM chaos_commerce.orders WHERE store_id = $1 AND id = $2",
         )
@@ -1264,7 +1320,8 @@ impl PostgresStripeRepository {
         .await
         .map_err(database_error)?;
         let rows: Vec<RefundDetailRow> = sqlx::query_as(
-            "SELECT id, status::text, amount_minor, payment_provider_reference_id, \
+            "SELECT id, status::text AS status, amount_minor, \
+                    payment_provider_reference_id AS provider_reference_id, \
                     failure_code, created_at, updated_at \
              FROM chaos_commerce.order_refunds WHERE store_id = $1 AND order_id = $2 \
              ORDER BY created_at, id",
@@ -1276,29 +1333,19 @@ impl PostgresStripeRepository {
         .map_err(database_error)?;
         let refunds = rows
             .into_iter()
-            .map(
-                |(
-                    id,
-                    status,
-                    amount_minor,
-                    provider_reference_id,
-                    failure_code,
-                    created_at,
-                    updated_at,
-                )| {
-                    Ok(RefundDetail {
-                        id: RefundId::from_uuid(id),
-                        order_id: context.order_id,
-                        amount_minor,
-                        currency: CurrencyCode::parse(&order_currency)?,
-                        status: RefundStatus::parse(&status).ok_or_else(corrupt_payment_state)?,
-                        provider_reference_id,
-                        failure_code,
-                        created_at,
-                        updated_at,
-                    })
-                },
-            )
+            .map(|row| {
+                Ok(RefundDetail {
+                    id: RefundId::from_uuid(row.id),
+                    order_id: context.order_id,
+                    amount_minor: row.amount_minor,
+                    currency: CurrencyCode::parse(&order_currency)?,
+                    status: RefundStatus::parse(&row.status).ok_or_else(corrupt_payment_state)?,
+                    provider_reference_id: row.provider_reference_id,
+                    failure_code: row.failure_code,
+                    created_at: row.created_at,
+                    updated_at: row.updated_at,
+                })
+            })
             .collect::<Result<Vec<_>, ApplicationError>>()?;
         transaction.commit().await.map_err(database_error)?;
         Ok((refunded_amount_minor, refunds))
@@ -1338,18 +1385,12 @@ mod stripe_phone_normalization_tests {
 
     #[test]
     fn already_e164_phone_is_kept_as_is() {
-        assert_eq!(
-            normalize_phone("+14155552671"),
-            Some("+14155552671".into())
-        );
+        assert_eq!(normalize_phone("+14155552671"), Some("+14155552671".into()));
     }
 
     #[test]
     fn digits_only_phone_missing_the_leading_plus_is_recovered() {
-        assert_eq!(
-            normalize_phone("8525200521"),
-            Some("+8525200521".into())
-        );
+        assert_eq!(normalize_phone("8525200521"), Some("+8525200521".into()));
     }
 
     #[test]

@@ -66,6 +66,7 @@ struct OrderHeaderRow {
 
 #[derive(sqlx::FromRow)]
 struct RefundRow {
+    order_id: Uuid,
     id: Uuid,
     status: String,
     amount_minor: i64,
@@ -77,6 +78,7 @@ struct RefundRow {
 
 #[derive(sqlx::FromRow)]
 struct FulfillmentRow {
+    order_id: Uuid,
     id: Uuid,
     provider_account_id: Uuid,
     shipping_provider: String,
@@ -91,58 +93,28 @@ struct FulfillmentRow {
     updated_at: OffsetDateTime,
 }
 
-type OrderLineRow = (
-    Uuid,
-    Uuid,
-    String,
-    String,
-    Option<String>,
-    bool,
-    i32,
-    i64,
-    i64,
-);
-
-type BatchOrderLineRow = (
-    Uuid,
-    Uuid,
-    Uuid,
-    String,
-    String,
-    Option<String>,
-    bool,
-    i32,
-    i64,
-    i64,
-);
-
 #[derive(sqlx::FromRow)]
-struct BatchRefundRow {
+struct OrderLineRow {
     order_id: Uuid,
-    id: Uuid,
-    status: String,
-    amount_minor: i64,
-    provider_reference_id: Option<String>,
-    failure_code: Option<String>,
-    created_at: OffsetDateTime,
-    updated_at: OffsetDateTime,
+    product_id: Uuid,
+    product_variant_id: Uuid,
+    product_title: String,
+    variant_title: String,
+    sku: Option<String>,
+    track_inventory: bool,
+    quantity: i32,
+    unit_price_amount_minor: i64,
+    subtotal_amount_minor: i64,
 }
 
-#[derive(sqlx::FromRow)]
-struct BatchFulfillmentRow {
-    order_id: Uuid,
-    id: Uuid,
-    provider_account_id: Uuid,
-    shipping_provider: String,
-    provider_reference_id: Option<String>,
-    status: String,
-    tracking_number: Option<String>,
-    tracking_url: Option<String>,
-    shipped_at: Option<OffsetDateTime>,
-    delivered_at: Option<OffsetDateTime>,
-    cancelled_at: Option<OffsetDateTime>,
-    created_at: OffsetDateTime,
-    updated_at: OffsetDateTime,
+struct AddressFields {
+    full_name: Option<String>,
+    address_line1: Option<String>,
+    address_line2: Option<String>,
+    locality: Option<String>,
+    administrative_area: Option<String>,
+    postal_code: Option<String>,
+    country_code: Option<String>,
 }
 
 pub(crate) async fn load(
@@ -189,9 +161,8 @@ pub(crate) async fn load(
         return Ok(None);
     };
 
-    let identity = order_identity(&row)?;
     let lines = sqlx::query_as::<_, OrderLineRow>(
-        "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
+        "SELECT order_id, product_id, product_variant_id, product_title, variant_title, sku, \
                 track_inventory, quantity, unit_price_amount_minor, \
                 subtotal_amount_minor FROM chaos_commerce.order_lines \
          WHERE store_id = $1 AND order_id = $2 ORDER BY position",
@@ -202,7 +173,7 @@ pub(crate) async fn load(
     .await
     .map_err(database_error)?;
     let refunds = sqlx::query_as::<_, RefundRow>(
-        "SELECT id, status::text, amount_minor, \
+        "SELECT order_id, id, status::text AS status, amount_minor, \
                 payment_provider_reference_id AS provider_reference_id, \
                 failure_code, created_at, updated_at \
          FROM chaos_commerce.order_refunds WHERE store_id = $1 AND order_id = $2 \
@@ -214,9 +185,9 @@ pub(crate) async fn load(
     .await
     .map_err(database_error)?;
     let fulfillments = sqlx::query_as::<_, FulfillmentRow>(
-        "SELECT fulfillment.id, fulfillment.provider_account_id, \
+        "SELECT fulfillment.order_id, fulfillment.id, fulfillment.provider_account_id, \
                 shipping_account.provider::text AS shipping_provider, \
-                provider_reference_id AS provider_reference_id, status::text, tracking_number, \
+                provider_reference_id, status::text AS status, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, fulfillment.created_at, fulfillment.updated_at \
          FROM chaos_commerce.order_fulfillments AS fulfillment \
          INNER JOIN chaos_integration.provider_accounts AS shipping_account \
@@ -231,48 +202,7 @@ pub(crate) async fn load(
     .fetch_all(&mut **transaction)
     .await
     .map_err(database_error)?;
-    let order_number = OrderNumber::parse(&row.order_number)?;
-
-    Ok(Some(OrderDetail {
-        id: OrderId::from_uuid(row.id),
-        order_number,
-        shopper_id: ShopperId::from_uuid(row.shopper_id),
-        price_list_id: PriceListId::from_uuid(row.price_list_id),
-        currency: CurrencyCode::parse(&row.currency)?,
-        status: OrderStatus::parse(&row.status).ok_or_else(corrupt_state)?,
-        payment_status: OrderPaymentStatus::parse(&row.payment_status).ok_or_else(corrupt_state)?,
-        fulfillment_status: FulfillmentStatus::parse(&row.fulfillment_status)
-            .ok_or_else(corrupt_state)?,
-        payment_provider: row
-            .payment_provider
-            .as_deref()
-            .map(|value| PaymentProvider::parse(value).ok_or_else(corrupt_state))
-            .transpose()?,
-        payment_provider_reference_id: row.payment_provider_reference_id.clone(),
-        identity,
-        subtotal_amount_minor: row.subtotal_amount_minor,
-        discount_amount_minor: row.discount_amount_minor,
-        tax_amount_minor: row.tax_amount_minor,
-        shipping_amount_minor: row.shipping_amount_minor,
-        total_amount_minor: row.total_amount_minor,
-        amounts_finalized_at: row.amounts_finalized_at,
-        refunded_amount_minor: row.refunded_amount_minor,
-        lines: lines
-            .into_iter()
-            .map(order_line_item)
-            .collect::<Result<_, _>>()?,
-        payment_attempt: payment_attempt_item(&row)?,
-        refunds: refunds
-            .into_iter()
-            .map(refund_item)
-            .collect::<Result<_, _>>()?,
-        fulfillments: fulfillments
-            .into_iter()
-            .map(fulfillment_item)
-            .collect::<Result<_, _>>()?,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-    }))
+    Ok(Some(order_detail(row, lines, refunds, fulfillments)?))
 }
 
 pub(crate) async fn load_many(
@@ -323,7 +253,7 @@ pub(crate) async fn load_many(
         return Ok(HashMap::new());
     }
 
-    let lines = sqlx::query_as::<_, BatchOrderLineRow>(
+    let lines = sqlx::query_as::<_, OrderLineRow>(
         "SELECT order_id, product_id, product_variant_id, product_title, variant_title, sku, \
                 track_inventory, quantity, unit_price_amount_minor, subtotal_amount_minor \
          FROM chaos_commerce.order_lines \
@@ -335,8 +265,8 @@ pub(crate) async fn load_many(
     .fetch_all(&mut **transaction)
     .await
     .map_err(database_error)?;
-    let refunds = sqlx::query_as::<_, BatchRefundRow>(
-        "SELECT order_id, id, status::text, amount_minor, \
+    let refunds = sqlx::query_as::<_, RefundRow>(
+        "SELECT order_id, id, status::text AS status, amount_minor, \
                 payment_provider_reference_id AS provider_reference_id, \
                 failure_code, created_at, updated_at \
          FROM chaos_commerce.order_refunds WHERE store_id = $1 AND order_id = ANY($2::uuid[]) \
@@ -347,10 +277,10 @@ pub(crate) async fn load_many(
     .fetch_all(&mut **transaction)
     .await
     .map_err(database_error)?;
-    let fulfillments = sqlx::query_as::<_, BatchFulfillmentRow>(
+    let fulfillments = sqlx::query_as::<_, FulfillmentRow>(
         "SELECT fulfillment.order_id, fulfillment.id, fulfillment.provider_account_id, \
                 shipping_account.provider::text AS shipping_provider, \
-                provider_reference_id AS provider_reference_id, status::text, tracking_number, \
+                provider_reference_id, status::text AS status, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, fulfillment.created_at, fulfillment.updated_at \
          FROM chaos_commerce.order_fulfillments AS fulfillment \
          INNER JOIN chaos_integration.provider_accounts AS shipping_account \
@@ -366,15 +296,15 @@ pub(crate) async fn load_many(
     .await
     .map_err(database_error)?;
 
-    let mut lines_by_order: HashMap<Uuid, Vec<BatchOrderLineRow>> = HashMap::new();
+    let mut lines_by_order: HashMap<Uuid, Vec<OrderLineRow>> = HashMap::new();
     for row in lines {
-        lines_by_order.entry(row.0).or_default().push(row);
+        lines_by_order.entry(row.order_id).or_default().push(row);
     }
-    let mut refunds_by_order: HashMap<Uuid, Vec<BatchRefundRow>> = HashMap::new();
+    let mut refunds_by_order: HashMap<Uuid, Vec<RefundRow>> = HashMap::new();
     for row in refunds {
         refunds_by_order.entry(row.order_id).or_default().push(row);
     }
-    let mut fulfillments_by_order: HashMap<Uuid, Vec<BatchFulfillmentRow>> = HashMap::new();
+    let mut fulfillments_by_order: HashMap<Uuid, Vec<FulfillmentRow>> = HashMap::new();
     for row in fulfillments {
         fulfillments_by_order
             .entry(row.order_id)
@@ -385,85 +315,63 @@ pub(crate) async fn load_many(
     rows.into_iter()
         .map(|row| {
             let order_id = row.id;
-            let detail = OrderDetail {
-                id: OrderId::from_uuid(order_id),
-                order_number: OrderNumber::parse(&row.order_number)?,
-                shopper_id: ShopperId::from_uuid(row.shopper_id),
-                price_list_id: PriceListId::from_uuid(row.price_list_id),
-                currency: CurrencyCode::parse(&row.currency)?,
-                status: OrderStatus::parse(&row.status).ok_or_else(corrupt_state)?,
-                payment_status: OrderPaymentStatus::parse(&row.payment_status)
-                    .ok_or_else(corrupt_state)?,
-                fulfillment_status: FulfillmentStatus::parse(&row.fulfillment_status)
-                    .ok_or_else(corrupt_state)?,
-                payment_provider: row
-                    .payment_provider
-                    .as_deref()
-                    .map(|value| PaymentProvider::parse(value).ok_or_else(corrupt_state))
-                    .transpose()?,
-                payment_provider_reference_id: row.payment_provider_reference_id.clone(),
-                identity: order_identity(&row)?,
-                subtotal_amount_minor: row.subtotal_amount_minor,
-                discount_amount_minor: row.discount_amount_minor,
-                tax_amount_minor: row.tax_amount_minor,
-                shipping_amount_minor: row.shipping_amount_minor,
-                total_amount_minor: row.total_amount_minor,
-                amounts_finalized_at: row.amounts_finalized_at,
-                refunded_amount_minor: row.refunded_amount_minor,
-                lines: lines_by_order
-                    .remove(&order_id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|line| {
-                        order_line_item((
-                            line.1, line.2, line.3, line.4, line.5, line.6, line.7, line.8, line.9,
-                        ))
-                    })
-                    .collect::<Result<_, _>>()?,
-                payment_attempt: payment_attempt_item(&row)?,
-                refunds: refunds_by_order
-                    .remove(&order_id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|refund| {
-                        refund_item(RefundRow {
-                            id: refund.id,
-                            status: refund.status,
-                            amount_minor: refund.amount_minor,
-                            provider_reference_id: refund.provider_reference_id,
-                            failure_code: refund.failure_code,
-                            created_at: refund.created_at,
-                            updated_at: refund.updated_at,
-                        })
-                    })
-                    .collect::<Result<_, _>>()?,
-                fulfillments: fulfillments_by_order
-                    .remove(&order_id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|fulfillment| {
-                        fulfillment_item(FulfillmentRow {
-                            id: fulfillment.id,
-                            provider_account_id: fulfillment.provider_account_id,
-                            shipping_provider: fulfillment.shipping_provider,
-                            provider_reference_id: fulfillment.provider_reference_id,
-                            status: fulfillment.status,
-                            tracking_number: fulfillment.tracking_number,
-                            tracking_url: fulfillment.tracking_url,
-                            shipped_at: fulfillment.shipped_at,
-                            delivered_at: fulfillment.delivered_at,
-                            cancelled_at: fulfillment.cancelled_at,
-                            created_at: fulfillment.created_at,
-                            updated_at: fulfillment.updated_at,
-                        })
-                    })
-                    .collect::<Result<_, _>>()?,
-                created_at: row.created_at,
-                updated_at: row.updated_at,
-            };
+            let detail = order_detail(
+                row,
+                lines_by_order.remove(&order_id).unwrap_or_default(),
+                refunds_by_order.remove(&order_id).unwrap_or_default(),
+                fulfillments_by_order.remove(&order_id).unwrap_or_default(),
+            )?;
             Ok((order_id, detail))
         })
         .collect()
+}
+
+fn order_detail(
+    row: OrderHeaderRow,
+    lines: Vec<OrderLineRow>,
+    refunds: Vec<RefundRow>,
+    fulfillments: Vec<FulfillmentRow>,
+) -> Result<OrderDetail, ApplicationError> {
+    Ok(OrderDetail {
+        id: OrderId::from_uuid(row.id),
+        order_number: OrderNumber::parse(&row.order_number)?,
+        shopper_id: ShopperId::from_uuid(row.shopper_id),
+        price_list_id: PriceListId::from_uuid(row.price_list_id),
+        currency: CurrencyCode::parse(&row.currency)?,
+        status: OrderStatus::parse(&row.status).ok_or_else(corrupt_state)?,
+        payment_status: OrderPaymentStatus::parse(&row.payment_status).ok_or_else(corrupt_state)?,
+        fulfillment_status: FulfillmentStatus::parse(&row.fulfillment_status)
+            .ok_or_else(corrupt_state)?,
+        payment_provider: row
+            .payment_provider
+            .as_deref()
+            .map(|value| PaymentProvider::parse(value).ok_or_else(corrupt_state))
+            .transpose()?,
+        payment_provider_reference_id: row.payment_provider_reference_id.clone(),
+        identity: order_identity(&row)?,
+        subtotal_amount_minor: row.subtotal_amount_minor,
+        discount_amount_minor: row.discount_amount_minor,
+        tax_amount_minor: row.tax_amount_minor,
+        shipping_amount_minor: row.shipping_amount_minor,
+        total_amount_minor: row.total_amount_minor,
+        amounts_finalized_at: row.amounts_finalized_at,
+        refunded_amount_minor: row.refunded_amount_minor,
+        lines: lines
+            .into_iter()
+            .map(order_line_item)
+            .collect::<Result<_, _>>()?,
+        payment_attempt: payment_attempt_item(&row)?,
+        refunds: refunds
+            .into_iter()
+            .map(refund_item)
+            .collect::<Result<_, _>>()?,
+        fulfillments: fulfillments
+            .into_iter()
+            .map(fulfillment_item)
+            .collect::<Result<_, _>>()?,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
 }
 
 fn order_identity(row: &OrderHeaderRow) -> Result<OrderIdentity, ApplicationError> {
@@ -472,44 +380,35 @@ fn order_identity(row: &OrderHeaderRow) -> Result<OrderIdentity, ApplicationErro
             normalize_optional_text(row.contact_email.clone()),
             normalize_optional_text(row.contact_phone.clone()),
         )?,
-        optional_address(
-            row.billing_full_name.clone(),
-            row.billing_address_line1.clone(),
-            row.billing_address_line2.clone(),
-            row.billing_locality.clone(),
-            row.billing_administrative_area.clone(),
-            row.billing_postal_code.clone(),
-            row.billing_country_code.clone(),
-        )?,
-        optional_address(
-            row.shipping_full_name.clone(),
-            row.shipping_address_line1.clone(),
-            row.shipping_address_line2.clone(),
-            row.shipping_locality.clone(),
-            row.shipping_administrative_area.clone(),
-            row.shipping_postal_code.clone(),
-            row.shipping_country_code.clone(),
-        )?,
+        optional_address(AddressFields {
+            full_name: row.billing_full_name.clone(),
+            address_line1: row.billing_address_line1.clone(),
+            address_line2: row.billing_address_line2.clone(),
+            locality: row.billing_locality.clone(),
+            administrative_area: row.billing_administrative_area.clone(),
+            postal_code: row.billing_postal_code.clone(),
+            country_code: row.billing_country_code.clone(),
+        })?,
+        optional_address(AddressFields {
+            full_name: row.shipping_full_name.clone(),
+            address_line1: row.shipping_address_line1.clone(),
+            address_line2: row.shipping_address_line2.clone(),
+            locality: row.shipping_locality.clone(),
+            administrative_area: row.shipping_administrative_area.clone(),
+            postal_code: row.shipping_postal_code.clone(),
+            country_code: row.shipping_country_code.clone(),
+        })?,
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn optional_address(
-    full_name: Option<String>,
-    address_line1: Option<String>,
-    address_line2: Option<String>,
-    locality: Option<String>,
-    administrative_area: Option<String>,
-    postal_code: Option<String>,
-    country_code: Option<String>,
-) -> Result<Option<PostalAddress>, ApplicationError> {
-    let full_name = normalize_optional_text(full_name);
-    let address_line1 = normalize_optional_text(address_line1);
-    let address_line2 = normalize_optional_text(address_line2);
-    let locality = normalize_optional_text(locality);
-    let administrative_area = normalize_optional_text(administrative_area);
-    let postal_code = normalize_optional_text(postal_code);
-    let country_code = normalize_optional_text(country_code);
+fn optional_address(fields: AddressFields) -> Result<Option<PostalAddress>, ApplicationError> {
+    let full_name = normalize_optional_text(fields.full_name);
+    let address_line1 = normalize_optional_text(fields.address_line1);
+    let address_line2 = normalize_optional_text(fields.address_line2);
+    let locality = normalize_optional_text(fields.locality);
+    let administrative_area = normalize_optional_text(fields.administrative_area);
+    let postal_code = normalize_optional_text(fields.postal_code);
+    let country_code = normalize_optional_text(fields.country_code);
     let any = full_name.is_some()
         || address_line1.is_some()
         || address_line2.is_some()
@@ -543,16 +442,16 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
 
 fn order_line_item(row: OrderLineRow) -> Result<OrderLineItem, ApplicationError> {
     Ok(OrderLineItem {
-        product_id: ProductId::from_uuid(row.0),
-        product_variant_id: ProductVariantId::from_uuid(row.1),
-        product_title: row.2,
-        variant_title: row.3,
-        sku: row.4,
-        track_inventory: row.5,
-        quantity: u32::try_from(row.6)
+        product_id: ProductId::from_uuid(row.product_id),
+        product_variant_id: ProductVariantId::from_uuid(row.product_variant_id),
+        product_title: row.product_title,
+        variant_title: row.variant_title,
+        sku: row.sku,
+        track_inventory: row.track_inventory,
+        quantity: u32::try_from(row.quantity)
             .map_err(|error| ApplicationError::Unexpected(error.into()))?,
-        unit_price_amount_minor: row.7,
-        subtotal_amount_minor: row.8,
+        unit_price_amount_minor: row.unit_price_amount_minor,
+        subtotal_amount_minor: row.subtotal_amount_minor,
     })
 }
 

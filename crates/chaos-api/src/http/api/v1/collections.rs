@@ -11,14 +11,11 @@ use crate::http::shared::pagination::{
 };
 use crate::http::{ApiError, ApiPath, ApiQuery, ApiResponse, ApiState, PublishableChannel};
 
-#[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/collections", get(list_collections))
         .route("/collections/{handle}", get(get_collection))
 }
-
-// ===== request contracts =====
 
 #[derive(Deserialize)]
 struct ListCollectionsQuery {
@@ -30,8 +27,6 @@ struct ListCollectionsQuery {
 struct CollectionPath {
     handle: String,
 }
-
-// ===== response contracts =====
 
 #[derive(Serialize)]
 struct CollectionResponse {
@@ -57,8 +52,6 @@ impl From<StorefrontCollectionItem> for CollectionResponse {
     }
 }
 
-// ===== GET /collections =====
-
 async fn list_collections(
     State(state): State<ApiState>,
     PublishableChannel(actor): PublishableChannel,
@@ -75,21 +68,18 @@ async fn list_collections(
         .storefront_collections
         .list(&actor, after, limit)
         .await?;
-    let next_cursor = page
-        .has_more
-        .then(|| {
-            page.items
-                .last()
-                .map(|item| encode_cursor(item.id.as_uuid(), CursorKind::Collection))
-        })
-        .flatten();
+    let next_cursor = if page.has_more {
+        page.items
+            .last()
+            .map(|item| encode_cursor(item.id.as_uuid(), CursorKind::Collection))
+    } else {
+        None
+    };
     Ok(
         ApiResponse::ok(page.items.into_iter().map(Into::into).collect())
             .with_meta(page_meta(page.has_more, next_cursor)),
     )
 }
-
-// ===== GET /collections/{handle} =====
 
 async fn get_collection(
     State(state): State<ApiState>,

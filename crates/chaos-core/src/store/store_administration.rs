@@ -9,12 +9,10 @@ use chaos_domain::{
 };
 
 use crate::{
-    ApplicationError,
+    ApplicationError, Page,
     adapters::postgres::PostgresStoreAdministrationRepository,
     contracts::{AdminActor, SalesChannelAdminItem, ShippingCountryAdminItem, StoreAdminItem},
 };
-
-use super::Page;
 
 pub struct UpdateStoreInput {
     pub actor: AdminActor,
