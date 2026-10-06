@@ -5,9 +5,6 @@ use std::collections::HashMap;
 use crate::{
     ApplicationError,
     error::database_error,
-    adapters::postgres::analytics::{
-        cart_event_payload, payment_event_payload, publish_topic_event, splice_attribution,
-    },
     contracts::{
         CartDetail, CartLineItem, MachineActor, OrderDetail, ShopperActor, ShopperOrderDetail,
         ShopperOrderContext,
@@ -17,7 +14,7 @@ use crate::{
     },
     sales::StripeCheckoutRequest,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductOptionId, ProductOptionValueId, ProductVariantId},

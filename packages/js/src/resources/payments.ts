@@ -72,7 +72,6 @@ export class PaymentsResource {
     const start: EmbeddedCheckoutStart = {
       checkout: checkout.data,
       source_cart: cart,
-      event_id: checkout.data.event_id,
     };
     this.client.recordCheckoutCreation(start);
     return { data: start };
@@ -95,7 +94,6 @@ export class PaymentsResource {
       checkout: checkout.data,
       source_cart: sourceCart,
       cart: nextCart.data,
-      event_id: checkout.data.event_id,
     };
     this.client.recordCheckoutCreation(creation);
     return { data: creation };
@@ -149,7 +147,6 @@ function isEmbeddedCheckoutSession(
   return (
     isNonEmptyString(value.order_id) &&
     isNonEmptyString(value.order_number) &&
-    isNonEmptyString(value.event_id) &&
     value.client_action.type === "stripe_checkout_embedded" &&
     isNonEmptyString(value.client_action.public_key) &&
     isNonEmptyString(value.client_action.client_token)

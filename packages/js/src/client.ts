@@ -202,7 +202,7 @@ export class ChaosStorefrontClient {
     }
 
     // One capture per page load: first touch (once) and last touch (every
-    // load that carries utm_*). Later checkout / AddToCart / session-refresh
+    // load that carries utm_*). Later checkout and session-refresh
     // reads draw on these instead of the live URL, which an MPA navigation
     // strips.
     recordPageUtm(this.storage);
@@ -279,8 +279,8 @@ export class ChaosStorefrontClient {
   /**
    * `utm_*` query params for the `last_seen` session refresh — the entry
    * point of the visitor's current journey, overwritten on every page load
-   * that carries `utm_*`. Same source the checkout / AddToCart
-   * `attribution.utm` body draws on.
+   * that carries `utm_*`. Same source the checkout `attribution.utm` body
+   * draws on.
    * @internal
    */
   lastTouchUtmParams(): UtmRequestParams {

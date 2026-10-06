@@ -4,8 +4,8 @@ import { lastTouchUtmTags, type UtmKey } from "./utm.js";
 type UtmStorage = Pick<Storage, "getItem" | "setItem"> | null;
 
 /**
- * Ad-platform attribution for the checkout call (Meta CAPI `InitiateCheckout`
- * / `Purchase`) and cart-line additions (Meta CAPI `AddToCart`).
+ * Ad-platform attribution captured by the checkout call for the later
+ * server-side Meta CAPI `Purchase`.
  *
  * `_fbp` is set by Meta's Pixel; `_fbc` is chaos-js's own copy of the
  * `fbclid` URL param (see `events/browser.ts`'s `maintainFbcCookie`). Both are
@@ -43,19 +43,6 @@ export function hasAdAttribution(attribution: CheckoutAttribution): boolean {
       (attribution.utm && Object.keys(attribution.utm).length > 0) ||
       (attribution.meta && (attribution.meta.fbc || attribution.meta.fbp)),
   );
-}
-
-/**
- * `{ attribution }` when the browser had anything to attach, else `{}` — spread
- * into a request body so an empty attribution is simply omitted. @internal
- */
-export function adAttributionBody(
-  storage: UtmStorage,
-):
-  | { attribution: CheckoutAttribution }
-  | Record<string, never> {
-  const attribution = defaultAdAttribution(storage);
-  return hasAdAttribution(attribution) ? { attribution } : {};
 }
 
 function readCookie(name: string): string | undefined {

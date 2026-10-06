@@ -317,11 +317,10 @@ test("high-level commerce methods project canonical event properties", () => {
   });
 });
 
-test("recordCartMutation reuses a server-supplied event ID", () => {
+test("recordCartMutation mints a browser-owned event ID", () => {
   const environment = harness({
     providers: { metaPixel: { pixelId: "12345" } },
   });
-  const suppliedEventId = "00000000-0000-4000-8000-0000000000aa";
   const returnedId = environment.analytics.recordCartMutation({
     cart: {
       id: "00000000-0000-4000-8000-000000000030",
@@ -347,13 +346,12 @@ test("recordCartMutation reuses a server-supplied event ID", () => {
     previous_quantity: 0,
     new_quantity: 2,
     removed: false,
-    event_id: suppliedEventId,
   });
-  assert.equal(returnedId, suppliedEventId);
+  assert.equal(returnedId, "00000000-0000-4000-8000-000000000001");
   const metaTrack = fbqCalls(environment.window).find(
     (call) => call[1] === "AddToCart",
   );
-  assert.deepEqual(metaTrack?.[3], { eventID: suppliedEventId });
+  assert.deepEqual(metaTrack?.[3], { eventID: returnedId });
 });
 
 test("records InitiateCheckout with the public order number", () => {
@@ -390,7 +388,6 @@ test("attributes server checkout creation to the source Cart", () => {
     checkout: {
       order_id: "00000000-0000-4000-8000-000000000001",
       order_number: "W-20260830-7K4M9Q2D",
-      event_id: "W-20260830-7K4M9Q2D",
       client_action: {
         type: "stripe_checkout_embedded",
         public_key: "pk_test_stripe",

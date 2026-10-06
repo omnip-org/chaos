@@ -12,9 +12,9 @@
  *   `shoppers.attribution.first_seen`.
  * - **last touch** (`utm_last_touch`) — overwritten on every page load that
  *   carries `utm_*`; a load with none leaves it untouched. The entry point of
- *   the visitor's *current* shopping journey. Forwarded to checkout / AddToCart
- *   (`attribution.utm` → Meta CAPI Purchase / AddToCart) and to the
- *   `last_seen` session refresh.
+ *   the visitor's *current* shopping journey. Forwarded to checkout
+ *   (`attribution.utm` → Meta CAPI Purchase) and to the `last_seen` session
+ *   refresh.
  *
  * `recordPageUtm(storage)` runs once per client construction (i.e. once per
  * page load) and does both writes. The read helpers fall back to the live URL
@@ -123,8 +123,8 @@ export function firstTouchUtmParams(storage: UtmStorage): UtmRequestParams {
 }
 
 /**
- * `utm_*` tags for the checkout / AddToCart `attribution.utm` body and the
- * `last_seen` refresh — the entry point of the current shopping journey.
+ * `utm_*` tags for the checkout `attribution.utm` body and the `last_seen`
+ * refresh — the entry point of the current shopping journey.
  * Falls back to the live URL when nothing is persisted. `undefined` when
  * there is nothing anywhere, so the attribution body omits `utm` entirely.
  */

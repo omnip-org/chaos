@@ -183,12 +183,6 @@ export interface Cart {
   subtotal_amount_minor: number;
   created_at: string;
   updated_at: string;
-  /**
-   * Server-minted Meta CAPI `AddToCart` event id, present only on the
-   * response to a line mutation that raised the quantity. The SDK reuses it
-   * for the browser Pixel's own AddToCart so Meta deduplicates the pair.
-   */
-  event_id?: UUID;
 }
 
 /** Result returned by a storefront cart-line mutation bridge. */
@@ -198,12 +192,6 @@ export interface CartLineMutation {
   previous_quantity: number;
   new_quantity: number;
   removed: boolean;
-  /**
-   * The server-minted Meta CAPI `AddToCart` event id from the mutation
-   * response, forwarded so the Pixel projection reuses it for deduplication.
-   * Present only when the mutation raised the line quantity.
-   */
-  event_id?: string;
 }
 
 export interface SetCartLineRequest {
@@ -342,12 +330,6 @@ export interface EmbeddedCheckoutSession {
   order_id: UUID;
   order_number: string;
   client_action: PaymentClientAction;
-  /**
-   * Chaos's own server-side Meta CAPI InitiateCheckout call already used
-   * this as its event id — reuse it for the browser Pixel's own
-   * InitiateCheckout so Meta can deduplicate the two.
-   */
-  event_id: string;
 }
 
 /** The payment handoff created from an already loaded Cart snapshot. */
@@ -355,8 +337,6 @@ export interface EmbeddedCheckoutStart {
   checkout: EmbeddedCheckoutSession;
   /** The immutable source Cart snapshot used to create this checkout. */
   source_cart: Cart;
-  /** Reserved for a caller-supplied dedup id; unset by every SDK code path today. */
-  event_id?: string;
 }
 
 /** Browser-facing result of creating or recovering a checkout by Cart. */

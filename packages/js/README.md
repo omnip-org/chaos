@@ -11,14 +11,12 @@ by default).
 Client-side event delivery (Meta Pixel, GA4) is wired up internally from
 `ClientOptions.events` — there is no separate analytics class to construct,
 start, or export. Pass `providers.metaPixel`/`providers.ga4` to turn either
-on; omit both to leave event delivery off entirely. `chaos-rust` sends three
-events to Meta's server-side Conversions API itself — `AddToCart` when a
-cart-line mutation raises the quantity, `InitiateCheckout` at checkout
-creation, and `Purchase` at payment confirmation — from the ad-platform
-attribution this SDK attaches to the cart and checkout calls, each
-deduplicated against this SDK's own Pixel projection by a server-minted
-shared event id. This package never talks to Meta's CAPI or holds a Meta
-access token.
+on; omit both to leave event delivery off entirely. `chaos-rust` sends one
+event to Meta's server-side Conversions API itself — `Purchase` at payment
+confirmation. The SDK attaches ad-platform attribution only to checkout;
+Chaos saves that snapshot on the Cart and applies it to the later Purchase.
+The browser Purchase uses the same Order id so Meta can deduplicate it. This
+package never talks to Meta's CAPI or holds a Meta access token.
 
 ## Install
 
@@ -70,12 +68,10 @@ const { data: product } = await chaos.catalog.getProduct("running-shoes");
 const selectedVariant = product.variants[0]!;
 const gallery = resolveProductMedia(product, selectedVariant);
 
-// Cart mutations project AddToCart automatically. A mutation that raises the
-// quantity also reads fbc/fbp and the current page URL off the browser and
-// sends them with the request; Chaos then fires `AddToCart` to Meta CAPI
-// with a server-minted event id and returns that id so the Pixel projection
-// reuses it for deduplication. addLine/setLine/removeLine reuse the last cart
-// body the client saw (within `cartSnapshotTtlMs`, default 30s) instead of a
+// Cart mutations project AddToCart to the configured browser providers
+// automatically. The API request contains only cart data; AddToCart is not
+// sent through server-side CAPI. addLine/setLine/removeLine reuse the last
+// cart body the client saw (within `cartSnapshotTtlMs`, default 30s) instead of a
 // separate GET; pass `cartSnapshotTtlMs: 0` to force a re-read every time. If
 // the cart id has since been locked or completed by a checkout, the mutation
 // retries once against the shopper's current active cart — read the id back
@@ -84,18 +80,11 @@ await chaos.cart.addLine(cart.data.id, selectedVariant.id, 1);
 
 // Checkout: fbc/fbp and the current page URL are read automatically (pass
 // `attribution` explicitly to override, or `{}` to send none). Chaos sends
-// this straight to Meta CAPI as `InitiateCheckout`, stores it on the Cart,
-// and replays it as `Purchase` once the order is paid — `AddToCart`,
-// `InitiateCheckout`, and `Purchase` are the server-side conversion events
-// Chaos sends.
+// the attribution on the Cart and uses it for Meta CAPI `Purchase` once the
+// order is paid. InitiateCheckout is projected only by the browser SDK.
 const creation = await chaos.payments.createEmbeddedCheckoutWithCart(cart.data.id, {
   returnUrl: "https://shop.example.com/checkout/return",
 });
-// `creation.data.checkout.event_id` is the InitiateCheckout CAPI event id —
-// this SDK already reuses it for the Pixel projection automatically
-// (`recordCheckoutCreation`, called internally above) so Meta deduplicates
-// the two; reach for it yourself only if you fire InitiateCheckout by hand.
-
 // Latency-sensitive checkout pages can reuse the Cart body they just loaded
 // and move creation of the next active Cart off the payment-UI critical path:
 const start = await chaos.payments.createEmbeddedCheckoutFromCart(cart.data, {
@@ -179,10 +168,9 @@ request succeeds — route every mutation through them rather than the raw
 Commerce item inputs retain `product_id` and `product_variant_id`; built-in
 Meta Pixel and GA4 commerce projections use `product_variant_id` as the
 item/content ID, and `view_content` falls back to `product_id` when no
-variant is supplied. For `AddToCart` and `InitiateCheckout` the Pixel copy
-reuses the server-minted event id chaos-rust returns (in the cart-mutation
-response and `checkout.event_id`), so Meta deduplicates it against the
-server-side CAPI copy; the other four events mint their id in the browser.
+variant is supplied. AddToCart and InitiateCheckout mint their event ids in
+the browser. Purchase uses the Order id, shared with the server-side CAPI
+copy for Meta deduplication.
 
 `catalog.getProduct`'s automatic `ViewContent` only knows the product's
 *first* variant — it has no way to know which one the shopper will actually
@@ -222,18 +210,16 @@ views should not call it.
 
 The collector maintains a first-party `_fbc` cookie from a landing `fbclid`,
 bounded and capped at 90 days, independent of whether the Meta Pixel script
-has finished loading. `chaos.payments.createEmbeddedCheckout*` and a
-quantity-raising `chaos.cart.setLine`/`addLine` both read this same `_fbc`
-cookie (and Pixel's own `_fbp` cookie) by default when building the request
-`attribution` — see below.
+has finished loading. `chaos.payments.createEmbeddedCheckout*` reads this
+same `_fbc` cookie (and Pixel's own `_fbp` cookie) by default when building
+the checkout request `attribution` — see below.
 
 ### Server-side Meta Conversions API
 
 There is nothing to configure in this package for CAPI: `chaos-rust` sends
-`AddToCart` when a cart-line mutation raises the quantity, `InitiateCheckout`
-at checkout creation, and `Purchase` at payment confirmation, using whatever
-ad-platform attribution was attached to the cart or checkout call. Pass it
-explicitly to override the `_fbc`/`_fbp`/page-URL defaults, or send none:
+only `Purchase` at payment confirmation, using the attribution captured by
+the checkout call. Pass it explicitly to override the
+`_fbc`/`_fbp`/page-URL defaults, or send none:
 
 ```ts
 await chaos.payments.createEmbeddedCheckoutWithCart(cart.data.id, {

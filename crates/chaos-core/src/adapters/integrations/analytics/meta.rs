@@ -57,7 +57,7 @@ impl AnalyticsEventDestination for MetaConversionsDestination {
         // are useful in the first-party ledger, but are not sent through Meta
         // CAPI for now. Returning a successful filtered receipt makes the
         // delivery durable without retrying an intentionally excluded event.
-        if !is_meta_event(command) {
+        if !is_server_purchase(command) {
             return Ok(AnalyticsDeliveryReceipt {
                 provider_reference: Some("filtered".into()),
             });
@@ -72,13 +72,13 @@ impl AnalyticsEventDestination for MetaConversionsDestination {
             .map_err(|_| invalid_command())?;
         let payload = MetaRequest {
             data: [MetaEvent {
-                event_name: meta_event_name(&command.event_name),
+                event_name: "Purchase",
                 event_time: command.occurred_at.unix_timestamp(),
                 event_id: command.event_id.to_string(),
                 action_source: "website",
                 event_source_url: source_url(&command.properties),
                 user_data: meta_user_data(command),
-                custom_data: custom_data(command),
+                custom_data: purchase_custom_data(command),
             }],
             test_event_code: command
                 .configuration
@@ -183,28 +183,10 @@ struct MetaResponse {
     fbtrace_id: Option<String>,
 }
 
-/// The server-confirmed events Chaos sends through Meta CAPI: `purchase` and
-/// `initiate_checkout` (a paid Order and a locked Cart handed off to Stripe),
-/// plus `add_to_cart` (a net cart-quantity increase, minted server-side in
-/// the cart transaction). chaos-js also projects all three client-side from
-/// its Pixel install using the same event id, so Meta deduplicates each
-/// pair. Every other Meta event (ViewContent, Search) is Pixel-only — Chaos
-/// never sees it.
-fn is_meta_event(command: &AnalyticsDeliveryCommand) -> bool {
-    command.event_source == "server"
-        && matches!(
-            command.event_name.as_str(),
-            "purchase" | "initiate_checkout" | "add_to_cart"
-        )
-}
-
-fn meta_event_name(name: &str) -> &str {
-    match name {
-        "purchase" => "Purchase",
-        "initiate_checkout" => "InitiateCheckout",
-        "add_to_cart" => "AddToCart",
-        _ => name,
-    }
+/// Purchase is the only event Chaos sends through Meta CAPI. Browser events
+/// such as AddToCart and InitiateCheckout remain frontend-owned.
+fn is_server_purchase(command: &AnalyticsDeliveryCommand) -> bool {
+    command.event_source == "server" && command.event_name == "purchase"
 }
 
 fn meta_user_data(command: &AnalyticsDeliveryCommand) -> MetaUserData {
@@ -232,39 +214,15 @@ fn meta_user_data(command: &AnalyticsDeliveryCommand) -> MetaUserData {
     }
 }
 
-fn custom_data(command: &AnalyticsDeliveryCommand) -> Value {
-    let Some(mut object) = command.properties.as_object().cloned() else {
-        return json!({});
-    };
-
-    // These fields are Chaos transport/context data or browser-only display
-    // fields. Standard Meta fields are rebuilt below from the canonical Chaos
-    // representation instead of forwarding implementation details.
-    for key in [
-        "_source",
-        "_meta",
-        "session_id",
-        "traffic",
-        "utm_source",
-        "utm_medium",
-        "utm_campaign",
-        "utm_term",
-        "utm_content",
-        "source_url",
-        "path",
-        "title",
-        "referrer_domain",
-        "active_milliseconds",
-        "page_view_event_id",
-        "product_id",
-        "product_variant_id",
-        "quantity",
-        "query",
-        "result_count",
-        "items",
-        "value_minor",
-    ] {
-        object.remove(key);
+fn purchase_custom_data(command: &AnalyticsDeliveryCommand) -> Value {
+    let mut object = Map::new();
+    if let Some(order_id) = command
+        .properties
+        .get("order_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        object.insert("order_id".into(), json!(order_id));
     }
 
     if let Some(value_minor) = command
@@ -286,35 +244,13 @@ fn custom_data(command: &AnalyticsDeliveryCommand) -> Value {
     if let Some(currency) = command.properties.get("currency").and_then(Value::as_str) {
         object.insert("currency".into(), json!(currency.to_ascii_uppercase()));
     }
-    if let Some(query) = command.properties.get("query").and_then(Value::as_str) {
-        object.insert("search_string".into(), json!(query));
-    }
-
-    let (contents, content_ids, num_items) = meta_contents(
+    let (contents, content_ids) = meta_contents(
         command.properties.get("items"),
-        command.properties.get("product_variant_id"),
-        command.properties.get("product_id"),
-        command.properties.get("quantity"),
         command.properties.get("currency").and_then(Value::as_str),
     );
-    let has_contents = contents.is_some();
     if let Some(contents) = contents {
         object.insert("contents".into(), contents);
         object.insert("content_ids".into(), json!(content_ids));
-        object.insert("content_type".into(), json!("product"));
-        // Meta documents num_items as an InitiateCheckout-specific field;
-        // Purchase already carries per-line quantity in `contents`.
-        if command.event_name == "initiate_checkout" {
-            object.insert("num_items".into(), json!(num_items));
-        }
-    }
-    if !has_contents
-        && let Some(ids) = content_ids_from_single_product(
-            command.properties.get("product_variant_id"),
-            command.properties.get("product_id"),
-        )
-    {
-        object.insert("content_ids".into(), json!(ids));
         object.insert("content_type".into(), json!("product"));
     }
     Value::Object(object)
@@ -354,13 +290,7 @@ fn hashed_context_value(properties: &Value, key: &str) -> Vec<String> {
         .collect()
 }
 
-fn meta_contents(
-    items: Option<&Value>,
-    product_variant_id: Option<&Value>,
-    product_id: Option<&Value>,
-    quantity: Option<&Value>,
-    currency: Option<&str>,
-) -> (Option<Value>, Vec<String>, i64) {
+fn meta_contents(items: Option<&Value>, currency: Option<&str>) -> (Option<Value>, Vec<String>) {
     let mut contents = Vec::new();
     if let Some(items) = items.and_then(Value::as_array) {
         for item in items {
@@ -393,45 +323,15 @@ fn meta_contents(
             contents.push(Value::Object(content));
         }
     }
-    if contents.is_empty()
-        && let Some(id) = product_variant_id
-            .or(product_id)
-            .and_then(Value::as_str)
-            .filter(|id| !id.trim().is_empty())
-    {
-        let item_quantity = quantity
-            .and_then(Value::as_i64)
-            .filter(|quantity| *quantity > 0)
-            .unwrap_or(1);
-        let mut content = Map::new();
-        content.insert("id".into(), json!(id));
-        content.insert("quantity".into(), json!(item_quantity));
-        contents.push(Value::Object(content));
-    }
     let content_ids = contents
         .iter()
         .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_owned))
         .collect::<Vec<_>>();
-    let num_items = contents
-        .iter()
-        .filter_map(|item| item.get("quantity").and_then(Value::as_i64))
-        .sum();
     if contents.is_empty() {
-        (None, content_ids, num_items)
+        (None, content_ids)
     } else {
-        (Some(Value::Array(contents)), content_ids, num_items)
+        (Some(Value::Array(contents)), content_ids)
     }
-}
-
-fn content_ids_from_single_product(
-    product_variant_id: Option<&Value>,
-    product_id: Option<&Value>,
-) -> Option<Vec<String>> {
-    product_variant_id
-        .or(product_id)
-        .and_then(Value::as_str)
-        .filter(|id| !id.trim().is_empty())
-        .map(|id| vec![id.to_owned()])
 }
 
 fn minor_to_major(value_minor: i64, currency: &str) -> f64 {
@@ -521,86 +421,38 @@ mod tests {
 
     #[test]
     fn converts_minor_units_for_meta_without_changing_currency() {
-        let usd = custom_data(&command(1_299, "USD"));
+        let usd = purchase_custom_data(&command(1_299, "USD"));
         assert_eq!(usd["value"], json!(12.99));
         assert_eq!(usd["currency"], json!("USD"));
 
-        let jpy = custom_data(&command(1_299, "JPY"));
+        let jpy = purchase_custom_data(&command(1_299, "JPY"));
         assert_eq!(jpy["value"], json!(1_299.0));
         assert_eq!(jpy["currency"], json!("JPY"));
 
-        let mga = custom_data(&command(1_299, "mga"));
+        let mga = purchase_custom_data(&command(1_299, "mga"));
         assert_eq!(mga["value"], json!(1_299.0));
         assert_eq!(mga["currency"], json!("MGA"));
     }
 
     #[test]
-    fn does_not_forward_traffic_provenance_as_meta_custom_data() {
+    fn purchase_custom_data_only_contains_supported_fields() {
         let mut input = command(1_299, "USD");
         input.properties = json!({
-            "_source":"browser",
-            "session_id":"session-1",
-            "traffic":{"session":{"fbclid":"private"}},
-            "utm_source":"newsletter",
-            "path":"/"
-        });
-        let data = custom_data(&input);
-        assert!(data.get("_source").is_none());
-        assert!(data.get("session_id").is_none());
-        assert!(data.get("traffic").is_none());
-        assert!(data.get("utm_source").is_none());
-        assert!(data.get("path").is_none());
-    }
-
-    #[test]
-    fn maps_items_and_search_to_meta_standard_fields() {
-        let mut input = command(1_299, "USD");
-        // num_items is InitiateCheckout-specific (see the Purchase contract
-        // test below, which asserts it's absent there); use a realistic
-        // event name here so this test's num_items assertion means something.
-        input.event_name = "initiate_checkout".into();
-        input.properties = json!({
-            "query": "shoes",
-            "items": [{"product_id": "product-1", "product_variant_id": "variant-1", "quantity": 2, "price_minor": 650}],
+            "order_id": "order-1",
+            "value_minor": 1_299,
             "currency": "USD",
-            "value_minor": 1_300,
-            "_meta": {"source_url": "https://shop.example/search?q=shoes"}
+            "items": [],
+            "unexpected": "private"
         });
-        let data = custom_data(&input);
-        assert_eq!(data["search_string"], json!("shoes"));
-        assert_eq!(data["content_ids"], json!(["variant-1"]));
-        assert_eq!(data["contents"][0]["item_price"], json!(6.5));
-        assert_eq!(data["num_items"], json!(2));
-        assert!(data.get("_meta").is_none());
-        assert_eq!(
-            source_url(&input.properties),
-            Some("https://shop.example/search?q=shoes")
-        );
+        let data = purchase_custom_data(&input);
+        assert_eq!(data["order_id"], json!("order-1"));
+        assert_eq!(data["value"], json!(12.99));
+        assert_eq!(data["currency"], json!("USD"));
+        assert!(data.get("unexpected").is_none());
     }
 
     #[test]
-    fn maps_view_content_variant_to_meta_content_fields() {
-        let mut input = command(1_299, "USD");
-        input.event_name = "view_content".into();
-        input.properties = json!({
-            "product_id": "product-1",
-            "product_variant_id": "variant-1",
-        });
-
-        let data = custom_data(&input);
-
-        assert_eq!(data["content_ids"], json!(["variant-1"]));
-        assert_eq!(data["content_type"], json!("product"));
-        assert_eq!(
-            data["contents"],
-            json!([{ "id": "variant-1", "quantity": 1 }])
-        );
-        assert!(data.get("product_id").is_none());
-        assert!(data.get("product_variant_id").is_none());
-    }
-
-    #[test]
-    fn only_server_confirmed_commerce_events_are_sent_to_meta() {
+    fn only_server_purchase_is_sent_to_meta() {
         let mut browser = command(1_299, "USD");
         browser.event_source = "browser".into();
         for event_name in [
@@ -612,81 +464,23 @@ mod tests {
             "purchase",
         ] {
             browser.event_name = event_name.into();
-            assert!(!is_meta_event(&browser), "browser {event_name}");
+            assert!(!is_server_purchase(&browser), "browser {event_name}");
         }
 
         let mut server = browser;
         server.event_source = "server".into();
-        for event_name in ["purchase", "initiate_checkout", "add_to_cart"] {
+        server.event_name = "purchase".into();
+        assert!(is_server_purchase(&server));
+        for event_name in [
+            "page_view",
+            "view_content",
+            "search",
+            "add_to_cart",
+            "initiate_checkout",
+        ] {
             server.event_name = event_name.into();
-            assert!(is_meta_event(&server), "server {event_name}");
+            assert!(!is_server_purchase(&server), "server {event_name}");
         }
-        for event_name in ["page_view", "view_content", "search"] {
-            server.event_name = event_name.into();
-            assert!(!is_meta_event(&server), "server {event_name}");
-        }
-    }
-
-    #[test]
-    fn serializes_the_server_add_to_cart_payload_contract() {
-        let mut input = command(500, "USD");
-        input.event_name = "add_to_cart".into();
-        input.properties = json!({
-            "_source": "server",
-            "_meta": {
-                "source_url": "https://shop.example/product/running-shoes",
-                "client_ip_address": "203.0.113.10",
-                "client_user_agent": "test-agent",
-                "fbp": "fb.1.1234567890123.browser"
-            },
-            "value_minor": 1_000,
-            "currency": "USD",
-            "items": [{"product_id": "product-1", "product_variant_id": "variant-1", "quantity": 2, "price_minor": 500}]
-        });
-        let payload = serde_json::to_value(MetaRequest {
-            data: [MetaEvent {
-                event_name: meta_event_name(&input.event_name),
-                event_time: input.occurred_at.unix_timestamp(),
-                event_id: input.event_id.to_string(),
-                action_source: "website",
-                event_source_url: source_url(&input.properties),
-                user_data: meta_user_data(&input),
-                custom_data: custom_data(&input),
-            }],
-            test_event_code: None,
-        })
-        .expect("Meta payload should serialize");
-
-        assert_eq!(payload["data"][0]["event_name"], json!("AddToCart"));
-        assert_eq!(
-            payload["data"][0]["event_source_url"],
-            json!("https://shop.example/product/running-shoes")
-        );
-        assert_eq!(
-            payload["data"][0]["user_data"]["client_ip_address"],
-            json!("203.0.113.10")
-        );
-        assert_eq!(
-            payload["data"][0]["user_data"]["fbp"],
-            json!("fb.1.1234567890123.browser")
-        );
-        assert_eq!(payload["data"][0]["custom_data"]["value"], json!(10.0));
-        assert_eq!(payload["data"][0]["custom_data"]["currency"], json!("USD"));
-        assert_eq!(
-            payload["data"][0]["custom_data"]["contents"],
-            json!([{"id": "variant-1", "quantity": 2, "item_price": 5.0}])
-        );
-        assert_eq!(
-            payload["data"][0]["custom_data"]["content_ids"],
-            json!(["variant-1"])
-        );
-        assert_eq!(
-            payload["data"][0]["custom_data"]["content_type"],
-            json!("product")
-        );
-        // num_items is InitiateCheckout-specific; AddToCart carries per-line
-        // quantity in `contents` instead.
-        assert!(payload["data"][0]["custom_data"].get("num_items").is_none());
     }
 
     #[test]
@@ -705,13 +499,13 @@ mod tests {
         });
         let payload = serde_json::to_value(MetaRequest {
             data: [MetaEvent {
-                event_name: meta_event_name(&input.event_name),
+                event_name: "Purchase",
                 event_time: input.occurred_at.unix_timestamp(),
                 event_id: input.event_id.to_string(),
                 action_source: "website",
                 event_source_url: source_url(&input.properties),
                 user_data: meta_user_data(&input),
-                custom_data: custom_data(&input),
+                custom_data: purchase_custom_data(&input),
             }],
             test_event_code: None,
         })
@@ -750,9 +544,6 @@ mod tests {
             payload["data"][0]["custom_data"]["content_type"],
             json!("product")
         );
-        // num_items is InitiateCheckout-specific; Purchase carries per-line
-        // quantity in `contents` instead.
-        assert!(payload["data"][0]["custom_data"].get("num_items").is_none());
         assert!(payload["data"][0]["custom_data"].get("_source").is_none());
         assert!(payload["data"][0]["custom_data"].get("_meta").is_none());
     }

@@ -38,7 +38,7 @@ import type {
  * and `PaymentsResource.createEmbeddedCheckout*`'s `attribution` option).
  *
  * There are exactly six events (page_view, view_content, search,
- * add_to_cart, initiate_checkout, purchase); every one of them is emitted by
+ * add_to_cart, initiate_checkout, purchase); every browser copy is emitted by
  * this SDK, never by store-supplied names or properties. The commerce events
  * share their Meta `custom_data` shape via `./meta-payload.js`; GA4's field
  * names differ enough per event that they stay inlined below instead of
@@ -216,13 +216,7 @@ export class ChaosStorefrontAnalytics {
     return eventId;
   }
 
-  /**
-   * Records a successful cart addition. `eventId` is the dedup id for Meta's
-   * Pixel+CAPI deduplication: `CartResource` passes the server-minted id it
-   * gets back from a quantity-raising line mutation (chaos-rust sends the
-   * matching `AddToCart` to Meta's Conversions API), and a fresh id is
-   * minted here when a caller records AddToCart on its own.
-   */
+  /** Records a successful cart addition in the browser. */
   recordAddToCart(input: AddToCartAnalyticsInput, eventId?: string): string | null {
     validateMoney(input.valueMinor, input.currency);
     validateCommerceItem(input);
@@ -247,7 +241,7 @@ export class ChaosStorefrontAnalytics {
     }
   }
 
-  /** Records a successful embedded checkout creation. See `recordAddToCart` for `eventId`. */
+  /** Records a successful embedded checkout creation in the browser. */
   recordInitiateCheckout(
     input: InitiateCheckoutAnalyticsInput,
     eventId?: string,
@@ -280,10 +274,7 @@ export class ChaosStorefrontAnalytics {
     }
   }
 
-  /**
-   * Records the increase produced by a successful cart mutation. See
-   * `recordAddToCart` for `input.event_id`.
-   */
+  /** Records the increase produced by a successful cart mutation. */
   recordCartMutation(input: CartLineMutation): string | null {
     const quantity = input.new_quantity - input.previous_quantity;
     if (input.removed || quantity < 1) return null;
@@ -291,24 +282,18 @@ export class ChaosStorefrontAnalytics {
       (candidate) => candidate.product_variant_id === input.product_variant_id,
     );
     if (!line) return null;
-    return this.recordAddToCart(
-      {
-        cartId: input.cart.id,
-        productId: line.product_id,
-        productVariantId: line.product_variant_id,
-        quantity,
-        priceMinor: line.unit_price_amount_minor,
-        valueMinor: line.unit_price_amount_minor * quantity,
-        currency: input.cart.currency,
-      },
-      input.event_id,
-    );
+    return this.recordAddToCart({
+      cartId: input.cart.id,
+      productId: line.product_id,
+      productVariantId: line.product_variant_id,
+      quantity,
+      priceMinor: line.unit_price_amount_minor,
+      valueMinor: line.unit_price_amount_minor * quantity,
+      currency: input.cart.currency,
+    });
   }
 
-  /**
-   * Records checkout initiation from the exact cart snapshot used by Chaos.
-   * Reuses `input.event_id` — see `recordCartMutation`.
-   */
+  /** Records checkout initiation from the exact Cart snapshot used by Chaos. */
   recordCheckoutCreation(
     input: EmbeddedCheckoutStart | EmbeddedCheckoutCreation,
   ): string | null {
@@ -325,7 +310,6 @@ export class ChaosStorefrontAnalytics {
           priceMinor: line.unit_price_amount_minor,
         })),
       },
-      input.event_id,
     );
   }
 

@@ -55,11 +55,6 @@ struct CreateCartRequest {}
 #[serde(deny_unknown_fields)]
 struct SetCartLineRequest {
     quantity: u32,
-    /// Ad-platform attribution the browser read off its own cookies/URL,
-    /// forwarded to the server-side Meta CAPI `AddToCart` event when this
-    /// call raises the line quantity. Same shape as the checkout handler's.
-    #[serde(default)]
-    attribution: Option<AttributionRequest>,
 }
 
 #[derive(Deserialize)]
@@ -71,10 +66,10 @@ struct CreateEmbeddedCheckoutRequest {
     attribution: Option<AttributionRequest>,
 }
 
-/// Ad-platform attribution the browser read off its own cookies/URL, shared
-/// by the checkout handler (InitiateCheckout) and the line-mutation handler
-/// (AddToCart). `source_url` and `utm` are not platform-specific, so they
-/// sit alongside the per-platform `meta` namespace.
+/// Ad-platform attribution captured at checkout and saved for the
+/// server-side Purchase event. `source_url` and `utm` are not
+/// platform-specific, so they sit alongside the per-platform `meta`
+/// namespace.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AttributionRequest {
@@ -123,11 +118,6 @@ struct CartResponse {
     subtotal_amount_minor: i64,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
-    /// Server-minted Meta CAPI `AddToCart` event id, present only on the
-    /// response to a line mutation that raised the quantity. The browser
-    /// SDK reuses it for the Pixel's own AddToCart so Meta deduplicates.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    event_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -145,7 +135,7 @@ struct CartLineResponse {
 }
 
 impl CartResponse {
-    fn from_detail(cart: CartDetail, event_id: Option<Uuid>) -> Self {
+    fn from_detail(cart: CartDetail) -> Self {
         Self {
             id: cart.id.as_uuid(),
             currency: cart.currency.as_str().to_owned(),
@@ -154,7 +144,6 @@ impl CartResponse {
             subtotal_amount_minor: cart.subtotal_amount_minor,
             created_at: cart.created_at.into(),
             updated_at: cart.updated_at.into(),
-            event_id,
         }
     }
 }
@@ -180,23 +169,14 @@ struct EmbeddedCheckoutResponse {
     order_id: Uuid,
     order_number: String,
     client_action: PaymentClientActionResponse,
-    /// Shared with the browser Pixel's own InitiateCheckout call so Meta
-    /// can deduplicate it against the server-side CAPI copy Chaos already
-    /// sent.
-    event_id: Uuid,
 }
 
 impl EmbeddedCheckoutResponse {
-    fn from_result(
-        checkout: chaos_core::payments::EmbeddedCheckoutResult,
-        order_id: Uuid,
-        event_id: Uuid,
-    ) -> Self {
+    fn from_result(checkout: chaos_core::payments::EmbeddedCheckoutResult, order_id: Uuid) -> Self {
         Self {
             order_id,
             order_number: checkout.order_number,
             client_action: checkout.client_action.into(),
-            event_id,
         }
     }
 }
@@ -265,7 +245,7 @@ async fn create_cart(
         .storefront_sales
         .create_cart(CreateCartInput { actor })
         .await?;
-    Ok(ApiResponse::created(CartResponse::from_detail(cart, None)))
+    Ok(ApiResponse::created(CartResponse::from_detail(cart)))
 }
 
 // ===== GET /carts/{cart_id} =====
@@ -279,30 +259,27 @@ async fn get_cart(
         .storefront_sales
         .get_cart(&actor, CartId::from_uuid(path.cart_id))
         .await?;
-    Ok(ApiResponse::ok(CartResponse::from_detail(cart, None)))
+    Ok(ApiResponse::ok(CartResponse::from_detail(cart)))
 }
 
 // ===== PUT /carts/{cart_id}/lines/{product_variant_id} =====
 
 async fn set_cart_line(
     State(state): State<ApiState>,
-    headers: HeaderMap,
     ShopperContext(actor): ShopperContext,
     ApiPath(path): ApiPath<CartLinePath>,
     ApiJson(request): ApiJson<SetCartLineRequest>,
 ) -> Result<ApiResponse<CartResponse>, ApiError> {
-    let (cart, event_id) = state
+    let cart = state
         .storefront_sales
         .set_cart_line(SetCartLineInput {
             actor,
             cart_id: CartId::from_uuid(path.cart_id),
             product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
             quantity: request.quantity,
-            now: state.clock.now(),
-            attribution: attribution_input(request.attribution.as_ref(), &headers),
         })
         .await?;
-    Ok(ApiResponse::ok(CartResponse::from_detail(cart, event_id)))
+    Ok(ApiResponse::ok(CartResponse::from_detail(cart)))
 }
 
 // ===== DELETE /carts/{cart_id}/lines/{product_variant_id} =====
@@ -320,7 +297,7 @@ async fn remove_cart_line(
             product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
         })
         .await?;
-    Ok(ApiResponse::ok(CartResponse::from_detail(cart, None)))
+    Ok(ApiResponse::ok(CartResponse::from_detail(cart)))
 }
 
 // ===== POST /carts/{cart_id}/checkout =====
@@ -363,7 +340,6 @@ async fn create_embedded_checkout(
     Ok(ApiResponse::created(EmbeddedCheckoutResponse::from_result(
         checkout,
         draft.order_id.as_uuid(),
-        draft.event_id,
     )))
 }
 
@@ -406,6 +382,12 @@ mod tests {
         StatusCode::OK
     }
 
+    async fn decode_cart_line_request(
+        ApiJson(_request): ApiJson<SetCartLineRequest>,
+    ) -> StatusCode {
+        StatusCode::OK
+    }
+
     #[tokio::test]
     async fn payment_provider_is_validated_during_json_deserialization() {
         let app = Router::new().route("/", post(decode_checkout_request));
@@ -430,5 +412,34 @@ mod tests {
         let body = to_bytes(rejected.into_body(), 2048).await.unwrap();
         let json = serde_json::from_slice::<Value>(&body).unwrap();
         assert_eq!(json["error"]["code"], "invalid_json");
+    }
+
+    #[tokio::test]
+    async fn cart_line_request_does_not_accept_attribution() {
+        let app = Router::new().route("/", post(decode_cart_line_request));
+        let accepted = app
+            .clone()
+            .oneshot(
+                Request::post("/")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"quantity":1}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::OK);
+
+        let rejected = app
+            .oneshot(
+                Request::post("/")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"quantity":1,"attribution":{"source_url":"https://shop.example/product"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
     }
 }
