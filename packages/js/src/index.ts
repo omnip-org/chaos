@@ -1,3 +1,9 @@
+if (typeof window === "undefined" || typeof document === "undefined") {
+  throw new TypeError(
+    "@omnip-org/chaos-js is browser-only; import its runtime from browser code",
+  );
+}
+
 export { ChaosStorefrontClient } from "./client.js";
 export type { ClientOptions, RequestOptions, StorefrontEventsOptions } from "./client.js";
 

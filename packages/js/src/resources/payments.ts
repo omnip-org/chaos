@@ -5,12 +5,15 @@ import {
   hasAdAttribution,
 } from "../internal/attribution.js";
 import { isRecord, requireData } from "../internal/response.js";
+import { mountEmbeddedCheckout as mountStripeEmbeddedCheckout } from "../providers/stripe.js";
 import type {
   Cart,
   CheckoutAttribution,
   DataEnvelope,
   EmbeddedCheckoutOptions,
   EmbeddedCheckoutCreation,
+  EmbeddedCheckoutMount,
+  MountEmbeddedCheckoutOptions,
   EmbeddedCheckoutStart,
   EmbeddedCheckoutSession,
   PaymentProvider,
@@ -18,7 +21,6 @@ import type {
 
 interface EmbeddedCheckoutRequest {
   payment_provider: PaymentProvider;
-  return_url: string;
   attribution?: CheckoutAttribution;
 }
 
@@ -33,6 +35,38 @@ export class PaymentsResource {
 
   constructor(private readonly client: ChaosStorefrontClient) {}
 
+  /**
+   * Mounts Stripe Embedded Checkout. The SDK keeps the checkout's Order id,
+   * waits for that Order after in-place completion, projects Purchase and then
+   * calls the storefront's UI callback.
+   */
+  mountEmbeddedCheckout(
+    checkout: EmbeddedCheckoutSession,
+    container: HTMLElement,
+    options: MountEmbeddedCheckoutOptions = {},
+  ): Promise<EmbeddedCheckoutMount> {
+    return mountStripeEmbeddedCheckout(checkout.client_action, container, {
+      ...(options.fetchClientSecret
+        ? { fetchClientSecret: options.fetchClientSecret }
+        : {}),
+      ...(options.onAnalyticsEvent
+        ? { onAnalyticsEvent: options.onAnalyticsEvent }
+        : {}),
+      onComplete: () => {
+        void this.client.orders
+          .waitForCheckoutOrder(checkout.order_id, options.confirmation)
+          .then(({ data }) => options.onComplete?.(data))
+          .catch((error: unknown) => {
+            if (options.onError) {
+              options.onError(error);
+              return;
+            }
+            console.error("[chaos-js] checkout confirmation failed", error);
+          });
+      },
+    });
+  }
+
   private checkoutIdempotencyKey(cartId: string): string {
     let key = this.idempotencyKeys.get(cartId);
     if (!key) {
@@ -44,7 +78,7 @@ export class PaymentsResource {
 
   async createEmbeddedCheckout(
     cartId: string,
-    options: EmbeddedCheckoutOptions,
+    options: EmbeddedCheckoutOptions = {},
   ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
     const { cart, checkout } = await this.client.cart.runExclusive(
       cartId,
@@ -72,7 +106,7 @@ export class PaymentsResource {
    */
   async createEmbeddedCheckoutFromCart(
     cart: Cart,
-    options: EmbeddedCheckoutOptions,
+    options: EmbeddedCheckoutOptions = {},
   ): Promise<DataEnvelope<EmbeddedCheckoutStart>> {
     const checkout = await this.client.cart.runExclusive(cart.id, () =>
       this.createEmbeddedCheckoutForCart(cart, options),
@@ -87,7 +121,7 @@ export class PaymentsResource {
 
   async createEmbeddedCheckoutWithCart(
     cartId: string,
-    options: EmbeddedCheckoutOptions,
+    options: EmbeddedCheckoutOptions = {},
   ): Promise<DataEnvelope<EmbeddedCheckoutCreation>> {
     const { checkout, sourceCart } = await this.client.cart.runExclusive(
       cartId,
@@ -162,7 +196,6 @@ function toEmbeddedCheckoutRequest(
 ): EmbeddedCheckoutRequest {
   const body: EmbeddedCheckoutRequest = {
     payment_provider: "stripe",
-    return_url: options.returnUrl,
   };
   const attribution = options.attribution ?? defaultAdAttribution();
   if (hasAdAttribution(attribution)) {

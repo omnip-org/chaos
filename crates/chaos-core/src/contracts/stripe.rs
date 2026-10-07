@@ -177,7 +177,6 @@ pub struct PaymentCommand {
     /// Required when creating a provider-hosted checkout; absent for commands
     /// that do not create a checkout session.
     pub checkout_details: Option<PaymentCheckoutDetails>,
-    pub return_url: Option<String>,
     /// Written into the provider object's metadata when the adapter supports
     /// metadata, so an operator can see Chaos context without switching back
     /// to the admin tooling. Not read back from any webhook — order_id/refund_id

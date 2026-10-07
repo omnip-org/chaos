@@ -26,10 +26,8 @@ export const UTM_KEYS = [
 export type UtmKey = (typeof UTM_KEYS)[number];
 export type UtmTags = Partial<Record<UtmKey, string>>;
 
-/** `utm_*` tags on the current page URL, or `undefined` when there are none
- * (or no browser URL to read). */
+/** `utm_*` tags on the current page URL, or `undefined` when there are none. */
 export function readUtmTags(): UtmTags | undefined {
-  if (typeof window === "undefined") return undefined;
   let params: URLSearchParams;
   try {
     params = new URL(window.location.href).searchParams;

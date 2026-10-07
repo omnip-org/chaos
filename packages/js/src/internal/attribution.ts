@@ -13,14 +13,9 @@ import { readBrowserCookie } from "./meta-attribution.js";
  * @internal
  */
 export function defaultAdAttribution(): CheckoutAttribution {
-  const documentRef =
-    typeof globalThis.document === "undefined"
-      ? undefined
-      : globalThis.document;
-  const fbc = readBrowserCookie(documentRef, "_fbc");
-  const fbp = readBrowserCookie(documentRef, "_fbp");
-  const sourceUrl =
-    typeof window === "undefined" ? undefined : window.location.href;
+  const fbc = readBrowserCookie(document, "_fbc");
+  const fbp = readBrowserCookie(document, "_fbp");
+  const sourceUrl = window.location.href;
   return {
     ...(sourceUrl && { source_url: sourceUrl }),
     ...((fbc || fbp) && { meta: { ...(fbc && { fbc }), ...(fbp && { fbp }) } }),

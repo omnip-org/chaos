@@ -129,9 +129,7 @@ pub(super) fn checkout_request_fingerprint(
     request: &CheckoutRequest,
 ) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    // The return URL is not persisted elsewhere, so it must be part of the
-    // idempotency fingerprint along with the caller and provider.
-    hasher.update(b"chaos-checkout-request-v4");
+    hasher.update(b"chaos-checkout-request-v5");
     fingerprint_part(&mut hasher, actor.store_id.as_uuid().as_bytes());
     fingerprint_part(
         &mut hasher,
@@ -142,7 +140,6 @@ pub(super) fn checkout_request_fingerprint(
             .as_bytes(),
     );
     fingerprint_part(&mut hasher, request.payment_provider.as_str().as_bytes());
-    fingerprint_part(&mut hasher, request.return_url.as_bytes());
     hasher.finalize().into()
 }
 

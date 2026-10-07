@@ -102,14 +102,11 @@ impl PostgresStripeRepository {
         &self,
         actor: &ShopperActor,
         payment: &OrderCheckoutPayment,
-        return_url: &str,
     ) -> Result<PaymentCommand, ApplicationError> {
-        let return_url = checkout_return_url(return_url, payment.order_id.as_uuid())?;
         let payload = json!({
             "aggregate_id": payment.order_id.as_uuid(),
             "amount_minor": payment.amount_minor,
             "currency": payment.currency.as_str(),
-            "return_url": return_url,
         });
         let mut command = self
             .prepare_payment_command(
@@ -595,7 +592,6 @@ impl PostgresStripeRepository {
             None
         };
         transaction.commit().await.map_err(database_error)?;
-        let return_url = outbox_return_url(payload);
         Ok(PaymentCommand {
             provider_account_id: context.provider_account_id,
             kind: if is_refund {
@@ -614,7 +610,6 @@ impl PostgresStripeRepository {
             credential_secret_reference: context.credential_secret_reference,
             provider_payment_reference: context.provider_payment_reference,
             checkout_details,
-            return_url,
             order_context: OrderMetadataContext {
                 store_id,
                 shopper_id: context.shopper_id,
@@ -665,18 +660,6 @@ impl PostgresStripeRepository {
     }
 }
 
-fn checkout_return_url(return_url: &str, order_id: uuid::Uuid) -> Result<String, ApplicationError> {
-    let mut url = url::Url::parse(return_url).map_err(|_| invalid_outbox_payload())?;
-    let mut query_pairs = url
-        .query_pairs()
-        .filter(|(key, _)| key != "order_id" && key != "order_number")
-        .map(|(key, value)| (key.into_owned(), value.into_owned()))
-        .collect::<Vec<_>>();
-    query_pairs.push(("order_id".into(), order_id.to_string()));
-    url.query_pairs_mut().clear().extend_pairs(query_pairs);
-    Ok(url.to_string())
-}
-
 fn checkout_client_action_missing() -> ApplicationError {
     ApplicationError::Unavailable {
         service: "payment_client_action",
@@ -697,34 +680,4 @@ fn normalize_failure_code(value: &str) -> String {
         return "checkout_failed".into();
     }
     value.chars().take(2000).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::checkout_return_url;
-
-    #[test]
-    fn checkout_return_url_uses_the_order_id() {
-        let value = checkout_return_url(
-            "https://shop.example/checkout/confirmation?source=email&order_id=internal&order_number=stale",
-            uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap(),
-        )
-        .expect("return URL should be valid");
-        let url = url::Url::parse(&value).expect("generated URL should be valid");
-        let pairs = url
-            .query_pairs()
-            .map(|(key, value)| (key.into_owned(), value.into_owned()))
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            pairs,
-            vec![
-                ("source".into(), "email".into()),
-                (
-                    "order_id".into(),
-                    "00000000-0000-4000-8000-000000000001".into()
-                ),
-            ]
-        );
-    }
 }

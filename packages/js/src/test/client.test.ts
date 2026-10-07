@@ -1,11 +1,22 @@
 import assert from "node:assert/strict";
-import test, { mock } from "node:test";
+import test from "node:test";
 
 import { ChaosStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
 import { defaultAdAttribution } from "../internal/attribution.js";
 import { storefrontStorageKeys } from "../internal/browser-storage.js";
 import type { OwnOrder } from "../types.js";
+
+// The package is browser-only. Individual tests replace these minimal globals
+// when they need a specific URL, cookie jar or DOM behavior.
+Object.defineProperty(globalThis, "window", {
+  value: { location: { href: "", origin: "https://shop.example.com" } },
+  configurable: true,
+});
+Object.defineProperty(globalThis, "document", {
+  value: { cookie: "", location: { search: "", protocol: "http:" } },
+  configurable: true,
+});
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
@@ -42,7 +53,7 @@ function shopperToken(headers: Headers): string | null {
 }
 
 function restoreGlobal(
-  key: "document" | "window" | "localStorage",
+  key: "document" | "window" | "localStorage" | "Stripe",
   descriptor: PropertyDescriptor | undefined,
 ): void {
   if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -73,7 +84,7 @@ test("checkout order lookup keeps the original shopper identity", async () => {
   const result = await client.orders.getCheckoutOrder(order.id);
   assert.equal(result.data, order);
   assert.deepEqual(requests, [{
-    url: "/api/v1/orders/00000000-0000-4000-8000-000000000001/details",
+    url: "https://shop.example.com/api/v1/orders/00000000-0000-4000-8000-000000000001/details",
     token: "shopper-original",
   }]);
 });
@@ -173,6 +184,67 @@ test("waitForCheckoutOrder stops at its timeout", async () => {
   assert.equal(reads, 1);
 });
 
+test("mounted checkout confirms the Order before its in-place completion callback", async () => {
+  const stripeDescriptor = Object.getOwnPropertyDescriptor(globalThis, "Stripe");
+  let stripeComplete: (() => void) | undefined;
+  let mountedContainer: HTMLElement | undefined;
+  Object.defineProperty(globalThis, "Stripe", {
+    configurable: true,
+    value: () => ({
+      createEmbeddedCheckoutPage: async (options: { onComplete?: () => void }) => {
+        stripeComplete = options.onComplete;
+        return {
+          mount: (container: HTMLElement) => {
+            mountedContainer = container;
+          },
+          unmount: () => {},
+          destroy: () => {},
+        };
+      },
+    }),
+  });
+  const order = {
+    id: "00000000-0000-4000-8000-000000000001",
+    order_number: "W-12345678",
+    status: "confirmed",
+    payment_status: "paid",
+  } as OwnOrder;
+  try {
+    const client = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      storage: null,
+      fetch: (async () => jsonResponse(200, { data: order })) as unknown as typeof fetch,
+    });
+    client.setShopperToken("shopper-original");
+    const container = {} as HTMLElement;
+    let finish: (value: OwnOrder) => void = () => {};
+    const completed = new Promise<OwnOrder>((resolve) => {
+      finish = resolve;
+    });
+
+    await client.payments.mountEmbeddedCheckout(
+      {
+        order_id: order.id,
+        order_number: order.order_number,
+        client_action: {
+          type: "stripe_checkout_embedded",
+          public_key: "pk_test_stripe",
+          client_token: "cs_test_secret",
+        },
+      },
+      container,
+      { onComplete: finish },
+    );
+    assert.equal(mountedContainer, container);
+    assert.ok(stripeComplete);
+
+    stripeComplete();
+    assert.equal(await completed, order);
+  } finally {
+    restoreGlobal("Stripe", stripeDescriptor);
+  }
+});
+
 test("guest order search uses GET with number and email, without a shopper token", async () => {
   const requests: Array<{ url: string; method: string | undefined; token: string | null }> = [];
   const client = new ChaosStorefrontClient({
@@ -189,7 +261,7 @@ test("guest order search uses GET with number and email, without a shopper token
   });
   await client.orders.lookupOrder({ orderNumber: "W-12345678", email: "user@example.com" });
   assert.deepEqual(requests, [{
-    url: "/api/v1/orders/search?order_number=W-12345678&email=user%40example.com",
+    url: "https://shop.example.com/api/v1/orders/search?order_number=W-12345678&email=user%40example.com",
     method: "GET",
     token: null,
   }]);
@@ -243,46 +315,23 @@ test("defers shopper session creation until a browser request needs it", async (
   }
 });
 
-test("warns once per client when a record* projection runs with no document", () => {
-  const warn = mock.method(console, "warn", () => {});
+test("rejects client construction outside a browser", () => {
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Reflect.deleteProperty(globalThis, "window");
+  Reflect.deleteProperty(globalThis, "document");
   try {
-    const client = new ChaosStorefrontClient({
-      publishableKey: "public_test",
-      storage: null,
-      fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
-    });
-
-    client.recordSearch({ query: "shoes" });
-    client.recordSearch({ query: "boots" });
-
-    assert.equal(warn.mock.callCount(), 1);
-    assert.match(String(warn.mock.calls[0]?.arguments[0]), /recordSearch/);
+    assert.throws(
+      () =>
+        new ChaosStorefrontClient({
+          publishableKey: "public_test",
+          fetch: (async () => jsonResponse(200, {})) as unknown as typeof fetch,
+        }),
+      /browser-only/,
+    );
   } finally {
-    warn.mock.restore();
-  }
-});
-
-test("does not warn when a browser document is present, even with no events configured", () => {
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
-  Object.defineProperty(globalThis, "document", { value: {}, configurable: true });
-  const warn = mock.method(console, "warn", () => {});
-  try {
-    const client = new ChaosStorefrontClient({
-      publishableKey: "public_test",
-      storage: null,
-      fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
-    });
-
-    client.recordSearch({ query: "shoes" });
-
-    assert.equal(warn.mock.callCount(), 0);
-  } finally {
-    warn.mock.restore();
-    if (descriptor) {
-      Object.defineProperty(globalThis, "document", descriptor);
-    } else {
-      Reflect.deleteProperty(globalThis, "document");
-    }
+    restoreGlobal("window", windowDescriptor);
+    restoreGlobal("document", documentDescriptor);
   }
 });
 
@@ -353,34 +402,6 @@ test("reuses a shopper token persisted from a previous session", async () => {
 
   assert.equal(requests.length, 1);
   assert.doesNotMatch(requests[0]!, /shopper\/sessions/);
-});
-
-test("does not use a server runtime's process-wide localStorage", () => {
-  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
-  const storageDescriptor = Object.getOwnPropertyDescriptor(
-    globalThis,
-    "localStorage",
-  );
-  const storage = new MemoryStorage();
-  Reflect.deleteProperty(globalThis, "window");
-  Object.defineProperty(globalThis, "localStorage", {
-    value: storage,
-    configurable: true,
-  });
-
-  try {
-    const client = new ChaosStorefrontClient({
-      publishableKey: "public_test",
-      fetch: (async () => jsonResponse(200, {})) as unknown as typeof fetch,
-    });
-    client.setShopperToken("request-owned-token");
-
-    const keys = storefrontStorageKeys("/api/v1", "public_test");
-    assert.equal(storage.getItem(keys.shopperToken), null);
-  } finally {
-    restoreGlobal("window", windowDescriptor);
-    restoreGlobal("localStorage", storageDescriptor);
-  }
 });
 
 test("explicit shopper sessions update the client token", async () => {
@@ -812,9 +833,7 @@ test("payments create an embedded Checkout session with SDK-owned request detail
   const recordedCheckouts: unknown[] = [];
   client.recordCheckoutCreation = (checkout) => recordedCheckouts.push(checkout);
 
-  const session = await client.payments.createEmbeddedCheckout("cart-1", {
-    returnUrl: "https://shop.example.com/checkout/success",
-  });
+  const session = await client.payments.createEmbeddedCheckout("cart-1");
 
   assert.equal(
     shopperToken(requests[2]!.headers),
@@ -823,7 +842,6 @@ test("payments create an embedded Checkout session with SDK-owned request detail
   assert.equal(requests[2]?.headers.get("idempotency-key"), "id-1");
   assert.deepEqual(JSON.parse(requests[2]?.body ?? "{}"), {
     payment_provider: "stripe",
-    return_url: "https://shop.example.com/checkout/success",
   });
   assert.deepEqual(session.data.client_action, {
     type: "stripe_checkout_embedded",
@@ -880,19 +898,16 @@ test("checkout attaches explicit attribution and excludes it from the idempotenc
   });
 
   await client.payments.createEmbeddedCheckout("cart-1", {
-    returnUrl: "https://shop.example.com/checkout/success",
     attribution: { meta: { fbc: "fb.1.1699999999999.click" } },
   });
   const firstCheckout = requests.find((request) => request.url.endsWith("/checkout"));
   assert.deepEqual(JSON.parse(firstCheckout?.body ?? "{}"), {
     payment_provider: "stripe",
-    return_url: "https://shop.example.com/checkout/success",
     attribution: { meta: { fbc: "fb.1.1699999999999.click" } },
   });
 
   requests.length = 0;
   await client.payments.createEmbeddedCheckout("cart-1", {
-    returnUrl: "https://shop.example.com/checkout/success",
     attribution: { meta: { fbc: "fb.1.1699999999999.a-different-click" } },
   });
   const secondCheckout = requests.find((request) => request.url.endsWith("/checkout"));
@@ -906,7 +921,12 @@ test("checkout attaches explicit attribution and excludes it from the idempotenc
 test("checkout defaults source_url to the current page in a browser", async () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", {
-    value: { location: { href: "https://shop.example.com/checkout" } },
+    value: {
+      location: {
+        href: "https://shop.example.com/checkout",
+        origin: "https://shop.example.com",
+      },
+    },
     configurable: true,
   });
   try {
@@ -941,9 +961,7 @@ test("checkout defaults source_url to the current page in a browser", async () =
       }) as unknown as typeof fetch,
     });
 
-    await client.payments.createEmbeddedCheckout("cart-1", {
-      returnUrl: "https://shop.example.com/checkout/success",
-    });
+    await client.payments.createEmbeddedCheckout("cart-1");
 
     assert.deepEqual(JSON.parse(checkoutBody ?? "{}").attribution, {
       source_url: "https://shop.example.com/checkout",
@@ -972,7 +990,12 @@ test("checkout captures Meta click attribution without browser event providers",
     configurable: true,
   });
   Object.defineProperty(globalThis, "window", {
-    value: { location: { href: "https://shop.example.com/products/shoe" } },
+    value: {
+      location: {
+        href: "https://shop.example.com/products/shoe",
+        origin: "https://shop.example.com",
+      },
+    },
     configurable: true,
   });
   try {
@@ -1015,9 +1038,7 @@ test("checkout captures Meta click attribution without browser event providers",
       }) as unknown as typeof fetch,
     });
 
-    await client.payments.createEmbeddedCheckout("cart-1", {
-      returnUrl: "https://shop.example.com/checkout/success",
-    });
+    await client.payments.createEmbeddedCheckout("cart-1");
 
     assert.deepEqual(JSON.parse(checkoutBody ?? "{}").attribution, {
       source_url: "https://shop.example.com/products/shoe",
@@ -1079,6 +1100,7 @@ test("checkout leaves UTM attribution to GA4 unless explicitly supplied", async 
     value: {
       location: {
         href: "https://shop.example.com/checkout?utm_source=newsletter&utm_medium=email&utm_campaign=fall",
+        origin: "https://shop.example.com",
       },
     },
     configurable: true,
@@ -1115,9 +1137,7 @@ test("checkout leaves UTM attribution to GA4 unless explicitly supplied", async 
       }) as unknown as typeof fetch,
     });
 
-    await client.payments.createEmbeddedCheckout("cart-1", {
-      returnUrl: "https://shop.example.com/checkout/success",
-    });
+    await client.payments.createEmbeddedCheckout("cart-1");
 
     assert.deepEqual(JSON.parse(checkoutBody ?? "{}").attribution, {
       source_url:
@@ -1136,7 +1156,10 @@ test("shopper session creation sends attribution in the JSON body", async () => 
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", {
     value: {
-      location: { href: "https://shop.example.com/?utm_source=newsletter&utm_campaign=fall&other=x" },
+      location: {
+        href: "https://shop.example.com/?utm_source=newsletter&utm_campaign=fall&other=x",
+        origin: "https://shop.example.com",
+      },
     },
     configurable: true,
   });
@@ -1184,7 +1207,7 @@ test("shopper session creation forwards the first-touch utm_* even after the URL
   const storage = new MemoryStorage();
   const setHref = (href: string) =>
     Object.defineProperty(globalThis, "window", {
-      value: { location: { href } },
+      value: { location: { href, origin: new URL(href).origin } },
       configurable: true,
     });
   try {
@@ -1258,7 +1281,7 @@ test("UTM attribution is isolated by API and publishable key", () => {
   const storage = new MemoryStorage();
   const setHref = (href: string) =>
     Object.defineProperty(globalThis, "window", {
-      value: { location: { href } },
+      value: { location: { href, origin: new URL(href).origin } },
       configurable: true,
     });
   const client = (publishableKey: string) =>
@@ -1451,10 +1474,7 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
   const recordedCreations: unknown[] = [];
   client.recordCheckoutCreation = (input) => recordedCreations.push(input);
 
-  const creation = await client.payments.createEmbeddedCheckoutWithCart(
-    "cart-1",
-    { returnUrl: "https://shop.example.com/checkout/success" },
-  );
+  const creation = await client.payments.createEmbeddedCheckoutWithCart("cart-1");
 
   assert.deepEqual(creation.data.source_cart, sourceCart);
   assert.deepEqual(creation.data.cart, nextCart);
@@ -1514,13 +1534,11 @@ test("checkout can hand off directly from a fresh Cart without another read or C
   const recordedStarts: unknown[] = [];
   client.recordCheckoutCreation = (input) => recordedStarts.push(input);
 
-  const start = await client.payments.createEmbeddedCheckoutFromCart(sourceCart, {
-    returnUrl: "https://shop.example.com/checkout/success",
-  });
+  const start = await client.payments.createEmbeddedCheckoutFromCart(sourceCart);
 
   assert.deepEqual(requests, [
     {
-      url: "/api/v1/carts/cart-1/checkout",
+      url: "https://shop.example.com/api/v1/carts/cart-1/checkout",
       method: "POST",
     },
   ]);
@@ -1554,9 +1572,7 @@ test("payments reject a checkout response that is missing required fields", asyn
   });
 
   await assert.rejects(
-    client.payments.createEmbeddedCheckout("cart-1", {
-      returnUrl: "https://shop.example.com/checkout/success",
-    }),
+    client.payments.createEmbeddedCheckout("cart-1"),
     (error: unknown) =>
       error instanceof ChaosApiError &&
       error.status === 502 &&
@@ -1564,7 +1580,7 @@ test("payments reject a checkout response that is missing required fields", asyn
   );
 });
 
-test("payments create an embedded Checkout session with no attribution outside a browser", async () => {
+test("checkout omits attribution when the browser has no source data", async () => {
   const requests: Array<{ url: string; body: string | undefined }> = [];
   let sequence = 0;
   const client = new ChaosStorefrontClient({
@@ -1608,13 +1624,10 @@ test("payments create an embedded Checkout session with no attribution outside a
     }) as unknown as typeof fetch,
   });
 
-  await client.payments.createEmbeddedCheckout("cart-1", {
-    returnUrl: "https://shop.example.com/checkout/success",
-  });
+  await client.payments.createEmbeddedCheckout("cart-1");
 
   assert.deepEqual(JSON.parse(requests[2]?.body ?? "{}"), {
     payment_provider: "stripe",
-    return_url: "https://shop.example.com/checkout/success",
   });
 });
 
@@ -1669,7 +1682,7 @@ test("checkout reuses one idempotency key per cart so a retry cannot double-char
     }) as unknown as typeof fetch,
   });
 
-  const options = { returnUrl: "https://shop.example.com/checkout/success" };
+  const options = {};
   await client.payments.createEmbeddedCheckout("cart-1", options);
   await client.payments.createEmbeddedCheckout("cart-1", options);
   cartQuantity = 2;
@@ -1939,7 +1952,10 @@ test("resume creates a cart when a returning shopper has no active cart", async 
 
   const resumed = await client.cart.resume();
   assert.equal(resumed.data.id, "cart-2");
-  assert.deepEqual(calls, ["GET /api/v1/carts", "POST /api/v1/carts"]);
+  assert.deepEqual(calls, [
+    "GET https://shop.example.com/api/v1/carts",
+    "POST https://shop.example.com/api/v1/carts",
+  ]);
 });
 
 test("resume does not create a cart for an unrelated 404", async () => {

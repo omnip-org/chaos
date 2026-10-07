@@ -186,7 +186,6 @@ async fn stripe_checkout_adapter_executes_payment_over_http() {
             credential_secret_reference: reference.expose_reference().into(),
             provider_payment_reference: None,
             checkout_details: Some(checkout_details()),
-            return_url: Some("https://shop.example.com/success".into()),
             order_context: order_metadata_context(),
         })
         .await
@@ -212,10 +211,8 @@ async fn stripe_checkout_adapter_executes_payment_over_http() {
                 .map(|(key, value)| (key.into_owned(), value.into_owned()))
                 .collect();
         assert_eq!(checkout_form["ui_mode"], "embedded_page");
-        assert_eq!(
-            checkout_form["return_url"],
-            "https://shop.example.com/success"
-        );
+        assert_eq!(checkout_form["redirect_on_completion"], "never");
+        assert!(!checkout_form.contains_key("return_url"));
         assert_eq!(checkout_form["customer_email"], "buyer@example.com");
         assert_eq!(checkout_form["phone_number_collection[enabled]"], "true");
         assert_eq!(checkout_form["billing_address_collection"], "required");
@@ -252,7 +249,6 @@ async fn stripe_checkout_adapter_executes_payment_over_http() {
             credential_secret_reference: reference.expose_reference().into(),
             provider_payment_reference: Some("pi_created".into()),
             checkout_details: None,
-            return_url: None,
             order_context: order_metadata_context(),
         })
         .await
@@ -356,7 +352,6 @@ async fn stripe_checkout_adapter_omits_customer_email_when_not_yet_known() {
             credential_secret_reference: reference.expose_reference().into(),
             provider_payment_reference: None,
             checkout_details: Some(details),
-            return_url: Some("https://shop.example.com/success".into()),
             order_context: order_metadata_context(),
         })
         .await
@@ -411,7 +406,6 @@ async fn stripe_checkout_adapter_creates_an_embedded_session_and_returns_its_cli
             credential_secret_reference: reference.expose_reference().into(),
             provider_payment_reference: None,
             checkout_details: Some(checkout_details()),
-            return_url: Some("https://shop.example.com/success".into()),
             order_context: order_metadata_context(),
         })
         .await
@@ -433,7 +427,8 @@ async fn stripe_checkout_adapter_creates_an_embedded_session_and_returns_its_cli
     let form: HashMap<_, _> = url::form_urlencoded::parse(requests[0].body.as_bytes()).collect();
     assert_eq!(form["mode"], "payment");
     assert_eq!(form["ui_mode"], "embedded_page");
-    assert_eq!(form["return_url"], "https://shop.example.com/success");
+    assert_eq!(form["redirect_on_completion"], "never");
+    assert!(!form.contains_key("return_url"));
     assert_eq!(form["customer_email"], "buyer@example.com");
     assert_eq!(form["phone_number_collection[enabled]"], "true");
     assert_eq!(form["billing_address_collection"], "required");
@@ -452,38 +447,6 @@ async fn stripe_checkout_adapter_creates_an_embedded_session_and_returns_its_cli
     assert_eq!(form["metadata[chaos_order_id]"], aggregate_id.to_string());
     drop(requests);
     server.abort();
-}
-
-#[tokio::test]
-async fn stripe_checkout_adapter_rejects_creation_without_return_url() {
-    let reference = PaymentSecretReference::new("credential", "test://stripe").unwrap();
-    let secrets = Arc::new(StaticSecrets(HashMap::from([(
-        "test://stripe".into(),
-        r#"{"secret_key":"sk_test_secret","publishable_key":"pk_test_public"}"#.into(),
-    )])));
-    let provider = StripeGateway::new(
-        "http://127.0.0.1:1/".parse().unwrap(),
-        Duration::from_secs(2),
-        secrets,
-    )
-    .unwrap();
-    let result = provider
-        .execute(PaymentCommand {
-            kind: PaymentCommandKind::CreateCheckoutSession,
-            aggregate_id: Uuid::now_v7(),
-            refund_id: None,
-            amount_minor: 1234,
-            currency: CurrencyCode::parse("USD").unwrap(),
-            idempotency_key: "checkout-command".into(),
-            provider_account_id: TEST_PROVIDER_ACCOUNT_ID,
-            credential_secret_reference: reference.expose_reference().into(),
-            provider_payment_reference: None,
-            checkout_details: Some(checkout_details()),
-            return_url: None,
-            order_context: order_metadata_context(),
-        })
-        .await;
-    assert!(result.is_err());
 }
 
 #[tokio::test]

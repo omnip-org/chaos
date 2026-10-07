@@ -297,13 +297,6 @@ pub(super) fn outbox_currency(payload: &Value) -> Result<&str, ApplicationError>
         .ok_or_else(invalid_outbox_payload)
 }
 
-pub(super) fn outbox_return_url(payload: &Value) -> Option<String> {
-    payload
-        .get("return_url")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-}
-
 pub(super) fn invalid_outbox_payload() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("payment outbox payload is invalid"))
 }

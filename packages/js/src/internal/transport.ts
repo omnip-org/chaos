@@ -24,9 +24,7 @@ export class StorefrontTransport {
   constructor(private readonly options: TransportOptions) {
     const fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
     if (!fetchImpl) {
-      throw new TypeError(
-        "fetch is required (pass options.fetch in environments without a global fetch)",
-      );
+      throw new TypeError("window.fetch is required");
     }
     this.fetchImpl = fetchImpl;
   }
@@ -67,20 +65,13 @@ export class StorefrontTransport {
 }
 
 function buildUrl(baseUrl: string, path: string, query: object): string {
-  const origin = globalThis.location?.origin;
-  const isAbsolute = /^https?:\/\//.test(baseUrl);
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined && value !== null) search.set(key, String(value));
   }
   const queryString = search.toString();
 
-  if (isAbsolute || origin) {
-    const url = new URL(`${baseUrl}${path}`, isAbsolute ? undefined : origin);
-    url.search = queryString;
-    return url.toString();
-  }
-
-  // Node/SSR fetch doubles may resolve a path-only URL against their own base.
-  return queryString ? `${baseUrl}${path}?${queryString}` : `${baseUrl}${path}`;
+  const url = new URL(`${baseUrl}${path}`, window.location.origin);
+  url.search = queryString;
+  return url.toString();
 }

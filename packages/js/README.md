@@ -1,12 +1,13 @@
 # @omnip-org/chaos-js
 
-A typed browser client for the Chaos Commerce Storefront API. `new` one
-`ChaosStorefrontClient` — no storefront backend, proxy, or SSR deployment
-required — and dot into `chaos.cart`, `chaos.catalog`, `chaos.payments`,
+A typed, browser-only client for the Chaos Commerce Storefront API. Construct
+one `ChaosStorefrontClient` in browser code and use `chaos.cart`,
+`chaos.catalog`, `chaos.payments`,
 `chaos.orders`, `chaos.reviews`, `chaos.shopperSession`. The publishable key
 is meant to ship in a browser bundle (it's Channel-scoped and read-only); the
 shopper token is acquired and persisted automatically (`window.localStorage`
-by default).
+by default). Constructing the client without `window` and `document` throws;
+SSR and server-side Storefront requests are outside this package's contract.
 
 Every Storefront request sends the channel-scoped publishable key through
 `X-Chaos-Publishable-Key`. Shopper-owned requests additionally send the
@@ -44,7 +45,6 @@ npm install @omnip-org/chaos-js
 
 ```ts
 import { ChaosStorefrontClient, resolveProductMedia } from "@omnip-org/chaos-js";
-import { mountEmbeddedCheckout } from "@omnip-org/chaos-js/stripe";
 
 const chaos = new ChaosStorefrontClient({
   publishableKey: "pk_...",
@@ -67,7 +67,7 @@ const cart = await chaos.cart.warmup();
 const { data: products } = await chaos.catalog.listProducts({ q: "shoes" });
 // `openProduct` is the detail-page operation. It records Product-level
 // ViewContent/view_item internally, including when every Variant is sold out.
-// Use the pure `getProduct` read instead for SSR, prefetching or cache warming.
+// Use the pure `getProduct` read instead for prefetching or cache warming.
 const { data: product } = await chaos.catalog.openProduct("running-shoes");
 
 // Product media is returned as compact, reusable rules. Resolve the gallery
@@ -92,80 +92,52 @@ const { data: activeCart } = await chaos.cart.addLine(
 
 // Checkout: fbc/fbp and the current page URL are read automatically (pass
 // `attribution` explicitly to override, or `{}` to send none). Chaos sends
-// the attribution on the Cart and uses it for Meta CAPI `Purchase` once the
+// the attribution with the checkout and uses it for Meta CAPI `Purchase` once the
 // order is paid. InitiateCheckout is projected only by the browser SDK.
-const creation = await chaos.payments.createEmbeddedCheckoutWithCart(activeCart.id, {
-  returnUrl: "https://shop.example.com/checkout/return",
-});
+const creation = await chaos.payments.createEmbeddedCheckoutWithCart(activeCart.id);
 
-// If the response is lost, retry with the same Cart and return URL. The API
+// If the response is lost, retry with the same Cart. The API
 // recovers its pending Order and provider session, including after a reload.
 
 // Stripe Embedded Checkout — Chaos reserves inventory, locks the Cart, and
 // creates the pending Order before Stripe collects the remaining details.
-// The return URL must be HTTPS outside local loopback development.
-const action = creation.data.checkout.client_action;
 const nextCart = creation.data.cart;
 // The SDK's Stripe adapter has no extra dependencies: it loads Stripe.js from
 // https://js.stripe.com at runtime (Stripe does not allow bundling it).
-const mounted = await mountEmbeddedCheckout(action, document.querySelector("#checkout")!, {
-  // Optional. `onComplete` fires instead of a redirect only when the Checkout
-  // Session uses `redirect_on_completion: "never" | "if_required"`.
-  onComplete: () => renderInPlaceSuccess(),
-  onAnalyticsEvent: (event) => track(event.eventType),
-  // Resume the same session after a reload instead of creating a new one.
-  fetchClientSecret: async () => savedClientToken,
-});
+const mounted = await chaos.payments.mountEmbeddedCheckout(
+  creation.data.checkout,
+  document.querySelector("#checkout")!,
+  {
+    // When Stripe completes, the SDK waits for Chaos to
+    // confirm the Order and attempts Purchase before this callback runs.
+    onComplete: (order) => renderInPlaceResult(order),
+    onError: (error) => renderCheckoutError(error),
+    // Resume the same session after a reload instead of creating a new one.
+    fetchClientSecret: async () => savedClientToken,
+  },
+);
 // `mounted.unmount()` hides the form (e.g. on `onComplete`); `mounted.destroy()`
 // disposes it. Direct Stripe accounts do not use a Stripe-Account header.
+// The SDK uses the order_id already present in `creation.data.checkout`.
 
 // A latency-sensitive checkout page that already has a fresh Cart body can
-// call createEmbeddedCheckoutFromCart(activeCart, options), mount its returned
-// action immediately, and resolve chaos.cart.getOrCreate() in parallel.
-
-// On the return page, Stripe has appended order_id to the URL. Poll the
-// shopper-owned Order until Chaos's payment webhook marks it paid. Each read
-// automatically attempts Pixel and GA4 Purchase for a confirmed paid Order.
-const orderId = new URLSearchParams(location.search).get("order_id")!;
-const { data: order } = await chaos.orders.waitForCheckoutOrder(orderId);
-if (order.status === "confirmed" && order.payment_status === "paid") showSuccess();
+// call createEmbeddedCheckoutFromCart(activeCart), mount its returned
+// checkout immediately, and resolve chaos.cart.getOrCreate() in parallel.
 ```
 
-### Browser and server runtimes
+### Browser runtime
 
-The client can perform pure Storefront API reads during SSR, but its shopper,
-checkout and analytics behavior is browser-oriented. In a browser it can use
-`localStorage`, the current URL, first-party cookies and the DOM. It can
-therefore persist a shopper, capture checkout attribution, load
-Pixel/GA4 and mount Stripe Embedded Checkout.
+The SDK requires `window` and `document`. Browser ownership is deliberate: the
+same runtime persists the shopper token, reads the current URL and first-party
+cookies, captures checkout attribution, delivers Pixel/GA4 events and mounts
+Stripe. This also ensures a checkout request carries the shopper browser's
+network and user-agent context. Import the package only from browser entry
+points or framework client components.
 
-On a server, create a client per incoming request. Do not share one client as
-a process singleton: it holds the current shopper token, cart snapshots and
-checkout idempotency keys in memory. Use an absolute `baseUrl`, leave `events`
-unset, disable browser persistence and seed a request-owned shopper token only
-when the operation needs one:
-
-```ts
-const chaos = new ChaosStorefrontClient({
-  publishableKey: process.env.CHAOS_PUBLISHABLE_KEY!,
-  baseUrl: "https://chaos.example.com/api/v1",
-  storage: null,
-  autoAcquireShopperToken: false,
-});
-
-if (shopperTokenFromThisRequest) {
-  chaos.setShopperToken(shopperTokenFromThisRequest);
-}
-const product = await chaos.catalog.getProduct(productSlug);
-```
-
-The SDK never falls back to a server runtime's process-wide `localStorage`.
-Server execution also has no browser cookies or page URL, so it cannot
-automatically collect `_fbc`, `_fbp`, UTM parameters or
-`source_url`, and Pixel/GA4 delivery is unavailable. Keep checkout and the
-shopper-facing event-producing resource calls in the browser. In particular,
-a server-originated checkout request would otherwise identify the application
-server's network and user-agent context instead of the shopper's browser.
+The storefront still owns routes and rendering. Chaos disables payment methods
+that require leaving Embedded Checkout. `payments.mountEmbeddedCheckout()`
+keeps the Order id returned at checkout creation, polls that Order after Stripe
+completes, and projects Purchase through the SDK.
 
 ### Contract boundary
 
@@ -247,7 +219,7 @@ immediately when configured.
 | Search | Successful first page with a non-empty `q` | `Search` | `search` | — |
 | Cart addition | Successful line mutation whose quantity increased | `AddToCart` | `add_to_cart` | — |
 | Checkout start | Successful embedded checkout creation or recovery | `InitiateCheckout` | `begin_checkout` | — |
-| Purchase | Confirmed paid `orders.waitForCheckoutOrder` response | `Purchase` | `purchase` | `Purchase` at payment confirmation |
+| Purchase | Confirmed paid embedded checkout completion | `Purchase` | `purchase` | `Purchase` at payment confirmation |
 
 Browser commerce delivery is best effort and never changes the Storefront
 operation's result. It does not keep a local event ledger. Repeated operations
@@ -270,8 +242,8 @@ transaction ID. Browser Purchase also uses the Order UUID as GA4's
 `transaction_id` and shares its Meta event ID with the server-side CAPI copy.
 
 `catalog.getProduct` is a pure read because a successful request does not
-prove that its details reached the screen: it may be an SSR load, route
-prefetch, cache fill, or discarded render. Product detail pages use
+prove that its details reached the screen: it may be a route prefetch, cache
+fill, or discarded render. Product detail pages use
 `catalog.openProduct` instead. It returns the same Product response and emits
 one Product-level `ViewContent`/`view_item` internally:
 
@@ -284,13 +256,15 @@ Variant, depend on inventory, or invent a Product price. Viewing a sold-out
 Product still counts. Variant changes stay local UI state and do not emit
 another product view. There is no public event method for the storefront to call.
 
-`purchase` is a projection of a server-confirmed Order.
-`orders.waitForCheckoutOrder` uses the existing shopper token and polls the
-saved Order until it is paid or reaches a failed, expired or cancelled state.
-It defaults to a one-second interval and a 30-second timeout and accepts an
-`AbortSignal`. A confirmed paid response attempts Pixel/GA4 Purchase before it
-is returned (including partially refunded or refunded after an earlier
-payment). `orders.getCheckoutOrder` remains available for a single read.
+`purchase` is a projection of a server-confirmed Order. Stripe completion uses
+the Order UUID already returned by checkout creation and polls with the existing
+shopper token until the Order is paid or reaches a failed, expired or cancelled
+state. Polling defaults to a one-second interval and a 30-second timeout and
+accepts an `AbortSignal`.
+A confirmed paid response attempts Pixel/GA4 Purchase before it is returned to
+the storefront callback or confirmation page. The lower-level
+`orders.waitForCheckoutOrder` and `orders.getCheckoutOrder` methods remain
+available when the storefront already has an explicit Order UUID.
 The authenticated Order read returns the current `orders` row with its flat
 contact and address columns, plus related lines and fulfillment progress; it
 does not use a checkout-time snapshot.
@@ -324,7 +298,6 @@ the checkout call. Pass it explicitly to override the
 
 ```ts
 await chaos.payments.createEmbeddedCheckoutWithCart(cart.data.id, {
-  returnUrl: "https://shop.example.com/checkout/return",
   attribution: { meta: { fbc: readFbcSomeOtherWay() } },
   // attribution: {}, // send no attribution at all
 });
@@ -337,7 +310,7 @@ enrichment for ad platforms, never a condition of a successful purchase.
 `page_view`, `view_content`, `search`, `add_to_cart`, and
 `initiate_checkout` never reach CAPI; only their browser Pixel/GA4
 projections carry them. `Purchase` is the server-side event because payment
-confirmation is authoritative on the server and must survive a closed return
+confirmation is authoritative on the server and must survive a closed checkout
 page or blocked browser script.
 
 ### Guest order lookup

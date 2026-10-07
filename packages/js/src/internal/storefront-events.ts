@@ -21,10 +21,9 @@ interface StorefrontEventCoordinatorOptions {
 /** Keeps browser analytics outside the API client and resource classes. */
 export class StorefrontEventCoordinator {
   private readonly analytics: ChaosStorefrontAnalytics | null;
-  private warnedUnreachable = false;
 
   constructor(options: StorefrontEventCoordinatorOptions) {
-    const documentRef = options.events?.document ?? resolveDocument();
+    const documentRef = options.events?.document ?? document;
     if (options.events) {
       this.analytics = new ChaosStorefrontAnalytics({
         now: options.now,
@@ -46,7 +45,7 @@ export class StorefrontEventCoordinator {
   }
 
   recordCartMutation(mutation: CartLineMutation): void {
-    this.bestEffort("recordCartMutation", () =>
+    this.bestEffort(() =>
       this.analytics?.recordCartMutation(mutation),
     );
   }
@@ -54,7 +53,7 @@ export class StorefrontEventCoordinator {
   recordCheckoutCreation(
     creation: EmbeddedCheckoutStart | EmbeddedCheckoutCreation,
   ): void {
-    this.bestEffort("recordCheckoutCreation", () =>
+    this.bestEffort(() =>
       this.analytics?.recordCheckoutCreation(creation),
     );
   }
@@ -80,51 +79,26 @@ export class StorefrontEventCoordinator {
   }
 
   recordConfirmedPurchase(order: ConfirmedPurchaseOrderInput): void {
-    this.bestEffort("recordConfirmedPurchase", () =>
+    this.bestEffort(() =>
       this.analytics?.recordConfirmedPurchase(order),
     );
   }
 
   recordSearch(input: { query: string }): void {
-    this.bestEffort("recordSearch", () => this.analytics?.search(input));
+    this.bestEffort(() => this.analytics?.search(input));
   }
 
   recordProductView(product: Product): void {
-    this.bestEffort("recordProductView", () =>
+    this.bestEffort(() =>
       this.analytics?.viewContent(product.id),
     );
   }
 
-  private bestEffort(method: string, operation: () => void): void {
-    this.warnIfUnreachable(method);
+  private bestEffort(operation: () => void): void {
     try {
       operation();
     } catch {
       // Storefront operations have already succeeded; analytics cannot fail them.
     }
-  }
-
-  private warnIfUnreachable(method: string): void {
-    if (
-      this.analytics ||
-      typeof document !== "undefined" ||
-      this.warnedUnreachable
-    ) {
-      return;
-    }
-    this.warnedUnreachable = true;
-    console.warn(
-      `[chaos-js] ChaosStorefrontClient.${method}() ran with no \`document\` present, so it can ` +
-        "never reach Meta Pixel/GA4 from here (this is normal during SSR). Run the customer-facing " +
-        "resource operation through a browser ChaosStorefrontClient when it should emit an event.",
-    );
-  }
-}
-
-function resolveDocument(): Document | undefined {
-  try {
-    return globalThis.document;
-  } catch {
-    return undefined;
   }
 }

@@ -294,10 +294,42 @@ export interface WaitForCheckoutOrderOptions {
   signal?: AbortSignal;
 }
 
+/** Mounted Stripe Embedded Checkout instance. */
+export interface EmbeddedCheckoutMount {
+  /** Removes the checkout from the DOM; it can be mounted again. */
+  unmount(): void;
+  /** Removes and destroys the checkout; create a new instance to show it again. */
+  destroy(): void;
+}
+
+/** Provider-owned Stripe Embedded Checkout analytics event. */
+export type EmbeddedCheckoutAnalyticsEvent = {
+  eventType: string;
+  [key: string]: unknown;
+};
+
+/** Browser behavior for a mounted Stripe Embedded Checkout. */
+export interface MountEmbeddedCheckoutOptions {
+  /**
+   * Called with the terminal Chaos Order after Stripe completes in place.
+   * Purchase analytics have already been attempted before this callback runs.
+   */
+  onComplete?: (order: OwnOrder) => void | Promise<void>;
+  /** Receives an in-place Order confirmation failure. */
+  onError?: (error: unknown) => void;
+  /** Receives Stripe-owned analytics events during the payment session. */
+  onAnalyticsEvent?: (event: EmbeddedCheckoutAnalyticsEvent) => void;
+  /**
+   * Provides the Checkout Session client secret lazily so the same session can
+   * be remounted after a page reload.
+   */
+  fetchClientSecret?: () => Promise<string>;
+  /** Polling controls used after Stripe completes in place. */
+  confirmation?: WaitForCheckoutOrderOptions;
+}
+
 /** Storefront-facing options for creating an embedded checkout. */
 export interface EmbeddedCheckoutOptions {
-  /** Stripe appends the Order UUID to this URL before redirecting the shopper. */
-  returnUrl: string;
   /**
    * Ad-platform attribution read off the browser's own cookies/URL,
    * namespaced by platform. Defaults to reading Meta's `_fbc`/`_fbp`

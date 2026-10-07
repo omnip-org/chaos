@@ -24,7 +24,6 @@ use crate::{
 pub struct CreateEmbeddedCheckoutInput {
     pub actor: ShopperActor,
     pub order_id: OrderId,
-    pub return_url: String,
     pub now: OffsetDateTime,
 }
 
@@ -184,7 +183,6 @@ impl PaymentService {
         let CreateEmbeddedCheckoutInput {
             actor,
             order_id,
-            return_url,
             now,
         } = input;
         require_checkout_key(&actor.machine)?;
@@ -207,7 +205,7 @@ impl PaymentService {
             .ok_or_else(payment_provider_not_supported)?;
         let command = self
             .repository
-            .prepare_checkout_command(&actor, &payment, &return_url)
+            .prepare_checkout_command(&actor, &payment)
             .await?;
         let result = provider.execute(command).await?;
         if result.client_action.is_none() {
@@ -265,7 +263,6 @@ impl PaymentService {
             "aggregate_id": detail.id.as_uuid(),
             "amount_minor": detail.amount_minor,
             "currency": detail.currency.as_str(),
-            "return_url": None::<&str>,
             "provider": "stripe",
         });
         let mut command = self

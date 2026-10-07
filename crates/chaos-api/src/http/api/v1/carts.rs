@@ -58,7 +58,6 @@ struct SetCartLineRequest {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CreateEmbeddedCheckoutRequest {
-    return_url: String,
     payment_provider: PaymentProvider,
     #[serde(default)]
     attribution: Option<CheckoutAttributionRequest>,
@@ -222,7 +221,6 @@ async fn create_embedded_checkout(
     ApiPath(path): ApiPath<CartPath>,
     ApiJson(request): ApiJson<CreateEmbeddedCheckoutRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    validate_return_url(&request.return_url)?;
     let now = state.clock.now();
     let idempotency_key = headers
         .get("idempotency-key")
@@ -235,7 +233,6 @@ async fn create_embedded_checkout(
         .create_checkout(CreateCheckoutInput {
             shopper: shopper.clone(),
             cart_id: CartId::from_uuid(path.cart_id),
-            return_url: request.return_url.clone(),
             payment_provider: request.payment_provider.into(),
             now,
             idempotency_key,
@@ -247,7 +244,6 @@ async fn create_embedded_checkout(
         .create_embedded_checkout(CreateEmbeddedCheckoutInput {
             actor: shopper,
             order_id,
-            return_url: request.return_url,
             now,
         })
         .await?;
@@ -255,26 +251,6 @@ async fn create_embedded_checkout(
         [(header::REFERRER_POLICY, "no-referrer")],
         ApiResponse::created(EmbeddedCheckoutResponse::from(checkout)).private(),
     ))
-}
-
-fn validate_return_url(value: &str) -> Result<(), ApiError> {
-    let url = url::Url::parse(value)
-        .map_err(|_| invalid_value("return_url", "must be an absolute URL"))?;
-    let secure = url.scheme() == "https";
-    let loopback = url.scheme() == "http"
-        && url.host_str().is_some_and(|host| {
-            host == "localhost"
-                || host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        });
-    if !secure && !loopback {
-        return Err(invalid_value(
-            "return_url",
-            "must use https, except for an http loopback URL in local development",
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -310,7 +286,6 @@ mod tests {
                 .header(CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "return_url": "https://shop.example.test/return",
                         "payment_provider": provider,
                     })
                     .to_string(),

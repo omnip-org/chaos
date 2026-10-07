@@ -130,9 +130,8 @@ function resolveStorage(
   explicit: BrowserStorage | null | undefined,
 ): BrowserStorage | null {
   if (explicit !== undefined) return explicit;
-  if (typeof globalThis.window === "undefined") return null;
   try {
-    return globalThis.localStorage ?? null;
+    return window.localStorage ?? null;
   } catch {
     return null;
   }

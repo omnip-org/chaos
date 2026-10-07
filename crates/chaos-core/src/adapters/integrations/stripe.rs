@@ -269,10 +269,6 @@ impl PaymentProvider for StripeGateway {
         if command.kind != PaymentCommandKind::CreateCheckoutSession {
             return Err(stripe_invalid_response());
         }
-        let return_url = command
-            .return_url
-            .as_deref()
-            .ok_or_else(stripe_invalid_response)?;
         let checkout_details = command
             .checkout_details
             .as_ref()
@@ -280,7 +276,7 @@ impl PaymentProvider for StripeGateway {
         let mut form = vec![
             ("mode".into(), "payment".into()),
             ("ui_mode".into(), "embedded_page".into()),
-            ("return_url".into(), return_url.into()),
+            ("redirect_on_completion".into(), "never".into()),
             ("phone_number_collection[enabled]".into(), "true".into()),
             ("billing_address_collection".into(), "required".into()),
             ("allow_promotion_codes".into(), "true".into()),

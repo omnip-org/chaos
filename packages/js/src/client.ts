@@ -35,14 +35,13 @@ export interface ClientOptions {
   fetch?: typeof fetch;
   /**
    * Where the shopper token is persisted between requests. Defaults to
-   * window.localStorage when available.
+   * window.localStorage; pass null for an in-memory browser session.
    */
   storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
   randomUUID?: () => string;
   /**
    * Disables implicit shopper-session creation for callers that need to
-   * distinguish a missing token from a new anonymous session. Defaults to
-   * true for browser compatibility.
+   * distinguish a missing token from a new anonymous session. Defaults to true.
    */
   autoAcquireShopperToken?: boolean;
   /**
@@ -106,6 +105,7 @@ export class ChaosStorefrontClient {
   readonly reviews: ReviewsResource;
 
   constructor(options: ClientOptions) {
+    assertBrowserRuntime();
     if (!options.publishableKey) throw new TypeError("publishableKey is required");
 
     this.publishableKey = options.publishableKey;
@@ -267,5 +267,13 @@ export class ChaosStorefrontClient {
       }
       throw error;
     }
+  }
+}
+
+function assertBrowserRuntime(): void {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    throw new TypeError(
+      "@omnip-org/chaos-js is browser-only; construct ChaosStorefrontClient in a browser",
+    );
   }
 }

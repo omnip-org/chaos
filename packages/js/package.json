@@ -1,19 +1,15 @@
 {
   "name": "@omnip-org/chaos-js",
   "version": "0.1.0",
-  "description": "Typed browser client and Meta Pixel/GA4 event delivery for Chaos Commerce storefronts, built directly on the public-key-authenticated Storefront API.",
+  "description": "Browser-only client and Meta Pixel/GA4 event delivery for Chaos Commerce storefronts.",
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": ["./dist/index.js"],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./stripe": {
-      "types": "./dist/providers/stripe.d.ts",
-      "default": "./dist/providers/stripe.js"
     }
   },
   "files": ["dist", "!dist/test", "README.md"],
@@ -23,9 +19,6 @@
     "prepack": "npm run build",
     "pretest": "npm run build",
     "test": "node --test dist/**/*.test.js"
-  },
-  "engines": {
-    "node": ">=22"
   },
   "devDependencies": {
     "@types/node": "^26.3.0",

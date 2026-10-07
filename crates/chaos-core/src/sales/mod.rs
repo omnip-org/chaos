@@ -25,7 +25,6 @@ pub use order_management::{ChangeOrderStatusInput, OrderManagement};
 pub struct CreateCheckoutInput {
     pub shopper: ShopperActor,
     pub cart_id: CartId,
-    pub return_url: String,
     pub payment_provider: PaymentProvider,
     pub now: OffsetDateTime,
     pub idempotency_key: Uuid,
@@ -36,7 +35,6 @@ pub(crate) struct CheckoutRequest {
     pub payment_provider: PaymentProvider,
     pub now: OffsetDateTime,
     pub idempotency_key: Uuid,
-    pub return_url: String,
     pub attribution: Option<Value>,
 }
 
@@ -140,7 +138,6 @@ impl StorefrontSales {
                     payment_provider: input.payment_provider,
                     now: input.now,
                     idempotency_key: input.idempotency_key,
-                    return_url: input.return_url,
                     attribution: checkout_attribution_value(input.attribution),
                 },
             )
