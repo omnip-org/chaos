@@ -1,6 +1,6 @@
 use chaos_core::contracts::{
-    PaymentClientActionKind as CorePaymentClientActionKind, StorefrontMediaAsset,
-    StorefrontMediaScope,
+    PaymentClientAction, PaymentClientActionKind as CorePaymentClientActionKind,
+    StorefrontMediaAsset, StorefrontMediaScope,
 };
 use chaos_domain::{
     catalog::{MediaKind as DomainMediaKind, ReviewStatus as DomainReviewStatus},
@@ -11,6 +11,7 @@ use chaos_domain::{
         OrderStatus as DomainOrderStatus,
     },
 };
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -131,6 +132,23 @@ impl From<CorePaymentClientActionKind> for PaymentClientActionType {
     fn from(value: CorePaymentClientActionKind) -> Self {
         match value {
             CorePaymentClientActionKind::StripeCheckoutEmbedded => Self::StripeCheckoutEmbedded,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub(super) struct PaymentClientActionResponse {
+    r#type: PaymentClientActionType,
+    public_key: String,
+    client_token: String,
+}
+
+impl From<PaymentClientAction> for PaymentClientActionResponse {
+    fn from(value: PaymentClientAction) -> Self {
+        Self {
+            r#type: value.kind.into(),
+            public_key: value.public_key.expose_secret().to_owned(),
+            client_token: value.client_token.expose_secret().to_owned(),
         }
     }
 }

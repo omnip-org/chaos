@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::{
     ApplicationError,
     adapters::postgres::PostgresStorefrontSalesRepository,
-    contracts::{CartDetail, MachineActor, OrderDetail, ShopperActor},
+    contracts::{CartDetail, CheckoutActor, MachineActor, OrderDetail, ShopperActor},
 };
 
 mod attribution;
@@ -172,6 +172,20 @@ impl StorefrontSales {
             .ok_or(ApplicationError::NotFound {
                 resource: "order",
                 id: order_id.as_uuid().to_string(),
+            })
+    }
+
+    pub async fn get_checkout_order(
+        &self,
+        actor: &CheckoutActor,
+    ) -> Result<OrderDetail, ApplicationError> {
+        actor.machine().require_sales_channel()?;
+        self.repository
+            .get_checkout_order(actor)
+            .await?
+            .ok_or(ApplicationError::NotFound {
+                resource: "order",
+                id: actor.order_id().as_uuid().to_string(),
             })
     }
 }

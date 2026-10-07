@@ -1,8 +1,17 @@
-//! Storefront order search and shopper-owned order details.
+//! Storefront order search, shopper-owned details and checkout recovery.
 
-use axum::{Router, extract::State, http::header, response::IntoResponse, routing::get};
+use axum::{
+    Router,
+    extract::State,
+    http::{HeaderMap, StatusCode, header},
+    response::IntoResponse,
+    routing::get,
+};
 use chaos_core::contracts::{OrderDetail, OrderFulfillmentItem, OrderLineItem};
-use chaos_domain::sales::OrderId;
+use chaos_domain::sales::{
+    OrderId, OrderPaymentStatus as DomainOrderPaymentStatus, OrderStatus as DomainOrderStatus,
+};
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -11,12 +20,17 @@ use crate::http::{
     ShopperContext,
 };
 
-use super::wire::{FulfillmentStatus, OrderPaymentStatus, OrderStatus};
+use super::wire::{
+    FulfillmentStatus, OrderPaymentStatus, OrderStatus, PaymentClientActionResponse,
+};
+
+const CHECKOUT_TOKEN_HEADER: &str = "x-chaos-checkout-token";
 
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/orders/search", get(lookup_order))
         .route("/orders/{order_id}/details", get(get_own_order))
+        .route("/orders/{order_id}/checkout", get(get_checkout))
 }
 
 #[derive(Deserialize)]
@@ -85,7 +99,7 @@ impl From<OrderFulfillmentItem> for OrderFulfillmentResponse {
 }
 
 #[derive(Serialize)]
-struct OrderResponse {
+struct OrderSummaryResponse {
     id: Uuid,
     order_number: String,
     currency: String,
@@ -98,13 +112,26 @@ struct OrderResponse {
     shipping_amount_minor: i64,
     total_amount_minor: i64,
     refunded_amount_minor: i64,
-    fulfillments: Vec<OrderFulfillmentResponse>,
     lines: Vec<OrderLineResponse>,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
 }
 
-impl From<OrderDetail> for OrderResponse {
+#[derive(Serialize)]
+struct OrderResponse {
+    #[serde(flatten)]
+    summary: OrderSummaryResponse,
+    fulfillments: Vec<OrderFulfillmentResponse>,
+}
+
+#[derive(Serialize)]
+struct CheckoutAccessResponse {
+    order: OrderSummaryResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_action: Option<PaymentClientActionResponse>,
+}
+
+impl From<OrderDetail> for OrderSummaryResponse {
     fn from(order: OrderDetail) -> Self {
         Self {
             id: order.id.as_uuid(),
@@ -119,10 +146,22 @@ impl From<OrderDetail> for OrderResponse {
             shipping_amount_minor: order.shipping_amount_minor,
             total_amount_minor: order.total_amount_minor,
             refunded_amount_minor: order.refunded_amount_minor,
-            fulfillments: order.fulfillments.into_iter().map(Into::into).collect(),
             lines: order.lines.into_iter().map(Into::into).collect(),
             created_at: order.created_at.into(),
             updated_at: order.updated_at.into(),
+        }
+    }
+}
+
+impl From<OrderDetail> for OrderResponse {
+    fn from(mut order: OrderDetail) -> Self {
+        let fulfillments = std::mem::take(&mut order.fulfillments)
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        Self {
+            summary: order.into(),
+            fulfillments,
         }
     }
 }
@@ -259,6 +298,74 @@ async fn get_own_order(
     Ok(ApiResponse::ok(OwnOrderResponse::from(order)).private())
 }
 
+async fn get_checkout(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    PublishableChannel(actor): PublishableChannel,
+    ApiPath(path): ApiPath<OrderPath>,
+) -> Result<impl IntoResponse, ApiError> {
+    let credential = headers
+        .get(CHECKOUT_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(checkout_token_required)?;
+    let order_id = OrderId::from_uuid(path.order_id);
+    let checkout_actor = state
+        .checkout_credentials
+        .verify(
+            &actor,
+            &SecretString::from(credential.to_owned()),
+            state.clock.now(),
+        )
+        .map_err(|_| checkout_token_invalid())?;
+    if checkout_actor.order_id() != order_id {
+        return Err(checkout_token_invalid());
+    }
+
+    // Read the action first, then the Order. A webhook may make the Order
+    // terminal between the reads; the later Order state decides whether the
+    // earlier action can still be exposed.
+    let client_action = state
+        .payment_service
+        .recover_embedded_checkout(&checkout_actor)
+        .await?;
+    let order = state
+        .storefront_sales
+        .get_checkout_order(&checkout_actor)
+        .await?;
+    let client_action = if order.status == DomainOrderStatus::Pending
+        && order.payment_status == DomainOrderPaymentStatus::Pending
+    {
+        client_action.map(Into::into)
+    } else {
+        None
+    };
+    Ok((
+        [(header::REFERRER_POLICY, "no-referrer")],
+        ApiResponse::ok(CheckoutAccessResponse {
+            order: order.into(),
+            client_action,
+        })
+        .private(),
+    ))
+}
+
+fn checkout_token_required() -> ApiError {
+    ApiError::Request {
+        status: StatusCode::UNAUTHORIZED,
+        code: "checkout_token_required",
+        message: "a checkout token is required",
+    }
+}
+
+fn checkout_token_invalid() -> ApiError {
+    ApiError::Request {
+        status: StatusCode::UNAUTHORIZED,
+        code: "checkout_token_invalid",
+        message: "the checkout token is invalid or expired",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chaos_core::contracts::OrderDetail;
@@ -278,7 +385,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn own_order_serializes_validated_statuses_without_leaking_internal_fields() {
+    fn order_views_serialize_statuses_without_leaking_internal_fields() {
         let order_id = Uuid::from_u128(1);
         let response = OwnOrderResponse::from(OrderDetail {
             id: OrderId::from_uuid(order_id),
@@ -311,7 +418,7 @@ mod tests {
             updated_at: OffsetDateTime::UNIX_EPOCH,
         });
 
-        let json = serde_json::to_value(response).unwrap();
+        let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["id"], order_id.to_string());
         assert_eq!(json["status"], "confirmed");
         assert_eq!(json["payment_status"], "paid");
@@ -340,5 +447,22 @@ mod tests {
                 "internal field {internal} must not cross the Storefront boundary"
             );
         }
+
+        let checkout = serde_json::to_value(CheckoutAccessResponse {
+            order: response.order.summary,
+            client_action: None,
+        })
+        .unwrap();
+        assert!(checkout.get("client_action").is_none());
+        for identity in ["contact_email", "billing_full_name", "shipping_locality"] {
+            assert!(
+                checkout["order"].get(identity).is_none(),
+                "checkout link must not expose {identity}"
+            );
+        }
+        assert!(
+            checkout["order"].get("fulfillments").is_none(),
+            "checkout link must not expose fulfillment tracking"
+        );
     }
 }

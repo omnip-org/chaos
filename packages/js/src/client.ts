@@ -19,6 +19,7 @@ import type {
   DataEnvelope,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutStart,
+  CheckoutOrder,
   OwnOrder,
   Product,
   ShopperSession,
@@ -77,6 +78,8 @@ export interface RequestOptions<
   requestId?: string;
   /** Business idempotency key sent as Idempotency-Key. */
   idempotencyKey?: string;
+  /** Narrow capability used only to read and resume one checkout. */
+  checkoutToken?: string;
   /** Cancels the underlying fetch. */
   signal?: AbortSignal;
 }
@@ -214,8 +217,8 @@ export class ChaosStorefrontClient {
     this.events.recordCheckoutCreation(creation);
   }
 
-  /** @internal Called only after a shopper-owned Order read. */
-  async recordCheckoutPurchase(order: OwnOrder): Promise<void> {
+  /** @internal Called after an authenticated or capability-scoped Order read. */
+  async recordCheckoutPurchase(order: CheckoutOrder | OwnOrder): Promise<void> {
     await this.events.recordCheckoutPurchase(order, (confirmed) =>
       this.recordConfirmedPurchase(confirmed),
     );

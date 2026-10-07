@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     ApplicationError,
-    contracts::{CartDetail, MachineActor, OrderDetail, ShopperActor},
+    contracts::{CartDetail, CheckoutActor, MachineActor, OrderDetail, ShopperActor},
     error::database_error,
     sales::CheckoutRequest,
 };
@@ -551,6 +551,16 @@ impl PostgresStorefrontSalesRepository {
         } else {
             None
         };
+        transaction.commit().await.map_err(database_error)?;
+        Ok(order)
+    }
+
+    pub(crate) async fn get_checkout_order(
+        &self,
+        actor: &CheckoutActor,
+    ) -> Result<Option<OrderDetail>, ApplicationError> {
+        let mut transaction = self.begin(actor.machine()).await?;
+        let order = load_order(&mut transaction, actor.machine(), actor.order_id()).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(order)
     }

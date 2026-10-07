@@ -8,6 +8,7 @@ export interface TransportRequestOptions<
   body?: unknown;
   requestId?: string;
   idempotencyKey?: string;
+  checkoutToken?: string;
   signal?: AbortSignal;
 }
 
@@ -40,6 +41,9 @@ export class StorefrontTransport {
     if (options.body !== undefined) headers["content-type"] = "application/json";
     if (options.requestId) headers["X-Request-ID"] = options.requestId;
     if (options.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
+    if (options.checkoutToken) {
+      headers["X-Chaos-Checkout-Token"] = options.checkoutToken;
+    }
     if (shopperToken) headers["X-Chaos-Shopper-Token"] = shopperToken;
 
     const init: RequestInit = {

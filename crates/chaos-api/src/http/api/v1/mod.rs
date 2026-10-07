@@ -34,7 +34,9 @@ async fn storefront_cache_boundary(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     response.headers_mut().append(
         header::VARY,
-        HeaderValue::from_static("X-Chaos-Publishable-Key, X-Chaos-Shopper-Token"),
+        HeaderValue::from_static(
+            "X-Chaos-Publishable-Key, X-Chaos-Shopper-Token, X-Chaos-Checkout-Token",
+        ),
     );
     response
 }

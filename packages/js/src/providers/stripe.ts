@@ -7,7 +7,6 @@ import type {
 export interface StripeEmbeddedCheckoutOptions {
   onComplete: () => void;
   onAnalyticsEvent?: (event: EmbeddedCheckoutAnalyticsEvent) => void;
-  fetchClientSecret?: () => Promise<string>;
 }
 
 /**
@@ -23,8 +22,7 @@ interface StripeEmbeddedCheckoutHandle {
 }
 
 interface StripeEmbeddedCheckoutPageOptions {
-  clientSecret?: string;
-  fetchClientSecret?: () => Promise<string>;
+  clientSecret: string;
   onComplete?: () => void;
   onAnalyticsEvent?: (event: EmbeddedCheckoutAnalyticsEvent) => void;
 }
@@ -135,9 +133,9 @@ export async function mountEmbeddedCheckout(
   }
 
   const Stripe = await loadStripeJs();
-  const pageOptions: StripeEmbeddedCheckoutPageOptions = options.fetchClientSecret
-    ? { fetchClientSecret: options.fetchClientSecret }
-    : { clientSecret: action.client_token };
+  const pageOptions: StripeEmbeddedCheckoutPageOptions = {
+    clientSecret: action.client_token,
+  };
   pageOptions.onComplete = options.onComplete;
   if (options.onAnalyticsEvent) pageOptions.onAnalyticsEvent = options.onAnalyticsEvent;
 

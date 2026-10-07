@@ -4,6 +4,7 @@ import {
 } from "../events/browser.js";
 import type {
   CartLineMutation,
+  CheckoutOrder,
   ConfirmedPurchaseOrderInput,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutStart,
@@ -59,7 +60,7 @@ export class StorefrontEventCoordinator {
   }
 
   async recordCheckoutPurchase(
-    order: OwnOrder,
+    order: CheckoutOrder | OwnOrder,
     recordConfirmedPurchase: (order: ConfirmedPurchaseOrderInput) => void,
   ): Promise<void> {
     if (
@@ -70,12 +71,14 @@ export class StorefrontEventCoordinator {
     ) {
       return;
     }
-    try {
-      await this.analytics?.setMetaOrderIdentity(order);
-      recordConfirmedPurchase(order);
-    } catch {
-      // Analytics are best-effort after payment.
+    if (hasOrderIdentity(order)) {
+      try {
+        await this.analytics?.setMetaOrderIdentity(order);
+      } catch {
+        // Matching enrichment is best-effort; it cannot suppress Purchase.
+      }
     }
+    recordConfirmedPurchase(order);
   }
 
   recordConfirmedPurchase(order: ConfirmedPurchaseOrderInput): void {
@@ -101,4 +104,8 @@ export class StorefrontEventCoordinator {
       // Storefront operations have already succeeded; analytics cannot fail them.
     }
   }
+}
+
+function hasOrderIdentity(order: CheckoutOrder | OwnOrder): order is OwnOrder {
+  return "contact_email" in order;
 }

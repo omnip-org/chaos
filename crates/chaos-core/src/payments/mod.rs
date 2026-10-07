@@ -14,7 +14,7 @@ use crate::{
     ApplicationError, Page,
     adapters::postgres::PostgresStripeRepository,
     contracts::{
-        AdminActor, MachineActor, PaymentClientAction, PaymentProviderRegistry,
+        AdminActor, CheckoutActor, MachineActor, PaymentClientAction, PaymentProviderRegistry,
         PaymentWebhookVerifierRegistry, RefundDetail, ShopperActor, StripeAccountConfiguration,
         StripeAccountDetail, VerifiedWebhookEvent, WebhookInbox,
     },
@@ -199,15 +199,35 @@ impl PaymentService {
                 client_action,
             });
         }
-        let provider = self
-            .payment_providers
-            .get(&payment.provider)
-            .ok_or_else(payment_provider_not_supported)?;
-        let command = self
+        let provider = match self.payment_providers.get(&payment.provider) {
+            Some(provider) => provider,
+            None => {
+                let error = payment_provider_not_supported();
+                self.fail_permanent_checkout(&actor, order_id, now, &error)
+                    .await?;
+                return Err(error);
+            }
+        };
+        let command = match self
             .repository
             .prepare_checkout_command(&actor, &payment)
-            .await?;
-        let result = provider.execute(command).await?;
+            .await
+        {
+            Ok(command) => command,
+            Err(error) => {
+                self.fail_permanent_checkout(&actor, order_id, now, &error)
+                    .await?;
+                return Err(error);
+            }
+        };
+        let result = match provider.execute(command).await {
+            Ok(result) => result,
+            Err(error) => {
+                self.fail_permanent_checkout(&actor, order_id, now, &error)
+                    .await?;
+                return Err(error);
+            }
+        };
         if result.client_action.is_none() {
             self.repository
                 .fail_checkout_order(&actor, order_id, "checkout_client_action_missing", now)
@@ -235,6 +255,44 @@ impl PaymentService {
             order_number: payment.order_number,
             client_action,
         })
+    }
+
+    /// Releases a checkout only when retrying the same provider command cannot
+    /// succeed. Dependency/network failures retain the pending Order so the
+    /// caller can safely retry with the stable provider idempotency key.
+    async fn fail_permanent_checkout(
+        &self,
+        actor: &ShopperActor,
+        order_id: OrderId,
+        now: OffsetDateTime,
+        error: &ApplicationError,
+    ) -> Result<(), ApplicationError> {
+        if let Some(code) = permanent_checkout_failure_code(error) {
+            self.repository
+                .fail_checkout_order(actor, order_id, code, now)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn recover_embedded_checkout(
+        &self,
+        actor: &CheckoutActor,
+    ) -> Result<Option<PaymentClientAction>, ApplicationError> {
+        require_checkout_key(actor.machine())?;
+        let payment = self
+            .repository
+            .get_checkout_payment(actor)
+            .await?
+            .ok_or_else(|| order_not_found(actor.order_id()))?;
+        let client_action = if payment.order_status == OrderStatus::Pending
+            && payment.payment_status == OrderPaymentStatus::Pending
+        {
+            payment.client_action
+        } else {
+            None
+        };
+        Ok(client_action)
     }
 
     pub async fn create_refund(
@@ -401,6 +459,13 @@ fn checkout_client_action_missing() -> ApplicationError {
     }
 }
 
+fn permanent_checkout_failure_code(error: &ApplicationError) -> Option<&'static str> {
+    match error {
+        ApplicationError::Conflict { code, .. } => Some(*code),
+        _ => None,
+    }
+}
+
 fn require_stripe_account_administrator(actor: StoreActor) -> Result<(), ApplicationError> {
     if actor.role() == StoreRole::Owner {
         Ok(())
@@ -413,5 +478,29 @@ fn stripe_account_not_found(id: StripeAccountId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "stripe_account",
         id: id.as_uuid().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::permanent_checkout_failure_code;
+    use crate::ApplicationError;
+
+    #[test]
+    fn checkout_conflicts_are_terminal_but_dependency_failures_are_retryable() {
+        let rejected = ApplicationError::Conflict {
+            code: "stripe_request_rejected",
+            message: "rejected",
+        };
+        assert_eq!(
+            permanent_checkout_failure_code(&rejected),
+            Some("stripe_request_rejected")
+        );
+
+        let unavailable = ApplicationError::Unavailable {
+            service: "stripe",
+            source: anyhow::anyhow!("temporary"),
+        };
+        assert_eq!(permanent_checkout_failure_code(&unavailable), None);
     }
 }

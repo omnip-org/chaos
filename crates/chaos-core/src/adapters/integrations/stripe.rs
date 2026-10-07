@@ -887,7 +887,10 @@ async fn parse_stripe_response<T: DeserializeOwned>(
             .await
             .map_err(|_| stripe_invalid_response());
     }
-    if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+    if status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::CONFLICT
+        || status.is_server_error()
+    {
         Err(ApplicationError::Unavailable {
             service: "stripe",
             source: anyhow::anyhow!("Stripe returned HTTP {status}"),

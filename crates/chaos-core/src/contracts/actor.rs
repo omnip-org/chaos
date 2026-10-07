@@ -1,9 +1,10 @@
 use chaos_domain::{
     identity::UserId,
-    sales::ShopperId,
+    sales::{OrderId, ShopperId},
     store::{StoreId, StoreRole},
 };
 use secrecy::SecretString;
+use time::OffsetDateTime;
 
 use crate::ApplicationError;
 use crate::store::StoreActor;
@@ -84,6 +85,29 @@ impl MachineActor {
     }
 }
 
+/// A Storefront caller authorized by a signed capability to access one
+/// checkout. Services accept this type so checkout recovery cannot be entered
+/// with a bare Publishable Key actor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckoutActor {
+    machine: MachineActor,
+    order_id: OrderId,
+}
+
+impl CheckoutActor {
+    pub(crate) const fn new(machine: MachineActor, order_id: OrderId) -> Self {
+        Self { machine, order_id }
+    }
+
+    pub const fn machine(&self) -> &MachineActor {
+        &self.machine
+    }
+
+    pub const fn order_id(&self) -> OrderId {
+        self.order_id
+    }
+}
+
 pub trait ShopperCredentialCodec: Send + Sync {
     fn issue(
         &self,
@@ -96,4 +120,22 @@ pub trait ShopperCredentialCodec: Send + Sync {
         actor: &MachineActor,
         credential: &SecretString,
     ) -> Result<ShopperId, ApplicationError>;
+}
+
+/// Issues a narrow bearer capability for recovering one Storefront checkout.
+/// It carries no shopper identity and cannot authorize other carts or orders.
+pub trait CheckoutCredentialCodec: Send + Sync {
+    fn issue(
+        &self,
+        actor: &MachineActor,
+        order_id: OrderId,
+        now: OffsetDateTime,
+    ) -> Result<SecretString, ApplicationError>;
+
+    fn verify(
+        &self,
+        actor: &MachineActor,
+        credential: &SecretString,
+        now: OffsetDateTime,
+    ) -> Result<CheckoutActor, ApplicationError>;
 }

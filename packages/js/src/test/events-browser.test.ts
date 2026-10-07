@@ -300,6 +300,9 @@ test("attributes server checkout creation to the source Cart", () => {
     checkout: {
       order_id: "00000000-0000-4000-8000-000000000001",
       order_number: "W-20260830-7K4M9Q2D",
+      checkout_token: "checkout-token",
+      checkout_url:
+        "https://shop.example.com/checkout#order_id=00000000-0000-4000-8000-000000000001&checkout_token=checkout-token",
       client_action: {
         type: "stripe_checkout_embedded",
         public_key: "pk_test_stripe",

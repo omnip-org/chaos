@@ -230,37 +230,45 @@ export interface OrderLookupFulfillment {
 }
 
 /**
- * The order view returned by `orders.lookupOrder` for a matching
- * order-number + email pair. Contact details and the full billing/shipping
- * address are intentionally absent from the public lookup response.
+ * Order state exposed by a short-lived checkout capability. It contains what
+ * payment recovery, confirmation UI and Purchase projection need, without
+ * customer identity or fulfillment tracking.
  */
-export interface OrderLookup {
+export interface CheckoutOrder {
   id: UUID;
   order_number: string;
   currency: CurrencyCode;
   status: OrderStatus;
   payment_status: OrderPaymentStatus;
   fulfillment_status: FulfillmentStatus;
-  shipping_locality?: string | null;
-  shipping_country_code?: string | null;
   subtotal_amount_minor: number;
   discount_amount_minor: number;
   tax_amount_minor: number;
   shipping_amount_minor: number;
   total_amount_minor: number;
   refunded_amount_minor: number;
-  fulfillments: OrderLookupFulfillment[];
   lines: OrderLine[];
   created_at: string;
   updated_at: string;
 }
 
+/**
+ * The order view returned by `orders.lookupOrder` for a matching
+ * order-number + email pair. Contact details and the full billing/shipping
+ * address are intentionally absent from the public lookup response.
+ */
+export interface OrderLookup extends CheckoutOrder {
+  shipping_locality?: string | null;
+  shipping_country_code?: string | null;
+  fulfillments: OrderLookupFulfillment[];
+}
+
 /** Minimum manual Purchase input; richer Order totals improve GA4 revenue accuracy. */
 export type ConfirmedPurchaseOrderInput = Pick<
-  OrderLookup,
+  CheckoutOrder,
   "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines"
 > & Partial<Pick<
-  OrderLookup,
+  CheckoutOrder,
   "subtotal_amount_minor" | "discount_amount_minor" | "tax_amount_minor" | "shipping_amount_minor"
 >>;
 
@@ -284,7 +292,7 @@ export interface OwnOrder extends OrderLookup {
   shipping_country_code: string | null;
 }
 
-/** Polling controls for resolving a Stripe return into a terminal Order. */
+/** Polling controls for resolving a completed payment into a terminal Order. */
 export interface WaitForCheckoutOrderOptions {
   /** Delay between pending-order reads. Defaults to 1000 ms. */
   intervalMs?: number;
@@ -314,16 +322,11 @@ export interface MountEmbeddedCheckoutOptions {
    * Called with the terminal Chaos Order after Stripe completes in place.
    * Purchase analytics have already been attempted before this callback runs.
    */
-  onComplete?: (order: OwnOrder) => void | Promise<void>;
+  onComplete?: (order: CheckoutOrder) => void | Promise<void>;
   /** Receives an in-place Order confirmation failure. */
   onError?: (error: unknown) => void;
   /** Receives Stripe-owned analytics events during the payment session. */
   onAnalyticsEvent?: (event: EmbeddedCheckoutAnalyticsEvent) => void;
-  /**
-   * Provides the Checkout Session client secret lazily so the same session can
-   * be remounted after a page reload.
-   */
-  fetchClientSecret?: () => Promise<string>;
   /** Polling controls used after Stripe completes in place. */
   confirmation?: WaitForCheckoutOrderOptions;
 }
@@ -337,6 +340,11 @@ export interface EmbeddedCheckoutOptions {
    * object to send none.
    */
   attribution?: CheckoutAttribution;
+  /**
+   * Browser page to reopen when the checkout link is shared or refreshed.
+   * Defaults to the current page. The capability is stored in its URL fragment.
+   */
+  recoveryUrl?: string;
 }
 
 export type PaymentProvider = "stripe";
@@ -363,6 +371,10 @@ export interface CheckoutUtm {
 export interface EmbeddedCheckoutSession {
   order_id: UUID;
   order_number: string;
+  /** 48-hour capability scoped to this Order and sales channel. */
+  checkout_token: string;
+  /** Shareable browser URL from which the SDK can remount this checkout. */
+  checkout_url: string;
   client_action: PaymentClientAction;
 }
 

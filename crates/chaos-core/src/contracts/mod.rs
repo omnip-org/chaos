@@ -20,7 +20,9 @@ mod store_administration;
 mod storefront_catalog;
 mod stripe;
 
-pub use actor::{AdminActor, ShopperActor, ShopperCredentialCodec};
+pub use actor::{
+    AdminActor, CheckoutActor, CheckoutCredentialCodec, ShopperActor, ShopperCredentialCodec,
+};
 pub use analytics::{
     AnalyticsDeliveryCommand, AnalyticsDeliveryError, AnalyticsDeliveryReceipt,
     AnalyticsDestination, AnalyticsDestinationConfiguration, AnalyticsEventDestination,

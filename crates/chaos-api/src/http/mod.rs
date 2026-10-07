@@ -26,6 +26,7 @@ use chaos_core::{
         PostgresStorefrontSalesRepository, PostgresStripeRepository,
     },
     adapters::security::{
+        checkout::HmacCheckoutCredentialCodec,
         identity::{OidcIdentityVerifier, OidcProviderConfiguration, PostgresIdentityRepository},
         provider_secrets::DynamicSecretResolver,
         shopper::HmacShopperCredentialCodec,
@@ -44,8 +45,8 @@ use chaos_core::{
         ReviewAdministration, StorefrontCollections, StorefrontReviews,
     },
     contracts::{
-        Clock, IdentityAuthentication, MediaStorage, PaymentWebhookVerifierRegistry,
-        ShopperCredentialCodec,
+        CheckoutCredentialCodec, Clock, IdentityAuthentication, MediaStorage,
+        PaymentWebhookVerifierRegistry, ShopperCredentialCodec,
     },
     email::{EmailBrandAdministration, EmailProviderAccountAdministration, EmailWebhooks},
     fulfillment::FulfillmentManagement,
@@ -112,6 +113,7 @@ pub struct ApiState {
     pub fulfillment_management: Arc<FulfillmentManagement>,
     pub clock: Arc<dyn Clock>,
     pub shopper_credentials: Arc<dyn ShopperCredentialCodec>,
+    pub checkout_credentials: Arc<dyn CheckoutCredentialCodec>,
 }
 
 impl ApiState {
@@ -304,6 +306,8 @@ impl ApiState {
         ));
         let shopper_credentials =
             HmacShopperCredentialCodec::new(settings.shopper_token_secret.as_bytes().to_vec())?;
+        let checkout_credentials =
+            HmacCheckoutCredentialCodec::new(settings.shopper_token_secret.as_bytes().to_vec())?;
         Ok(Self {
             infrastructure,
             lifecycle,
@@ -344,6 +348,7 @@ impl ApiState {
             fulfillment_management: Arc::new(fulfillment_management),
             clock: Arc::new(SystemClock),
             shopper_credentials: Arc::new(shopper_credentials),
+            checkout_credentials: Arc::new(checkout_credentials),
         })
     }
 }
@@ -665,7 +670,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             response.headers()[axum::http::header::VARY],
-            "X-Chaos-Publishable-Key, X-Chaos-Shopper-Token"
+            "X-Chaos-Publishable-Key, X-Chaos-Shopper-Token, X-Chaos-Checkout-Token"
         );
         let body = to_bytes(response.into_body(), 2048).await.unwrap();
         let json = serde_json::from_slice::<Value>(&body).unwrap();

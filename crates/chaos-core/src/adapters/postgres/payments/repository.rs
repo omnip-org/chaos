@@ -149,7 +149,7 @@ impl PostgresStripeRepository {
 pub(super) async fn load_order_checkout_payment(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
-    shopper_id: Uuid,
+    shopper_id: Option<Uuid>,
     order_id: OrderId,
 ) -> Result<Option<OrderCheckoutPayment>, ApplicationError> {
     let channel_id = actor.channel_id.ok_or(ApplicationError::Forbidden)?;
@@ -168,7 +168,8 @@ pub(super) async fn load_order_checkout_payment(
            ON account.store_id = sales_order.store_id \
           AND account.id = sales_order.payment_provider_account_id \
          WHERE sales_order.store_id = $1 AND sales_order.channel_id = $2 \
-           AND sales_order.shopper_id = $3 AND sales_order.id = $4",
+           AND ($3::uuid IS NULL OR sales_order.shopper_id = $3) \
+           AND sales_order.id = $4",
     )
     .bind(actor.store_id.as_uuid())
     .bind(channel_id.as_uuid())

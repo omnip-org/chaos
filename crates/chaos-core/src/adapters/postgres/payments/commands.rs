@@ -20,7 +20,7 @@ use crate::{
     ApplicationError,
     adapters::postgres::sales::release_order_inventory,
     contracts::{
-        AdminActor, OrderMetadataContext, PaymentCheckoutDetails, PaymentCommand,
+        AdminActor, CheckoutActor, OrderMetadataContext, PaymentCheckoutDetails, PaymentCommand,
         PaymentCommandKind, PaymentCommandResult, PaymentLineItem, PaymentShippingAddress,
         RefundDetail, ShopperActor,
     },
@@ -90,10 +90,22 @@ impl PostgresStripeRepository {
         let payment = load_order_checkout_payment(
             &mut transaction,
             &shopper.machine,
-            shopper.shopper_id.as_uuid(),
+            Some(shopper.shopper_id.as_uuid()),
             order_id,
         )
         .await?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(payment)
+    }
+
+    pub(crate) async fn get_checkout_payment(
+        &self,
+        actor: &CheckoutActor,
+    ) -> Result<Option<OrderCheckoutPayment>, ApplicationError> {
+        let mut transaction = self.begin_machine(actor.machine()).await?;
+        let payment =
+            load_order_checkout_payment(&mut transaction, actor.machine(), None, actor.order_id())
+                .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(payment)
     }

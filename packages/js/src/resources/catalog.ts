@@ -43,18 +43,10 @@ export class CatalogResource {
   }
 
   async getProduct(handle: string, params: GetProductParams = {}): Promise<DataEnvelope<Product>> {
-    return this.client.request<DataEnvelope<Product>, GetProductParams>(
+    const response = await this.client.request<DataEnvelope<Product>, GetProductParams>(
       `/products/${encodeURIComponent(handle)}`,
       { method: "GET", query: params },
     );
-  }
-
-  /** Loads a Product for display and records one product-level ViewContent. */
-  async openProduct(
-    handle: string,
-    params: GetProductParams = {},
-  ): Promise<DataEnvelope<Product>> {
-    const response = await this.getProduct(handle, params);
     this.client.recordProductView(response.data);
     return response;
   }

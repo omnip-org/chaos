@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post, put},
 };
 use chaos_core::{
-    contracts::{CartDetail, CartLineItem, PaymentClientAction},
+    contracts::{CartDetail, CartLineItem},
     payments::{CreateEmbeddedCheckoutInput, EmbeddedCheckoutResult},
     sales::CreateCheckoutInput,
 };
@@ -24,7 +24,7 @@ use crate::http::{
 
 use super::{
     attribution::{CheckoutAttributionRequest, checkout_attribution_input},
-    wire::{CartStatus, MediaResponse, PaymentClientActionType, PaymentProvider},
+    wire::{CartStatus, MediaResponse, PaymentClientActionResponse, PaymentProvider},
 };
 
 pub(crate) fn routes() -> Router<ApiState> {
@@ -92,14 +92,8 @@ struct CartLineResponse {
 struct EmbeddedCheckoutResponse {
     order_id: Uuid,
     order_number: String,
+    checkout_token: String,
     client_action: PaymentClientActionResponse,
-}
-
-#[derive(Serialize)]
-struct PaymentClientActionResponse {
-    r#type: PaymentClientActionType,
-    public_key: String,
-    client_token: String,
 }
 
 impl From<CartDetail> for CartResponse {
@@ -132,22 +126,13 @@ impl From<CartLineItem> for CartLineResponse {
     }
 }
 
-impl From<EmbeddedCheckoutResult> for EmbeddedCheckoutResponse {
-    fn from(checkout: EmbeddedCheckoutResult) -> Self {
+impl EmbeddedCheckoutResponse {
+    fn new(checkout: EmbeddedCheckoutResult, checkout_token: String) -> Self {
         Self {
             order_id: checkout.order_id.as_uuid(),
             order_number: checkout.order_number,
+            checkout_token,
             client_action: checkout.client_action.into(),
-        }
-    }
-}
-
-impl From<PaymentClientAction> for PaymentClientActionResponse {
-    fn from(value: PaymentClientAction) -> Self {
-        Self {
-            r#type: value.kind.into(),
-            public_key: value.public_key.expose_secret().to_owned(),
-            client_token: value.client_token.expose_secret().to_owned(),
         }
     }
 }
@@ -239,6 +224,9 @@ async fn create_embedded_checkout(
             attribution: checkout_attribution_input(request.attribution.as_ref(), &headers),
         })
         .await?;
+    let checkout_token = state
+        .checkout_credentials
+        .issue(&shopper.machine, order_id, now)?;
     let checkout = state
         .payment_service
         .create_embedded_checkout(CreateEmbeddedCheckoutInput {
@@ -249,7 +237,11 @@ async fn create_embedded_checkout(
         .await?;
     Ok((
         [(header::REFERRER_POLICY, "no-referrer")],
-        ApiResponse::created(EmbeddedCheckoutResponse::from(checkout)).private(),
+        ApiResponse::created(EmbeddedCheckoutResponse::new(
+            checkout,
+            checkout_token.expose_secret().to_owned(),
+        ))
+        .private(),
     ))
 }
 

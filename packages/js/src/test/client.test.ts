@@ -5,7 +5,7 @@ import { ChaosStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
 import { defaultAdAttribution } from "../internal/attribution.js";
 import { storefrontStorageKeys } from "../internal/browser-storage.js";
-import type { OwnOrder } from "../types.js";
+import type { CheckoutOrder, OrderLookup, OwnOrder } from "../types.js";
 
 // The package is browser-only. Individual tests replace these minimal globals
 // when they need a specific URL, cookie jar or DOM behavior.
@@ -50,6 +50,35 @@ function shopperSessionResponse(token: string): Response {
 
 function shopperToken(headers: Headers): string | null {
   return headers.get("x-chaos-shopper-token");
+}
+
+function checkoutOrder(overrides: Partial<OrderLookup> = {}): OrderLookup {
+  return {
+    id: "00000000-0000-4000-8000-000000000001",
+    order_number: "W-12345678",
+    currency: "USD",
+    status: "pending",
+    payment_status: "pending",
+    fulfillment_status: "pending",
+    subtotal_amount_minor: 2_000,
+    discount_amount_minor: 0,
+    tax_amount_minor: 0,
+    shipping_amount_minor: 0,
+    total_amount_minor: 2_000,
+    refunded_amount_minor: 0,
+    fulfillments: [],
+    lines: [],
+    created_at: "2026-10-07T00:00:00Z",
+    updated_at: "2026-10-07T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function checkoutCapabilityOrder(
+  overrides: Partial<CheckoutOrder> = {},
+): CheckoutOrder {
+  const { fulfillments: _fulfillments, ...order } = checkoutOrder(overrides);
+  return order;
 }
 
 function restoreGlobal(
@@ -186,6 +215,7 @@ test("waitForCheckoutOrder stops at its timeout", async () => {
 
 test("mounted checkout confirms the Order before its in-place completion callback", async () => {
   const stripeDescriptor = Object.getOwnPropertyDescriptor(globalThis, "Stripe");
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
   let stripeComplete: (() => void) | undefined;
   let mountedContainer: HTMLElement | undefined;
   Object.defineProperty(globalThis, "Stripe", {
@@ -203,45 +233,246 @@ test("mounted checkout confirms the Order before its in-place completion callbac
       },
     }),
   });
-  const order = {
-    id: "00000000-0000-4000-8000-000000000001",
-    order_number: "W-12345678",
-    status: "confirmed",
-    payment_status: "paid",
-  } as OwnOrder;
+  const pending = checkoutOrder();
+  const paid = checkoutOrder({ status: "confirmed", payment_status: "paid" });
+  const checkoutUrl =
+    `https://shop.example.com/checkout#order_id=${pending.id}` +
+    "&checkout_token=checkout-token";
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      location: { href: checkoutUrl, origin: "https://shop.example.com" },
+      history: { state: null, replaceState: () => {} },
+    },
+  });
   try {
+    let reads = 0;
+    const requestHeaders: Headers[] = [];
     const client = new ChaosStorefrontClient({
       publishableKey: "public_test",
       storage: null,
-      fetch: (async () => jsonResponse(200, { data: order })) as unknown as typeof fetch,
+      fetch: (async (_url: string, init: RequestInit) => {
+        requestHeaders.push(new Headers(init.headers));
+        const order = reads++ === 0 ? pending : paid;
+        return jsonResponse(200, {
+          data: {
+            order,
+            ...(order.payment_status === "pending"
+              ? {
+                  client_action: {
+                    type: "stripe_checkout_embedded",
+                    public_key: "pk_test_stripe",
+                    client_token: "cs_test_secret",
+                  },
+                }
+              : {}),
+          },
+        });
+      }) as unknown as typeof fetch,
     });
-    client.setShopperToken("shopper-original");
     const container = {} as HTMLElement;
-    let finish: (value: OwnOrder) => void = () => {};
-    const completed = new Promise<OwnOrder>((resolve) => {
+    let finish: (value: CheckoutOrder) => void = () => {};
+    const completed = new Promise<CheckoutOrder>((resolve) => {
       finish = resolve;
     });
 
     await client.payments.mountEmbeddedCheckout(
-      {
-        order_id: order.id,
-        order_number: order.order_number,
-        client_action: {
-          type: "stripe_checkout_embedded",
-          public_key: "pk_test_stripe",
-          client_token: "cs_test_secret",
-        },
-      },
       container,
       { onComplete: finish },
     );
     assert.equal(mountedContainer, container);
     assert.ok(stripeComplete);
+    assert.equal(requestHeaders[0]?.get("x-chaos-checkout-token"), "checkout-token");
+    assert.equal(shopperToken(requestHeaders[0]!), null);
 
     stripeComplete();
-    assert.equal(await completed, order);
+    assert.equal(await completed, paid);
+    assert.equal(requestHeaders[1]?.get("x-chaos-checkout-token"), "checkout-token");
   } finally {
     restoreGlobal("Stripe", stripeDescriptor);
+    restoreGlobal("window", windowDescriptor);
+  }
+});
+
+test("a terminal shared checkout completes from its URL without mounting Stripe", async () => {
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const order = checkoutOrder({ status: "confirmed", payment_status: "paid" });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      location: {
+        href:
+          `https://shop.example.com/checkout#order_id=${order.id}` +
+          "&checkout_token=shared-token",
+        origin: "https://shop.example.com",
+      },
+      history: { state: null, replaceState: () => {} },
+    },
+  });
+  try {
+    let headers: Headers | undefined;
+    const client = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      storage: null,
+      fetch: (async (_url: string, init: RequestInit) => {
+        headers = new Headers(init.headers);
+        return jsonResponse(200, { data: { order } });
+      }) as unknown as typeof fetch,
+    });
+    const purchases: string[] = [];
+    client.recordConfirmedPurchase = (confirmed) => purchases.push(confirmed.id);
+    let completed: CheckoutOrder | undefined;
+
+    const mounted = await client.payments.mountEmbeddedCheckout(
+      {} as HTMLElement,
+      { onComplete: (confirmed) => { completed = confirmed; } },
+    );
+
+    assert.equal(mounted, null);
+    assert.equal(completed, order);
+    assert.deepEqual(purchases, [order.id]);
+    assert.equal(headers?.get("x-chaos-checkout-token"), "shared-token");
+    assert.equal(shopperToken(headers!), null);
+  } finally {
+    restoreGlobal("window", windowDescriptor);
+  }
+});
+
+test("a failed shared checkout completes without projecting Purchase", async () => {
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const order = checkoutCapabilityOrder({
+    status: "cancelled",
+    payment_status: "failed",
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      location: {
+        href:
+          `https://shop.example.com/checkout#order_id=${order.id}` +
+          "&checkout_token=failed-token",
+        origin: "https://shop.example.com",
+      },
+      history: { state: null, replaceState: () => {} },
+    },
+  });
+  try {
+    const client = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      storage: null,
+      fetch: (async () =>
+        jsonResponse(200, { data: { order } })) as unknown as typeof fetch,
+    });
+    const purchases: string[] = [];
+    client.recordConfirmedPurchase = (confirmed) => purchases.push(confirmed.id);
+    let completed: CheckoutOrder | undefined;
+
+    const mounted = await client.payments.mountEmbeddedCheckout(
+      {} as HTMLElement,
+      { onComplete: (terminal) => { completed = terminal; } },
+    );
+
+    assert.equal(mounted, null);
+    assert.equal(completed, order);
+    assert.deepEqual(purchases, []);
+  } finally {
+    restoreGlobal("window", windowDescriptor);
+  }
+});
+
+test("checkout recovery enriches Purchase from the original shopper order", async () => {
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const order = checkoutCapabilityOrder({
+    status: "confirmed",
+    payment_status: "paid",
+  });
+  const ownOrder = {
+    ...checkoutOrder({ status: "confirmed", payment_status: "paid" }),
+    contact_email: "buyer@example.com",
+  } as OwnOrder;
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      location: {
+        href:
+          `https://shop.example.com/checkout#order_id=${order.id}` +
+          "&checkout_token=owner-token",
+        origin: "https://shop.example.com",
+      },
+      history: { state: null, replaceState: () => {} },
+    },
+  });
+  try {
+    const requests: Array<{ url: string; headers: Headers }> = [];
+    const client = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      storage: null,
+      fetch: (async (url: string, init: RequestInit) => {
+        requests.push({ url, headers: new Headers(init.headers) });
+        return url.endsWith("/checkout")
+          ? jsonResponse(200, { data: { order } })
+          : jsonResponse(200, { data: ownOrder });
+      }) as unknown as typeof fetch,
+    });
+    client.setShopperToken("shopper-original");
+    const purchases: Array<CheckoutOrder | OwnOrder> = [];
+    client.recordCheckoutPurchase = async (confirmed) => {
+      purchases.push(confirmed);
+    };
+    let completed: CheckoutOrder | undefined;
+
+    const mounted = await client.payments.mountEmbeddedCheckout(
+      {} as HTMLElement,
+      { onComplete: (terminal) => { completed = terminal; } },
+    );
+
+    assert.equal(mounted, null);
+    assert.equal(completed, ownOrder);
+    assert.deepEqual(purchases, [ownOrder]);
+    assert.equal(requests.length, 2);
+    assert.equal(
+      requests[0]?.headers.get("x-chaos-checkout-token"),
+      "owner-token",
+    );
+    assert.equal(shopperToken(requests[0]!.headers), null);
+    assert.equal(requests[1]?.headers.get("x-chaos-checkout-token"), null);
+    assert.equal(shopperToken(requests[1]!.headers), "shopper-original");
+  } finally {
+    restoreGlobal("window", windowDescriptor);
+  }
+});
+
+test("a pending checkout without a client action is rejected", async () => {
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const order = checkoutCapabilityOrder();
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      location: {
+        href:
+          `https://shop.example.com/checkout#order_id=${order.id}` +
+          "&checkout_token=broken-token",
+        origin: "https://shop.example.com",
+      },
+      history: { state: null, replaceState: () => {} },
+    },
+  });
+  try {
+    const client = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      storage: null,
+      fetch: (async () =>
+        jsonResponse(200, { data: { order } })) as unknown as typeof fetch,
+    });
+
+    await assert.rejects(
+      () => client.payments.mountEmbeddedCheckout({} as HTMLElement),
+      (error: unknown) =>
+        error instanceof ChaosApiError &&
+        error.code === "invalid_checkout_response",
+    );
+  } finally {
+    restoreGlobal("window", windowDescriptor);
   }
 });
 
@@ -711,7 +942,7 @@ test("catalog search records only the first page of a non-empty query", async ()
   assert.deepEqual(searches, ["shoes"]);
 });
 
-test("catalog.getProduct does not report a view before the UI displays it", async () => {
+test("catalog.getProduct records a product view", async () => {
   const client = new ChaosStorefrontClient({
     publishableKey: "public_test",
     storage: null,
@@ -732,10 +963,10 @@ test("catalog.getProduct does not report a view before the UI displays it", asyn
 
   await client.catalog.getProduct("running-shoe");
 
-  assert.equal(views, 0);
+  assert.equal(views, 1);
 });
 
-test("catalog.openProduct records the Product even when every Variant is sold out", async () => {
+test("catalog.getProduct records the Product even when every Variant is sold out", async () => {
   const product = {
     id: "product-1",
     handle: "running-shoe",
@@ -775,7 +1006,7 @@ test("catalog.openProduct records the Product even when every Variant is sold ou
   const views: string[] = [];
   client.recordProductView = (openedProduct) => views.push(openedProduct.id);
 
-  const response = await client.catalog.openProduct("running-shoe");
+  const response = await client.catalog.getProduct("running-shoe");
   assert.equal(response.data, product);
   assert.deepEqual(views, ["product-1"]);
 });
@@ -817,6 +1048,7 @@ test("payments create an embedded Checkout session with SDK-owned request detail
           data: {
             order_id: "00000000-0000-4000-8000-000000000001",
             order_number: "W-20260830-00000001",
+            checkout_token: "checkout-token",
             client_action: {
               type: "stripe_checkout_embedded",
               public_key: "pk_test_stripe",
@@ -848,6 +1080,11 @@ test("payments create an embedded Checkout session with SDK-owned request detail
     public_key: "pk_test_stripe",
     client_token: "cs_test_secret",
   });
+  assert.equal(session.data.checkout_token, "checkout-token");
+  assert.match(
+    session.data.checkout_url,
+    /#order_id=00000000-0000-4000-8000-000000000001&checkout_token=checkout-token$/,
+  );
   assert.deepEqual(recordedCheckouts, [
     {
       checkout: session.data,
@@ -885,6 +1122,7 @@ test("checkout attaches explicit attribution and excludes it from the idempotenc
           data: {
             order_id: "00000000-0000-4000-8000-000000000001",
             order_number: "W-20260830-00000001",
+            checkout_token: "checkout-token",
             client_action: {
               type: "stripe_checkout_embedded",
               public_key: "pk_test_stripe",
@@ -949,6 +1187,7 @@ test("checkout defaults source_url to the current page in a browser", async () =
             data: {
               order_id: "00000000-0000-4000-8000-000000000001",
               order_number: "W-20260830-00000001",
+              checkout_token: "checkout-token",
               client_action: {
                 type: "stripe_checkout_embedded",
                 public_key: "pk_test_stripe",
@@ -1024,6 +1263,7 @@ test("checkout captures Meta click attribution without browser event providers",
             data: {
               order_id: "00000000-0000-4000-8000-000000000001",
               order_number: "W-20260830-00000001",
+              checkout_token: "checkout-token",
               client_action: {
                 type: "stripe_checkout_embedded",
                 public_key: "pk_test_stripe",
@@ -1125,6 +1365,7 @@ test("checkout leaves UTM attribution to GA4 unless explicitly supplied", async 
             data: {
               order_id: "00000000-0000-4000-8000-000000000001",
               order_number: "W-20260830-00000001",
+              checkout_token: "checkout-token",
               client_action: {
                 type: "stripe_checkout_embedded",
                 public_key: "pk_test_stripe",
@@ -1454,6 +1695,7 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
           data: {
             order_id: "00000000-0000-4000-8000-000000000001",
             order_number: "W-20260830-00000001",
+            checkout_token: "checkout-token",
             client_action: {
               type: "stripe_checkout_embedded",
               public_key: "pk_test_stripe",
@@ -1478,7 +1720,76 @@ test("checkout creation keeps the source Cart snapshot when rotating the Cart", 
 
   assert.deepEqual(creation.data.source_cart, sourceCart);
   assert.deepEqual(creation.data.cart, nextCart);
-  assert.deepEqual(recordedCreations, [creation.data]);
+  assert.deepEqual(recordedCreations, [{
+    checkout: creation.data.checkout,
+    source_cart: sourceCart,
+  }]);
+});
+
+test("checkout creation is recorded even when acquiring the next Cart fails", async () => {
+  const sourceCart = {
+    id: "cart-1",
+    currency: "USD",
+    status: "active" as const,
+    subtotal_amount_minor: 2_000,
+    created_at: "2026-08-30T00:00:00Z",
+    updated_at: "2026-08-30T00:00:00Z",
+    lines: [],
+  };
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async (url: string, init: RequestInit) => {
+      if (url.endsWith("/shopper/sessions")) {
+        return shopperSessionResponse("shopper-token");
+      }
+      if (url.endsWith("/carts/cart-1")) {
+        return jsonResponse(200, { data: sourceCart });
+      }
+      if (url.endsWith("/carts/cart-1/checkout")) {
+        return jsonResponse(201, {
+          data: {
+            order_id: "00000000-0000-4000-8000-000000000001",
+            order_number: "W-20260830-00000001",
+            checkout_token: "checkout-token",
+            client_action: {
+              type: "stripe_checkout_embedded",
+              public_key: "pk_test_stripe",
+              client_token: "cs_test_secret",
+            },
+          },
+        });
+      }
+      assert.equal(init.method, "POST");
+      return jsonResponse(503, {
+        error: { code: "cart_unavailable", message: "try later" },
+      });
+    }) as unknown as typeof fetch,
+  });
+  const recordedCreations: unknown[] = [];
+  client.recordCheckoutCreation = (input) => recordedCreations.push(input);
+
+  await assert.rejects(
+    () => client.payments.createEmbeddedCheckoutWithCart("cart-1"),
+    (error: unknown) =>
+      error instanceof ChaosApiError && error.code === "cart_unavailable",
+  );
+  assert.equal(recordedCreations.length, 1);
+  assert.deepEqual(recordedCreations[0], {
+    checkout: {
+      order_id: "00000000-0000-4000-8000-000000000001",
+      order_number: "W-20260830-00000001",
+      checkout_token: "checkout-token",
+      checkout_url:
+        "https://shop.example.com/#order_id=00000000-0000-4000-8000-000000000001&checkout_token=checkout-token",
+      client_action: {
+        type: "stripe_checkout_embedded",
+        public_key: "pk_test_stripe",
+        client_token: "cs_test_secret",
+      },
+    },
+    source_cart: sourceCart,
+  });
 });
 
 test("checkout can hand off directly from a fresh Cart without another read or Cart rotation", async () => {
@@ -1516,6 +1827,7 @@ test("checkout can hand off directly from a fresh Cart without another read or C
           data: {
             order_id: "00000000-0000-4000-8000-000000000001",
             order_number: "W-20260830-00000001",
+            checkout_token: "checkout-token",
             client_action: {
               type: "stripe_checkout_embedded",
               public_key: "pk_test_stripe",
@@ -1610,6 +1922,7 @@ test("checkout omits attribution when the browser has no source data", async () 
           data: {
             order_id: "00000000-0000-4000-8000-000000000001",
             order_number: "W-20260830-00000001",
+            checkout_token: "checkout-token",
             client_action: {
               type: "stripe_checkout_embedded",
               public_key: "pk_test_stripe",
@@ -1672,6 +1985,7 @@ test("checkout reuses one idempotency key per cart so a retry cannot double-char
         data: {
           order_id: "00000000-0000-4000-8000-000000000001",
           order_number: "W-20260830-55555555",
+          checkout_token: "checkout-token",
           client_action: {
             type: "stripe_checkout_embedded",
             public_key: "pk_test_stripe",
