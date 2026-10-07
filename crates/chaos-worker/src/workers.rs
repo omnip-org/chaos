@@ -1,4 +1,5 @@
 use chaos_core::runtime::lifecycle::Lifecycle;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::runtime::WorkerRuntime;
@@ -7,42 +8,64 @@ pub async fn run(
     runtime: WorkerRuntime,
     lifecycle: Lifecycle,
     worker_shutdown_timeout: std::time::Duration,
-) {
-    let email_worker = tokio::spawn(email_worker_loop(
-        runtime.email_workers.clone(),
-        lifecycle.clone(),
-    ));
-    let provider_webhook_worker = tokio::spawn(provider_webhook_worker_loop(
-        runtime.provider_webhook_worker.clone(),
-        runtime.clock.clone(),
-        lifecycle.clone(),
-    ));
-    let capi_worker = tokio::spawn(capi_worker_loop(
-        runtime.capi_worker.clone(),
-        lifecycle.clone(),
-    ));
-    let search_worker = tokio::spawn(search_worker_loop(
-        runtime.search_indexer.clone(),
-        runtime.clock.clone(),
-        lifecycle.clone(),
-    ));
-    let maintenance_worker = tokio::spawn(maintenance_worker_loop(
-        runtime.maintenance.clone(),
-        lifecycle.clone(),
-    ));
+) -> anyhow::Result<()> {
+    let mut workers = JoinSet::new();
+    workers.spawn({
+        let email_workers = runtime.email_workers.clone();
+        let lifecycle = lifecycle.clone();
+        async move {
+            email_worker_loop(email_workers, lifecycle).await;
+            "email"
+        }
+    });
+    workers.spawn({
+        let provider_webhook_worker = runtime.provider_webhook_worker.clone();
+        let clock = runtime.clock.clone();
+        let lifecycle = lifecycle.clone();
+        async move {
+            provider_webhook_worker_loop(provider_webhook_worker, clock, lifecycle).await;
+            "provider-webhook"
+        }
+    });
+    workers.spawn({
+        let capi_worker = runtime.capi_worker.clone();
+        let lifecycle = lifecycle.clone();
+        async move {
+            capi_worker_loop(capi_worker, lifecycle).await;
+            "capi"
+        }
+    });
+    workers.spawn({
+        let search_indexer = runtime.search_indexer.clone();
+        let clock = runtime.clock.clone();
+        let lifecycle = lifecycle.clone();
+        async move {
+            search_worker_loop(search_indexer, clock, lifecycle).await;
+            "search"
+        }
+    });
+    workers.spawn({
+        let maintenance = runtime.maintenance.clone();
+        let lifecycle = lifecycle.clone();
+        async move {
+            maintenance_worker_loop(maintenance, lifecycle).await;
+            "maintenance"
+        }
+    });
     tracing::info!("background worker started");
-    shutdown_signal(lifecycle).await;
-    tokio::join!(
-        drain_worker("email", email_worker, worker_shutdown_timeout),
-        drain_worker(
-            "provider-webhook",
-            provider_webhook_worker,
-            worker_shutdown_timeout
-        ),
-        drain_worker("capi", capi_worker, worker_shutdown_timeout),
-        drain_worker("search", search_worker, worker_shutdown_timeout),
-        drain_worker("maintenance", maintenance_worker, worker_shutdown_timeout),
-    );
+    let stop_error = tokio::select! {
+        () = shutdown_signal() => None,
+        result = workers.join_next() => Some(unexpected_worker_error(result)),
+    };
+    lifecycle.begin_draining();
+    if stop_error.is_none() {
+        tracing::info!("shutdown signal received; worker is draining");
+    }
+    let drain_error = drain_workers(&mut workers, worker_shutdown_timeout).await;
+    match stop_error.or(drain_error) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 async fn provider_webhook_worker_loop(
@@ -130,24 +153,55 @@ async fn capi_worker_loop(
     }
 }
 
-async fn drain_worker(
-    worker_name: &'static str,
-    mut worker: tokio::task::JoinHandle<()>,
-    timeout: std::time::Duration,
-) {
-    match tokio::time::timeout(timeout, &mut worker).await {
-        Ok(Ok(())) => tracing::info!(worker = worker_name, "worker drained"),
-        Ok(Err(error)) => {
-            tracing::warn!(worker = worker_name, %error, "worker stopped unexpectedly");
+fn unexpected_worker_error(
+    result: Option<Result<&'static str, tokio::task::JoinError>>,
+) -> anyhow::Error {
+    match result {
+        Some(Ok(worker)) => {
+            tracing::error!(worker, "worker loop stopped unexpectedly");
+            anyhow::anyhow!("{worker} worker loop stopped unexpectedly")
         }
+        Some(Err(error)) => {
+            tracing::error!(%error, "worker task failed unexpectedly");
+            anyhow::anyhow!("worker task failed unexpectedly: {error}")
+        }
+        None => {
+            tracing::error!("all worker tasks stopped unexpectedly");
+            anyhow::anyhow!("all worker tasks stopped unexpectedly")
+        }
+    }
+}
+
+async fn drain_workers(
+    workers: &mut JoinSet<&'static str>,
+    timeout: std::time::Duration,
+) -> Option<anyhow::Error> {
+    let drain = async {
+        let mut first_error = None;
+        while let Some(result) = workers.join_next().await {
+            match result {
+                Ok(worker) => tracing::info!(worker, "worker drained"),
+                Err(error) => {
+                    tracing::error!(%error, "worker task failed while draining");
+                    first_error.get_or_insert_with(|| {
+                        anyhow::anyhow!("worker task failed while draining: {error}")
+                    });
+                }
+            }
+        }
+        first_error
+    };
+    match tokio::time::timeout(timeout, drain).await {
+        Ok(error) => error,
         Err(_) => {
             tracing::warn!(
-                worker = worker_name,
                 ?timeout,
-                "worker drain timed out; aborting task"
+                remaining = workers.len(),
+                "worker drain timed out; aborting remaining tasks"
             );
-            worker.abort();
-            let _ = worker.await;
+            workers.abort_all();
+            while workers.join_next().await.is_some() {}
+            None
         }
     }
 }
@@ -193,7 +247,7 @@ async fn maintenance_worker_loop(
     }
 }
 
-async fn shutdown_signal(lifecycle: Lifecycle) {
+async fn shutdown_signal() {
     let ctrl_c = async {
         match tokio::signal::ctrl_c().await {
             Ok(()) => {}
@@ -218,9 +272,6 @@ async fn shutdown_signal(lifecycle: Lifecycle) {
         () = ctrl_c => {},
         () = terminate => {},
     }
-
-    lifecycle.begin_draining();
-    tracing::info!("shutdown signal received; worker is draining");
 }
 
 #[cfg(test)]
@@ -230,7 +281,9 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
-    use super::drain_worker;
+    use tokio::task::JoinSet;
+
+    use super::drain_workers;
 
     struct DropSignal(Arc<AtomicBool>);
 
@@ -244,27 +297,47 @@ mod tests {
     async fn worker_drain_waits_for_normal_completion() {
         let completed = Arc::new(AtomicBool::new(false));
         let worker_completed = completed.clone();
-        let worker = tokio::spawn(async move {
+        let mut workers = JoinSet::new();
+        workers.spawn(async move {
             worker_completed.store(true, Ordering::SeqCst);
+            "test"
         });
 
-        drain_worker("test", worker, std::time::Duration::from_secs(1)).await;
+        let error = drain_workers(&mut workers, std::time::Duration::from_secs(1)).await;
 
         assert!(completed.load(Ordering::SeqCst));
+        assert!(error.is_none());
     }
 
     #[tokio::test]
     async fn worker_drain_aborts_after_the_bounded_timeout() {
         let dropped = Arc::new(AtomicBool::new(false));
         let worker_dropped = dropped.clone();
-        let worker = tokio::spawn(async move {
+        let mut workers = JoinSet::new();
+        workers.spawn(async move {
             let _drop_signal = DropSignal(worker_dropped);
             std::future::pending::<()>().await;
+            "test"
         });
         tokio::task::yield_now().await;
 
-        drain_worker("test", worker, std::time::Duration::from_millis(1)).await;
+        let error = drain_workers(&mut workers, std::time::Duration::from_millis(1)).await;
 
         assert!(dropped.load(Ordering::SeqCst));
+        assert!(error.is_none());
+    }
+
+    #[tokio::test]
+    async fn worker_drain_reports_panics() {
+        let mut workers = JoinSet::new();
+        workers.spawn(async move {
+            panic!("worker failed");
+            #[allow(unreachable_code)]
+            "test"
+        });
+
+        let error = drain_workers(&mut workers, std::time::Duration::from_secs(1)).await;
+
+        assert!(error.is_some());
     }
 }

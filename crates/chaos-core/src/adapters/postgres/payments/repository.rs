@@ -423,5 +423,8 @@ pub(super) fn payment_event_out_of_order() -> ApplicationError {
 }
 
 pub(super) fn corrupt_webhook_payload() -> ApplicationError {
-    ApplicationError::Unexpected(anyhow::anyhow!("verified webhook payload is invalid"))
+    ApplicationError::Conflict {
+        code: "invalid_provider_webhook",
+        message: "the verified provider webhook payload is invalid",
+    }
 }

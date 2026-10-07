@@ -9,6 +9,7 @@ use crate::{
     contracts::{
         ANALYTICS_CAPI_QUEUE, AnalyticsDeliveryCommand, AnalyticsDestination,
         AnalyticsDestinationConfiguration, AnalyticsEventDestination, IntegrationQueue,
+        ORDER_PAYMENT_COMPLETED_TOPIC, TopicEventFailure,
     },
     store::StoreActor,
 };
@@ -79,25 +80,30 @@ impl MetaCapiWorker {
     pub async fn run_batch(&self, limit: u16) -> Result<usize, ApplicationError> {
         let jobs = self.queue.claim_topic(ANALYTICS_CAPI_QUEUE, limit).await?;
         for job in &jobs {
-            let result = self.deliver(&job.payload).await;
-            if let Err(error) = &result {
-                tracing::warn!(error = %error, "capi delivery failed");
-            }
+            let result = if is_purchase_topic(&job.routing_key) {
+                self.deliver(&job.payload).await
+            } else {
+                tracing::info!(
+                    routing_key = %job.routing_key,
+                    "capi delivery filtered for unsupported event"
+                );
+                Ok(())
+            };
             self.queue
-                .finish_topic(
-                    ANALYTICS_CAPI_QUEUE,
-                    job.msg_id,
-                    job.attempts,
-                    result.map_err(|error| error.to_string()),
-                )
+                .finish_topic(ANALYTICS_CAPI_QUEUE, job.msg_id, job.attempts, result)
                 .await?;
         }
         Ok(jobs.len())
     }
 
-    async fn deliver(&self, payload: &Value) -> Result<(), ApplicationError> {
+    async fn deliver(&self, payload: &Value) -> Result<(), TopicEventFailure> {
         let store_id = topic_uuid(payload, "store_id")?;
-        let Some(account) = self.repository.resolve_meta_account(store_id).await? else {
+        let Some(account) = self
+            .repository
+            .resolve_meta_account(store_id)
+            .await
+            .map_err(TopicEventFailure::from_application_error)?
+        else {
             tracing::info!(%store_id, "capi delivery skipped: no enabled meta destination");
             return Ok(());
         };
@@ -109,7 +115,7 @@ impl MetaCapiWorker {
             .get("occurred_at")
             .and_then(Value::as_str)
             .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
-            .ok_or_else(|| topic_field_error("occurred_at"))?;
+            .ok_or_else(|| TopicEventFailure::terminal(topic_field_error("occurred_at")))?;
         let properties = payload.get("properties").cloned().unwrap_or(Value::Null);
         let command = AnalyticsDeliveryCommand {
             provider: account.provider,
@@ -127,7 +133,10 @@ impl MetaCapiWorker {
             .destination
             .send(&command)
             .await
-            .map_err(|error| ApplicationError::Unexpected(anyhow::anyhow!(error.message)))?;
+            .map_err(|error| TopicEventFailure {
+                message: error.message,
+                retryable: error.retryable,
+            })?;
         tracing::info!(
             %store_id,
             %event_id,
@@ -139,16 +148,30 @@ impl MetaCapiWorker {
     }
 }
 
-fn topic_uuid(payload: &Value, field: &'static str) -> Result<Uuid, ApplicationError> {
+fn topic_uuid(payload: &Value, field: &'static str) -> Result<Uuid, TopicEventFailure> {
     payload
         .get(field)
         .and_then(Value::as_str)
         .and_then(|value| Uuid::parse_str(value).ok())
-        .ok_or_else(|| topic_field_error(field))
+        .ok_or_else(|| TopicEventFailure::terminal(topic_field_error(field)))
 }
 
-fn topic_field_error(field: &'static str) -> ApplicationError {
-    ApplicationError::Unexpected(anyhow::anyhow!(
-        "commerce event message missing or invalid field {field}"
-    ))
+fn topic_field_error(field: &'static str) -> String {
+    format!("commerce event message missing or invalid field {field}")
+}
+
+fn is_purchase_topic(routing_key: &str) -> bool {
+    routing_key == ORDER_PAYMENT_COMPLETED_TOPIC
+}
+
+#[cfg(test)]
+mod worker_tests {
+    use super::is_purchase_topic;
+
+    #[test]
+    fn capi_consumer_accepts_only_completed_purchases() {
+        assert!(is_purchase_topic("order.payment.completed"));
+        assert!(!is_purchase_topic("cart.item.added"));
+        assert!(!is_purchase_topic("order.payment.initiated"));
+    }
 }

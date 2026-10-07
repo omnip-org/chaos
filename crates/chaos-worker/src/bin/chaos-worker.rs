@@ -12,11 +12,11 @@ async fn main() -> anyhow::Result<()> {
     let infrastructure = AppState::new(&settings)?;
     let runtime = WorkerRuntime::new(&infrastructure, &settings)?;
 
-    workers::run(runtime, lifecycle, settings.shutdown_worker_timeout).await;
+    let worker_result = workers::run(runtime, lifecycle, settings.shutdown_worker_timeout).await;
     if let Some(provider) = trace_provider {
         provider
             .shutdown()
             .context("failed to shut down trace exporter")?;
     }
-    Ok(())
+    worker_result
 }

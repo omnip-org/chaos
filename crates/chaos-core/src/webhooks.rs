@@ -9,7 +9,9 @@ use crate::{
     adapters::postgres::{
         PostgresProviderWebhookAudit, PostgresStripeRepository, ProviderWebhookAuditRow,
     },
-    contracts::{IntegrationQueue, PROVIDER_WEBHOOKS_QUEUE, PaymentProviderRegistry},
+    contracts::{
+        IntegrationQueue, PROVIDER_WEBHOOKS_QUEUE, PaymentProviderRegistry, TopicEventFailure,
+    },
 };
 
 /// Drains `provider_webhooks_queue`. Every job is a pointer
@@ -49,21 +51,12 @@ impl ProviderWebhookWorker {
             .claim_topic(PROVIDER_WEBHOOKS_QUEUE, limit)
             .await?;
         for job in &jobs {
-            let result = self.process(&job.payload, now).await;
-            if let Err(error) = &result {
-                tracing::warn!(
-                    webhook_job = %job.payload,
-                    error = %error,
-                    "provider webhook processing failed"
-                );
-            }
+            let result = self
+                .process(&job.payload, now)
+                .await
+                .map_err(TopicEventFailure::from_application_error);
             self.queue
-                .finish_topic(
-                    PROVIDER_WEBHOOKS_QUEUE,
-                    job.msg_id,
-                    job.attempts,
-                    result.map_err(|error| error.to_string()),
-                )
+                .finish_topic(PROVIDER_WEBHOOKS_QUEUE, job.msg_id, job.attempts, result)
                 .await?;
         }
         Ok(jobs.len())
@@ -157,9 +150,10 @@ fn message_uuid(message: &Value, field: &'static str) -> Result<Uuid, Applicatio
         .get(field)
         .and_then(Value::as_str)
         .and_then(|value| Uuid::parse_str(value).ok())
-        .ok_or_else(|| {
-            ApplicationError::Unexpected(anyhow::anyhow!(
-                "provider webhook job missing or invalid field {field}"
-            ))
+        .ok_or_else(|| ApplicationError::Validation {
+            violations: vec![chaos_domain::FieldViolation {
+                field,
+                reason: "must contain a UUID".into(),
+            }],
         })
 }

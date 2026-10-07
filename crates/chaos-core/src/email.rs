@@ -8,7 +8,7 @@ use crate::{
         EmailProviderAccountDetail, EmailWebhookVerifier, FulfillmentEmailStatus, IntegrationQueue,
         NOTIFICATION_EMAIL_QUEUE, ORDER_FULFILLMENT_DELIVERED_TOPIC,
         ORDER_FULFILLMENT_SHIPPED_TOPIC, ORDER_PAYMENT_COMPLETED_TOPIC, PreparedEmail,
-        ProviderAccountReader, VerifiedWebhookEvent,
+        ProviderAccountReader, TopicEventFailure, VerifiedWebhookEvent,
     },
     email_templates::{EmailTemplateError, EmailTemplateRenderer},
     store::StoreActor,
@@ -537,7 +537,7 @@ impl EmailWorkers {
             let result = self
                 .execute(&job.routing_key, &job.payload)
                 .await
-                .map_err(|error| error.to_string());
+                .map_err(TopicEventFailure::from_application_error);
             self.queue
                 .finish_topic(NOTIFICATION_EMAIL_QUEUE, job.msg_id, job.attempts, result)
                 .await?;
@@ -701,10 +701,11 @@ fn topic_uuid(payload: &serde_json::Value, field: &'static str) -> Result<Uuid, 
         .get(field)
         .and_then(serde_json::Value::as_str)
         .and_then(|value| Uuid::parse_str(value).ok())
-        .ok_or_else(|| {
-            ApplicationError::Unexpected(anyhow::anyhow!(
-                "commerce event message missing or invalid field {field}"
-            ))
+        .ok_or_else(|| ApplicationError::Validation {
+            violations: vec![chaos_domain::FieldViolation {
+                field,
+                reason: "must contain a UUID".into(),
+            }],
         })
 }
 

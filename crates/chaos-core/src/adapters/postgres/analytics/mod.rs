@@ -49,12 +49,17 @@ pub(crate) async fn publish_topic_event(
     routing_key: &str,
     payload: Value,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("SELECT chaos_integration.publish_topic_event($1, $2)")
+    let delivered: i32 = sqlx::query_scalar("SELECT chaos_integration.publish_topic_event($1, $2)")
         .bind(routing_key)
         .bind(payload)
-        .execute(&mut **tx)
+        .fetch_one(&mut **tx)
         .await
         .map_err(db)?;
+    if delivered == 0 {
+        return Err(ApplicationError::Unexpected(anyhow::anyhow!(
+            "no topic binding configured for routing key {routing_key}"
+        )));
+    }
     Ok(())
 }
 
@@ -353,12 +358,41 @@ fn db(error: sqlx::Error) -> ApplicationError {
 #[cfg(test)]
 mod tests {
     use super::{
-        OrderIdentityContext, merge_order_identity, purchase_event_payload, sha256_hex,
-        splice_attribution,
+        OrderIdentityContext, merge_order_identity, publish_topic_event, purchase_event_payload,
+        sha256_hex, splice_attribution,
     };
     use serde_json::json;
+    use sqlx::postgres::PgPoolOptions;
     use time::OffsetDateTime;
     use uuid::Uuid;
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
+    async fn publishing_an_unbound_topic_fails_in_the_application_layer() {
+        let database_url =
+            std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+
+        let error = publish_topic_event(
+            &mut transaction,
+            "test.event.without.binding",
+            json!({ "marker": Uuid::now_v7() }),
+        )
+        .await
+        .expect_err("publishing without a queue binding must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("no topic binding configured for routing key")
+        );
+        transaction.rollback().await.unwrap();
+    }
 
     #[test]
     fn purchase_event_payload_carries_event_id_equal_to_order_id() {

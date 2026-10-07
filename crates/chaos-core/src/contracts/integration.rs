@@ -72,6 +72,45 @@ pub struct TopicEventJob {
     pub routing_key: String,
 }
 
+/// The consumer's disposition for a failed topic event. Retryable failures
+/// remain visible after backoff; terminal failures are archived immediately.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TopicEventFailure {
+    pub message: String,
+    pub retryable: bool,
+}
+
+impl TopicEventFailure {
+    pub fn retryable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retryable: true,
+        }
+    }
+
+    pub fn terminal(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retryable: false,
+        }
+    }
+
+    pub fn from_application_error(error: ApplicationError) -> Self {
+        let retryable = matches!(
+            &error,
+            ApplicationError::RateLimited { .. }
+                | ApplicationError::Unavailable { .. }
+                | ApplicationError::Unexpected(_)
+        );
+        Self {
+            message: error.to_string(),
+            retryable,
+        }
+    }
+}
+
+pub type TopicEventResult = Result<(), TopicEventFailure>;
+
 #[async_trait]
 pub trait IntegrationQueue: Send + Sync {
     async fn claim_topic(
@@ -85,6 +124,32 @@ pub trait IntegrationQueue: Send + Sync {
         queue_name: &str,
         msg_id: i64,
         attempts: u32,
-        result: Result<(), String>,
+        result: TopicEventResult,
     ) -> Result<(), ApplicationError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TopicEventFailure;
+    use crate::ApplicationError;
+
+    #[test]
+    fn dependency_failures_remain_retryable() {
+        let failure = TopicEventFailure::from_application_error(ApplicationError::Unavailable {
+            service: "provider",
+            source: anyhow::anyhow!("temporarily unavailable"),
+        });
+
+        assert!(failure.retryable);
+    }
+
+    #[test]
+    fn rejected_events_are_terminal() {
+        let failure = TopicEventFailure::from_application_error(ApplicationError::Conflict {
+            code: "invalid_event",
+            message: "the event is invalid",
+        });
+
+        assert!(!failure.retryable);
+    }
 }

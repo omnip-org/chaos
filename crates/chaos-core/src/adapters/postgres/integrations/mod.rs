@@ -1,6 +1,9 @@
 use crate::{
     ApplicationError,
-    contracts::{IntegrationQueue, MAX_INTEGRATION_ATTEMPTS, TopicEventJob},
+    contracts::{
+        IntegrationQueue, MAX_INTEGRATION_ATTEMPTS, TopicEventFailure, TopicEventJob,
+        TopicEventResult,
+    },
     error::database_error,
 };
 use async_trait::async_trait;
@@ -64,19 +67,55 @@ impl IntegrationQueue for PostgresIntegrationQueue {
         queue_name: &str,
         msg_id: i64,
         attempts: u32,
-        result: Result<(), String>,
+        result: TopicEventResult,
     ) -> Result<(), ApplicationError> {
-        let succeeded = result.is_ok();
+        let failure = result.err();
+        let succeeded = failure.is_none();
+        let max_attempts = max_attempts_for(failure.as_ref());
         sqlx::query("SELECT chaos_integration.finish_topic_event($1, $2, $3, $4, $5)")
             .bind(queue_name)
             .bind(msg_id)
             .bind(i32::try_from(attempts).unwrap_or(i32::MAX))
             .bind(succeeded)
-            .bind(MAX_INTEGRATION_ATTEMPTS)
+            .bind(max_attempts)
             .execute(&self.pool)
             .await
             .map_err(database_error)?;
+        if let Some(failure) = failure {
+            log_delivery_failure(queue_name, msg_id, attempts, &failure);
+        }
         Ok(())
+    }
+}
+
+fn max_attempts_for(failure: Option<&TopicEventFailure>) -> i32 {
+    if failure.is_some_and(|failure| !failure.retryable) {
+        1
+    } else {
+        MAX_INTEGRATION_ATTEMPTS
+    }
+}
+
+fn log_delivery_failure(queue_name: &str, msg_id: i64, attempts: u32, failure: &TopicEventFailure) {
+    let archived = !failure.retryable
+        || attempts >= u32::try_from(MAX_INTEGRATION_ATTEMPTS).unwrap_or(u32::MAX);
+    if archived {
+        tracing::error!(
+            queue = queue_name,
+            msg_id,
+            attempts,
+            retryable = failure.retryable,
+            error = %failure.message,
+            "integration event archived after delivery failure"
+        );
+    } else {
+        tracing::warn!(
+            queue = queue_name,
+            msg_id,
+            attempts,
+            error = %failure.message,
+            "integration event delivery failed; retry scheduled"
+        );
     }
 }
 
@@ -86,8 +125,20 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
 
-    use super::PostgresIntegrationQueue;
-    use crate::contracts::IntegrationQueue;
+    use super::{PostgresIntegrationQueue, max_attempts_for};
+    use crate::contracts::{IntegrationQueue, MAX_INTEGRATION_ATTEMPTS, TopicEventFailure};
+
+    #[test]
+    fn terminal_failures_archive_without_retrying() {
+        let failure = TopicEventFailure::terminal("invalid payload");
+        assert_eq!(max_attempts_for(Some(&failure)), 1);
+    }
+
+    #[test]
+    fn retryable_failures_use_the_queue_attempt_limit() {
+        let failure = TopicEventFailure::retryable("provider unavailable");
+        assert_eq!(max_attempts_for(Some(&failure)), MAX_INTEGRATION_ATTEMPTS);
+    }
 
     /// `order.payment.completed` is the only routing key bound to two queues, so
     /// it exercises the fan-out loop in `chaos_integration.publish_topic_event` that
