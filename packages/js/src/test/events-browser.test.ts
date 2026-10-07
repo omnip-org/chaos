@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createHash } from "node:crypto";
-
 import { ChaosStorefrontAnalytics } from "../events/browser.js";
 import type { EmbeddedCheckoutCreation } from "../types.js";
 
@@ -573,23 +571,6 @@ test("a recently refunded Order still represents the original Purchase", () => {
   assert.equal(ga4Calls(environment.window).filter((call) => call[1] === "purchase").length, 1);
 });
 
-test("Meta receives hashed order identity before Purchase", async () => {
-  const environment = harness({ providers: { metaPixel: { pixelId: "12345" } } });
-  await environment.analytics.setMetaOrderIdentity({
-    contact_email: " Buyer@Example.com ",
-    contact_phone: "+1 (415) 555-2671",
-    shipping_full_name: "Ada Lovelace",
-    shipping_address_line1: "1 Main St",
-    shipping_locality: "San Francisco",
-    shipping_administrative_area: "CA",
-    shipping_postal_code: "94105",
-    shipping_country_code: "US",
-  } as never);
-  const init = fbqAdvancedMatchingCalls(environment.window)[0]?.[2] as Record<string, string>;
-  assert.equal(init.em, createHash("sha256").update("buyer@example.com").digest("hex"));
-  assert.equal(init.ct, createHash("sha256").update("sanfrancisco").digest("hex"));
-});
-
 test("setShopperId hashes the shopper id into Meta's external_id", async () => {
   const environment = harness({
     providers: { metaPixel: { pixelId: "12345" } },
@@ -615,6 +596,18 @@ test("setShopperId ignores a repeated call for the same shopper id", async () =>
   environment.analytics.setShopperId("01a0b983-9909-7990-a021-01afc9aab9c8");
   await waitForAdvancedMatchingCalls(environment.window);
   environment.analytics.setShopperId("01a0b983-9909-7990-a021-01afc9aab9c8");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(fbqAdvancedMatchingCalls(environment.window).length, 1);
+});
+
+test("Meta matching is initialized at most once per page", async () => {
+  const environment = harness({
+    providers: { metaPixel: { pixelId: "12345" } },
+  });
+  environment.analytics.setShopperId("01a0b983-9909-7990-a021-01afc9aab9c8");
+  await waitForAdvancedMatchingCalls(environment.window);
+  environment.analytics.clearShopperId();
+  environment.analytics.setShopperId("01a0b983-9909-7990-a021-01afc9aab9c9");
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(fbqAdvancedMatchingCalls(environment.window).length, 1);
 });

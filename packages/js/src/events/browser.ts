@@ -7,11 +7,9 @@ import type {
   ConfirmedPurchaseOrderInput,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutStart,
-  OwnOrder,
 } from "../types.js";
 import {
   AnalyticsDestinations,
-  normalizeMetaText,
   type AnalyticsErrorHandler,
   type AnalyticsProviderOptions,
 } from "./destinations.js";
@@ -95,43 +93,6 @@ export class ChaosStorefrontAnalytics {
     if (!this.externalIdSource) return;
     this.externalIdSource = null;
     this.destinations.setExternalId(null);
-  }
-
-  /** Adds the order identity already saved by Chaos to Meta Pixel matching. */
-  async setMetaOrderIdentity(order: OwnOrder): Promise<void> {
-    if (!this.destinations.hasPixel) return;
-    const name = order.shipping_full_name ?? order.billing_full_name ?? "";
-    const [firstName, ...lastName] = name.trim().split(/\s+/);
-    const values: Record<string, string | undefined> = {
-      em: order.contact_email?.trim().toLowerCase(),
-      ph: order.contact_phone?.replace(/\D/g, ""),
-      fn: normalizeMetaText(firstName),
-      ln: normalizeMetaText(lastName.join(" ")),
-      ct: normalizeMetaText(
-        order.shipping_locality ?? order.billing_locality ?? undefined,
-      ),
-      st: normalizeMetaText(
-        order.shipping_administrative_area ??
-          order.billing_administrative_area ??
-          undefined,
-      ),
-      zp: normalizeMetaText(
-        order.shipping_postal_code ?? order.billing_postal_code ?? undefined,
-      ),
-      country: normalizeMetaText(
-        order.shipping_country_code ?? order.billing_country_code ?? undefined,
-      ),
-    };
-    try {
-      const entries = await Promise.all(
-        Object.entries(values)
-          .filter((entry): entry is [string, string] => Boolean(entry[1]))
-          .map(async ([key, value]) => [key, await sha256Hex(value)] as const),
-      );
-      this.destinations.setMetaCustomerData(Object.fromEntries(entries));
-    } catch {
-      // Web Crypto is optional; a Purchase must still reach Pixel and GA4.
-    }
   }
 
   /** Records a successful cart addition in the browser. */

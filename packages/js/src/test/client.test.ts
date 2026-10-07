@@ -380,16 +380,12 @@ test("a failed shared checkout completes without projecting Purchase", async () 
   }
 });
 
-test("checkout recovery enriches Purchase from the original shopper order", async () => {
+test("checkout recovery records Purchase from the capability order", async () => {
   const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
   const order = checkoutCapabilityOrder({
     status: "confirmed",
     payment_status: "paid",
   });
-  const ownOrder = {
-    ...checkoutOrder({ status: "confirmed", payment_status: "paid" }),
-    contact_email: "buyer@example.com",
-  } as OwnOrder;
   Object.defineProperty(globalThis, "window", {
     configurable: true,
     value: {
@@ -409,9 +405,7 @@ test("checkout recovery enriches Purchase from the original shopper order", asyn
       storage: null,
       fetch: (async (url: string, init: RequestInit) => {
         requests.push({ url, headers: new Headers(init.headers) });
-        return url.endsWith("/checkout")
-          ? jsonResponse(200, { data: { order } })
-          : jsonResponse(200, { data: ownOrder });
+        return jsonResponse(200, { data: { order } });
       }) as unknown as typeof fetch,
     });
     client.setShopperToken("shopper-original");
@@ -427,16 +421,14 @@ test("checkout recovery enriches Purchase from the original shopper order", asyn
     );
 
     assert.equal(mounted, null);
-    assert.equal(completed, ownOrder);
-    assert.deepEqual(purchases, [ownOrder]);
-    assert.equal(requests.length, 2);
+    assert.equal(completed, order);
+    assert.deepEqual(purchases, [order]);
+    assert.equal(requests.length, 1);
     assert.equal(
       requests[0]?.headers.get("x-chaos-checkout-token"),
       "owner-token",
     );
     assert.equal(shopperToken(requests[0]!.headers), null);
-    assert.equal(requests[1]?.headers.get("x-chaos-checkout-token"), null);
-    assert.equal(shopperToken(requests[1]!.headers), "shopper-original");
   } finally {
     restoreGlobal("window", windowDescriptor);
   }

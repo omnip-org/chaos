@@ -59,10 +59,10 @@ export class StorefrontEventCoordinator {
     );
   }
 
-  async recordCheckoutPurchase(
+  recordCheckoutPurchase(
     order: CheckoutOrder | OwnOrder,
     recordConfirmedPurchase: (order: ConfirmedPurchaseOrderInput) => void,
-  ): Promise<void> {
+  ): void {
     if (
       order.status !== "confirmed" ||
       !["paid", "partially_refunded", "refunded"].includes(
@@ -70,13 +70,6 @@ export class StorefrontEventCoordinator {
       )
     ) {
       return;
-    }
-    if (hasOrderIdentity(order)) {
-      try {
-        await this.analytics?.setMetaOrderIdentity(order);
-      } catch {
-        // Matching enrichment is best-effort; it cannot suppress Purchase.
-      }
     }
     recordConfirmedPurchase(order);
   }
@@ -104,8 +97,4 @@ export class StorefrontEventCoordinator {
       // Storefront operations have already succeeded; analytics cannot fail them.
     }
   }
-}
-
-function hasOrderIdentity(order: CheckoutOrder | OwnOrder): order is OwnOrder {
-  return "contact_email" in order;
 }

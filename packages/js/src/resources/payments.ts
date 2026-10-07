@@ -281,14 +281,6 @@ export class PaymentsResource {
   }
 
   private async confirmTerminalOrder(order: CheckoutOrder): Promise<CheckoutOrder> {
-    if (this.client.getShopperToken()) {
-      try {
-        return (await this.client.orders.getCheckoutOrder(order.id)).data;
-      } catch {
-        // A shared payer may have an unrelated shopper token. The checkout
-        // capability still authorizes the restricted confirmation below.
-      }
-    }
     await this.client.recordCheckoutPurchase(order);
     return order;
   }

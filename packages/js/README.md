@@ -281,19 +281,19 @@ contact and address columns, plus related lines and fulfillment progress; it
 does not use a checkout-time snapshot.
 The Order UUID is the Meta event ID and GA4 transaction ID, so Meta can merge
 the browser and CAPI copies and GA4 can deduplicate repeated Purchase events.
-When the original shopper token is still available, the SDK enriches Meta Pixel
-Advanced Matching with saved Order identity. A shared payer receives only the
-restricted Order projection; GA4 still receives the net item amount, tax and
-shipping without email or address.
+The checkout capability already carries the totals and line items needed for
+Purchase, so payment recovery does not make an extra shopper-owned Order read.
+This keeps shared checkout links independent of whichever shopper session is in
+the paying browser.
 Order history and guest lookup reads never emit Purchase.
 
 Meta's browser and server transports express customer matching differently.
-The Pixel receives SHA-256 order identity through the customer-data argument
-of `fbq("init", pixelId, customerData)` before Purchase; the Purchase event
-parameters contain only commerce data. CAPI places the same hashed identity,
-plus `fbc`, `fbp`, client IP and user agent, in `user_data`, while its
-`custom_data` contains the order, value, currency and items. Customer identity
-is never copied into either Purchase `custom_data` object.
+The Pixel receives the hashed anonymous shopper id as `external_id`; the
+Purchase event parameters contain only commerce data. CAPI places the saved
+Order identity, plus `external_id`, `fbc`, `fbp`, client IP and user agent, in
+`user_data`, while its `custom_data` contains the order, value, currency and
+items. Customer identity is never copied into either Purchase `custom_data`
+object.
 
 When a landing URL contains `fbclid`, the client maintains Meta's standard
 first-party `_fbc` cookie for up to 90 days, even when browser event providers

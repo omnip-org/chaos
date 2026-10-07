@@ -29,8 +29,7 @@ export class AnalyticsDestinations {
   private readonly windowRef: AnalyticsWindow;
   private metaStarted = false;
   private ga4Started = false;
-  private externalIdHash: string | null = null;
-  private metaCustomerData: Record<string, string> = {};
+  private metaMatchingApplied = false;
 
   constructor(
     windowRef: Window & typeof globalThis,
@@ -67,14 +66,26 @@ export class AnalyticsDestinations {
     return this.ga4Started;
   }
 
-  setMetaCustomerData(values: Record<string, string>): void {
-    this.metaCustomerData = values;
-    this.updateMetaMatching();
-  }
-
   setExternalId(hash: string | null): void {
-    this.externalIdHash = hash;
-    this.updateMetaMatching();
+    if (
+      !hash ||
+      this.metaMatchingApplied ||
+      !this.metaStarted ||
+      !this.options?.metaPixel
+    ) {
+      return;
+    }
+    try {
+      // Pixel accepts one follow-up init when the first init had no user data.
+      // Further init calls are rejected as duplicate Pixel IDs, so identity
+      // collected later at checkout belongs on the server-side CAPI Purchase.
+      this.windowRef.fbq?.("init", this.options.metaPixel.pixelId, {
+        external_id: hash,
+      });
+      this.metaMatchingApplied = true;
+    } catch (error) {
+      this.reportError(error, "AdvancedMatching", undefined);
+    }
   }
 
   ga4(eventName: string, parameters: Record<string, unknown>): boolean {
@@ -91,18 +102,6 @@ export class AnalyticsDestinations {
           : undefined,
       );
       return false;
-    }
-  }
-
-  private updateMetaMatching(): void {
-    if (!this.metaStarted || !this.options?.metaPixel) return;
-    try {
-      this.windowRef.fbq?.("init", this.options.metaPixel.pixelId, {
-        ...(this.externalIdHash ? { external_id: this.externalIdHash } : {}),
-        ...this.metaCustomerData,
-      });
-    } catch (error) {
-      this.reportError(error, "AdvancedMatching", undefined);
     }
   }
 
@@ -157,14 +156,6 @@ export class AnalyticsDestinations {
       )}`,
     );
   }
-}
-
-export function normalizeMetaText(
-  value: string | undefined,
-): string | undefined {
-  if (!value) return undefined;
-  const normalized = value.trim().toLowerCase().replace(/\s+/g, "");
-  return normalized || undefined;
 }
 
 function validateProviderOptions(
