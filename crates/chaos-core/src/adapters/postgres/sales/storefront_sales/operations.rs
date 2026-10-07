@@ -585,19 +585,32 @@ async fn existing_checkout_order_id(
         return Ok(None);
     };
 
-    if row.idempotency_key != Some(request.idempotency_key) {
-        return Err(checkout_cart_already_started());
-    }
-    if let Some(stored_fingerprint) = row.request_fingerprint {
-        let requested_fingerprint = checkout_request_fingerprint(actor, request);
-        if stored_fingerprint.as_slice() != requested_fingerprint.as_slice() {
-            return Err(idempotency_key_reused());
-        }
-    }
+    let requested_fingerprint = checkout_request_fingerprint(actor, request);
+    ensure_checkout_request_matches(&row, request.idempotency_key, &requested_fingerprint)?;
     if row.order_status != "pending" || row.payment_status != "pending" {
         return Err(checkout_cart_already_started());
     }
     Ok(Some(OrderId::from_uuid(row.order_id)))
+}
+
+fn ensure_checkout_request_matches(
+    checkout: &ExistingCheckoutRow,
+    idempotency_key: Uuid,
+    request_fingerprint: &[u8; 32],
+) -> Result<(), ApplicationError> {
+    match checkout.request_fingerprint.as_deref() {
+        // A checkout belongs to its Cart and can be recovered with a freshly
+        // minted HTTP idempotency key after a page reload. The fingerprint
+        // preserves the original provider and return URL contract.
+        Some(stored) if stored == request_fingerprint => Ok(()),
+        Some(_) if checkout.idempotency_key == Some(idempotency_key) => {
+            Err(idempotency_key_reused())
+        }
+        Some(_) => Err(checkout_cart_already_started()),
+        // Compatibility for rows created before request fingerprints existed.
+        None if checkout.idempotency_key == Some(idempotency_key) => Ok(()),
+        None => Err(checkout_cart_already_started()),
+    }
 }
 
 async fn insert_order_lines(
@@ -648,4 +661,68 @@ async fn insert_order_lines(
         .map_err(database_error)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn uuid(value: u128) -> Uuid {
+        Uuid::from_u128(value)
+    }
+
+    fn checkout(
+        idempotency_key: Uuid,
+        request_fingerprint: Option<Vec<u8>>,
+    ) -> ExistingCheckoutRow {
+        ExistingCheckoutRow {
+            order_id: uuid(1),
+            order_status: "pending".into(),
+            idempotency_key: Some(idempotency_key),
+            payment_status: "pending".into(),
+            request_fingerprint,
+        }
+    }
+
+    #[test]
+    fn checkout_can_be_recovered_with_a_new_http_idempotency_key() {
+        let original_key = uuid(2);
+        let fingerprint = [7; 32];
+        let existing = checkout(original_key, Some(fingerprint.to_vec()));
+
+        assert!(ensure_checkout_request_matches(&existing, uuid(3), &fingerprint).is_ok());
+    }
+
+    #[test]
+    fn reusing_an_idempotency_key_with_different_parameters_is_rejected() {
+        let idempotency_key = uuid(2);
+        let existing = checkout(idempotency_key, Some(vec![1; 32]));
+
+        let error = ensure_checkout_request_matches(&existing, idempotency_key, &[2; 32])
+            .expect_err("different checkout parameters must be rejected");
+
+        assert!(matches!(
+            error,
+            ApplicationError::Conflict {
+                code: "idempotency_key_reused",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_different_checkout_request_cannot_take_over_a_locked_cart() {
+        let existing = checkout(uuid(2), Some(vec![1; 32]));
+
+        let error = ensure_checkout_request_matches(&existing, uuid(3), &[2; 32])
+            .expect_err("a locked Cart must retain its original checkout request");
+
+        assert!(matches!(
+            error,
+            ApplicationError::Conflict {
+                code: "checkout_cart_already_started",
+                ..
+            }
+        ));
+    }
 }

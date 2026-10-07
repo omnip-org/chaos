@@ -95,6 +95,9 @@ const creation = await chaos.payments.createEmbeddedCheckoutWithCart(activeCart.
   returnUrl: "https://shop.example.com/checkout/return",
 });
 
+// If the response is lost, retry with the same Cart and return URL. The API
+// recovers its pending Order and provider session, including after a reload.
+
 // Stripe Embedded Checkout — Chaos reserves inventory, locks the Cart, and
 // creates the pending Order before Stripe collects the remaining details.
 // The return URL must be HTTPS outside local loopback development.

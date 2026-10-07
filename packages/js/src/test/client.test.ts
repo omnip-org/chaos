@@ -598,6 +598,8 @@ test("payments create an embedded Checkout session with SDK-owned request detail
       });
     }) as unknown as typeof fetch,
   });
+  const recordedCheckouts: unknown[] = [];
+  client.recordCheckoutCreation = (checkout) => recordedCheckouts.push(checkout);
 
   const session = await client.payments.createEmbeddedCheckout("cart-1", {
     returnUrl: "https://shop.example.com/checkout/success",
@@ -617,6 +619,17 @@ test("payments create an embedded Checkout session with SDK-owned request detail
     public_key: "pk_test_stripe",
     client_token: "cs_test_secret",
   });
+  assert.deepEqual(recordedCheckouts, [
+    {
+      checkout: session.data,
+      source_cart: {
+        id: "cart-1",
+        currency: "USD",
+        subtotal_amount_minor: 2_000,
+        lines: [],
+      },
+    },
+  ]);
 });
 
 test("checkout attaches explicit attribution and excludes it from the idempotency key", async () => {

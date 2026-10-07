@@ -1,10 +1,5 @@
 import { toPurchaseAnalyticsInput } from "../domain.js";
-import { fnv1a32 } from "../internal/hash.js";
-import {
-  compact,
-  isValidMetaBrowserId,
-  MAX_META_BROWSER_ID_LENGTH,
-} from "../internal/meta.js";
+import { compact } from "../internal/meta.js";
 import { sha256Hex } from "../internal/sha256.js";
 import { toMajorUnits } from "../money.js";
 import type {
@@ -14,6 +9,13 @@ import type {
   EmbeddedCheckoutStart,
   OwnOrder,
 } from "../types.js";
+import { BrowserEventState, observeHistory } from "./browser-state.js";
+import {
+  AnalyticsDestinations,
+  normalizeMetaText,
+  type AnalyticsErrorHandler,
+  type AnalyticsProviderOptions,
+} from "./destinations.js";
 import {
   addToCartEventData,
   initiateCheckoutEventData,
@@ -29,30 +31,7 @@ import type {
   ViewContentAnalyticsInput,
 } from "./types.js";
 
-/**
- * First-party behavior collection. Events project directly to the
- * configured browser providers (Meta Pixel, GA4) — there is no chaos-owned
- * ledger or delivery queue. Purchase is the only event Chaos itself ever
- * sends anywhere: chaos-rust delivers it to Meta CAPI server-side, from the
- * ad-platform attribution captured at checkout (see `resources/payments.js`
- * and `PaymentsResource.createEmbeddedCheckout*`'s `attribution` option).
- *
- * There are exactly six events (page_view, view_content, search,
- * add_to_cart, initiate_checkout, purchase); every browser copy is emitted by
- * this SDK, never by store-supplied names or properties. The commerce events
- * share their Meta `custom_data` shape via `./meta-payload.js`; GA4's field
- * names differ enough per event that they stay inlined below instead of
- * adding a second shared mapper for one caller each.
- *
- * page_view is GA4-only: it is not one of Meta's Standard Events (the base
- * Pixel snippet fires it for traffic counting, but Meta's ads/optimization
- * surfaces don't recognize it as a standard event the way ViewContent is), so
- * it is never projected to Meta Pixel here.
- */
-
-const META_FBC_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
-const PROVIDER_EVENT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
-
+/** Projects the fixed Storefront event set directly to Meta Pixel and GA4. */
 export interface PageViewInput {
   path?: string;
   title?: string;
@@ -66,10 +45,7 @@ export interface AnalyticsOptions {
   sessionStorage?: Storage;
   randomUUID?: () => string;
   now?: () => number;
-  providers?: {
-    metaPixel?: { pixelId: string };
-    ga4?: { measurementId: string };
-  };
+  providers?: AnalyticsProviderOptions;
   /** Starts lifecycle and SPA page tracking. Defaults to true. */
   autoStart?: boolean;
   /**
@@ -78,23 +54,16 @@ export interface AnalyticsOptions {
    * silently. Never awaited and never allowed to throw back into the caller
    * — mirrors `MetaCapiConfig.onError` for the server-side CAPI sender.
    */
-  onError?: (
-    error: unknown,
-    event: { eventName: string; eventId?: string | undefined },
-  ) => void;
+  onError?: AnalyticsErrorHandler;
 }
 
 export class ChaosStorefrontAnalytics {
   private readonly documentRef: Document;
   private readonly windowRef: Window & typeof globalThis;
-  private readonly storage?: Storage;
-  private readonly sessionStorageRef?: Storage;
   private readonly randomUUID: () => string;
   private readonly now: () => number;
   private readonly destinations: AnalyticsDestinations;
-
-  private readonly metaFbcStorageKey: string;
-  private readonly providerEventStoragePrefix: string;
+  private readonly eventState: BrowserEventState;
   private running = false;
   private readonly onRouteChange = () => this.pageView();
   private restoreHistory: (() => void) | null = null;
@@ -108,9 +77,6 @@ export class ChaosStorefrontAnalytics {
     this.documentRef = options.document ?? globalThis.document;
     this.windowRef =
       options.window ?? (globalThis as unknown as Window & typeof globalThis);
-    this.storage = options.storage ?? this.windowRef?.localStorage;
-    this.sessionStorageRef =
-      options.sessionStorage ?? this.windowRef?.sessionStorage;
     this.randomUUID =
       options.randomUUID ??
       globalThis.crypto?.randomUUID.bind(globalThis.crypto);
@@ -124,12 +90,13 @@ export class ChaosStorefrontAnalytics {
       options.providers,
       options.onError,
     );
-
-    const storageNamespace = analyticsStorageNamespace(options.publishableKey);
-    this.metaFbcStorageKey = `chaos.analytics.${storageNamespace}.meta.fbc.v2`;
-    this.providerEventStoragePrefix = `chaos.analytics.${storageNamespace}.provider_event.v1.`;
-    this.pruneExpiredProviderEvents();
-    this.maintainFbcCookie();
+    this.eventState = new BrowserEventState(
+      options.publishableKey,
+      this.documentRef,
+      options.storage ?? this.windowRef?.localStorage,
+      options.sessionStorage ?? this.windowRef?.sessionStorage,
+      this.now,
+    );
     if (options.autoStart !== false) {
       this.start();
       this.pageView();
@@ -186,7 +153,7 @@ export class ChaosStorefrontAnalytics {
 
   /** Adds the order identity already saved by Chaos to Meta Pixel matching. */
   async setMetaOrderIdentity(order: OwnOrder): Promise<void> {
-    if (!this.destinations.hasPixel()) return;
+    if (!this.destinations.hasPixel) return;
     const name = order.shipping_full_name ?? order.billing_full_name ?? "";
     const [firstName, ...lastName] = name.trim().split(/\s+/);
     const values: Record<string, string | undefined> = {
@@ -194,10 +161,20 @@ export class ChaosStorefrontAnalytics {
       ph: order.contact_phone?.replace(/\D/g, ""),
       fn: normalizeMetaText(firstName),
       ln: normalizeMetaText(lastName.join(" ")),
-      ct: normalizeMetaText(order.shipping_locality ?? order.billing_locality ?? undefined),
-      st: normalizeMetaText(order.shipping_administrative_area ?? order.billing_administrative_area ?? undefined),
-      zp: normalizeMetaText(order.shipping_postal_code ?? order.billing_postal_code ?? undefined),
-      country: normalizeMetaText(order.shipping_country_code ?? order.billing_country_code ?? undefined),
+      ct: normalizeMetaText(
+        order.shipping_locality ?? order.billing_locality ?? undefined,
+      ),
+      st: normalizeMetaText(
+        order.shipping_administrative_area ??
+          order.billing_administrative_area ??
+          undefined,
+      ),
+      zp: normalizeMetaText(
+        order.shipping_postal_code ?? order.billing_postal_code ?? undefined,
+      ),
+      country: normalizeMetaText(
+        order.shipping_country_code ?? order.billing_country_code ?? undefined,
+      ),
     };
     try {
       const entries = await Promise.all(
@@ -212,7 +189,7 @@ export class ChaosStorefrontAnalytics {
   }
 
   pageView(input: PageViewInput = {}): string {
-    this.maintainFbcCookie();
+    this.eventState.maintainFbcCookie();
     const path = input.path ?? this.documentRef.location?.pathname ?? "/";
     const title = input.title ?? nonEmpty(this.documentRef.title);
     const eventId = this.randomUUID();
@@ -232,7 +209,7 @@ export class ChaosStorefrontAnalytics {
 
     const resolvedId = canonicalEventId(eventId, this.randomUUID());
     try {
-      return this.recordOnce("add_to_cart", resolvedId, () => {
+      return this.eventState.recordOnce("add_to_cart", resolvedId, () => {
         const eventData = addToCartEventData(input);
         this.destinations.pixel("AddToCart", resolvedId, eventData);
         this.destinations.ga4("add_to_cart", {
@@ -264,7 +241,7 @@ export class ChaosStorefrontAnalytics {
 
     const resolvedId = canonicalEventId(eventId, this.randomUUID());
     try {
-      return this.recordOnce("initiate_checkout", resolvedId, () => {
+      return this.eventState.recordOnce("initiate_checkout", resolvedId, () => {
         const eventData = initiateCheckoutEventData(input);
         this.destinations.pixel("InitiateCheckout", resolvedId, eventData);
         this.destinations.ga4("begin_checkout", {
@@ -358,20 +335,44 @@ export class ChaosStorefrontAnalytics {
     try {
       const eventData = purchaseEventData(input);
       let sent = false;
-      if (this.destinations.hasPixel()) {
-        sent = this.recordProviderOnce("meta", "purchase", orderId, () =>
-          this.destinations.pixel("Purchase", orderId, eventData)) || sent;
+      if (this.destinations.hasPixel) {
+        sent =
+          this.eventState.recordProviderOnce(
+            "meta",
+            "purchase",
+            orderId,
+            () => this.destinations.pixel("Purchase", orderId, eventData),
+          ) || sent;
       }
-      if (this.destinations.hasGa4()) {
-        sent = this.recordProviderOnce("ga4", "purchase", orderId, () => this.destinations.ga4("purchase", {
-          event_id: orderId,
-          transaction_id: orderId,
-          value: toMajorUnits(input.ga4ValueMinor ?? input.valueMinor, input.currency),
-          currency: eventData.currency,
-          ...(input.taxMinor !== undefined ? { tax: toMajorUnits(input.taxMinor, input.currency) } : {}),
-          ...(input.shippingMinor !== undefined ? { shipping: toMajorUnits(input.shippingMinor, input.currency) } : {}),
-          items: discountedGa4PurchaseItems(input),
-        })) || sent;
+      if (this.destinations.hasGa4) {
+        sent =
+          this.eventState.recordProviderOnce(
+            "ga4",
+            "purchase",
+            orderId,
+            () =>
+              this.destinations.ga4("purchase", {
+                event_id: orderId,
+                transaction_id: orderId,
+                value: toMajorUnits(
+                  input.ga4ValueMinor ?? input.valueMinor,
+                  input.currency,
+                ),
+                currency: eventData.currency,
+                ...(input.taxMinor !== undefined
+                  ? { tax: toMajorUnits(input.taxMinor, input.currency) }
+                  : {}),
+                ...(input.shippingMinor !== undefined
+                  ? {
+                      shipping: toMajorUnits(
+                        input.shippingMinor,
+                        input.currency,
+                      ),
+                    }
+                  : {}),
+                items: discountedGa4PurchaseItems(input),
+              }),
+          ) || sent;
       }
       return sent ? orderId : null;
     } catch {
@@ -385,123 +386,9 @@ export class ChaosStorefrontAnalytics {
     const input = toPurchaseAnalyticsInput(order);
     return input ? this.recordPurchase(input) : null;
   }
-
-  /**
-   * Drops `provider_event` dedup keys older than `PROVIDER_EVENT_MAX_AGE_MS`
-   * so a long-lived visitor's `storage` doesn't accumulate one entry per
-   * commerce action forever. Realistic reloads of a confirmation page never
-   * approach this age, so this never reopens a real dedup window.
-   */
-  private pruneExpiredProviderEvents(): void {
-    if (!this.storage) return;
-    try {
-      const cutoff = this.now() - PROVIDER_EVENT_MAX_AGE_MS;
-      const staleKeys: string[] = [];
-      for (let index = 0; index < this.storage.length; index += 1) {
-        const key = this.storage.key(index);
-        if (!key || !key.startsWith(this.providerEventStoragePrefix)) continue;
-        const recordedAt = Date.parse(this.storage.getItem(key) ?? "");
-        if (!Number.isNaN(recordedAt) && recordedAt < cutoff) staleKeys.push(key);
-      }
-      for (const key of staleKeys) this.storage.removeItem(key);
-    } catch {
-      // Storage enumeration is optional; growth is bounded on a best-effort basis.
-    }
-  }
-
-  /**
-   * Runs `project()` exactly once per `eventName`+`eventId` pair, tracked in
-   * `storage`. Provider failures inside `project()` are swallowed — analytics
-   * is best-effort and must never surface here as a thrown error.
-   */
-  private recordOnce(
-    eventName: string,
-    eventId: string,
-    project: () => void,
-  ): string | null {
-    const storageKey = `${this.providerEventStoragePrefix}${eventName}.${eventId}`;
-    if (this.storage?.getItem(storageKey)) return null;
-    try {
-      project();
-    } catch {
-      // Browser provider failures are best-effort; keep the event ID stable
-      // for a future retry.
-    }
-    this.storage?.setItem(storageKey, new Date(this.now()).toISOString());
-    return eventId;
-  }
-
-  private recordProviderOnce(
-    provider: "meta" | "ga4",
-    eventName: string,
-    eventId: string,
-    project: () => boolean,
-  ): boolean {
-    const storageKey = `${this.providerEventStoragePrefix}${provider}.${eventName}.${eventId}`;
-    try {
-      if (this.storage?.getItem(storageKey)) return false;
-    } catch {
-      // Delivery still proceeds when browser storage is blocked.
-    }
-    if (!project()) return false;
-    try {
-      this.storage?.setItem(storageKey, new Date(this.now()).toISOString());
-    } catch {
-      // Delivery already happened.
-    }
-    return true;
-  }
-
-  /**
-   * Keeps the `_fbc` cookie in sync with a `fbclid` on the current URL, so a
-   * server-side Meta CAPI call later in the same visit can read a fresh
-   * value from the request's cookies. A no-op without a current `fbclid` —
-   * an existing valid cookie is left untouched.
-   */
-  private maintainFbcCookie(): void {
-    const fbclid = boundedText(
-      new URLSearchParams(this.documentRef.location?.search ?? "").get(
-        "fbclid",
-      ) ?? undefined,
-      MAX_META_BROWSER_ID_LENGTH,
-    );
-    if (!fbclid) return;
-    const cookieFbc = readCookie(this.documentRef, "_fbc");
-    const fbc = this.resolveFbc(fbclid);
-    if (fbc && fbc !== cookieFbc) writeCookie(this.documentRef, "_fbc", fbc);
-  }
-
-  /**
-   * Pairs a `fbclid` with a stable `fb.1.<first-seen-timestamp>.<fbclid>`
-   * value so the timestamp reflects the original click, not a later reload.
-   */
-  private resolveFbc(fbclid: string | undefined): string | undefined {
-    if (!fbclid || /\s/.test(fbclid)) return undefined;
-    const stored = readStoredJson(
-      this.sessionStorageRef,
-      this.metaFbcStorageKey,
-    );
-    if (
-      stored &&
-      typeof stored === "object" &&
-      !Array.isArray(stored) &&
-      (stored as Record<string, unknown>).fbclid === fbclid &&
-      typeof (stored as Record<string, unknown>).fbc === "string" &&
-      isValidMetaBrowserId((stored as Record<string, string>).fbc)
-    ) {
-      return (stored as Record<string, string>).fbc;
-    }
-    const fbc = `fb.1.${Math.floor(this.now())}.${fbclid}`;
-    if (!isValidMetaBrowserId(fbc)) return undefined;
-    writeStoredJson(this.sessionStorageRef, this.metaFbcStorageKey, {
-      fbclid,
-      fbc,
-    });
-    return fbc;
-  }
 }
 
-/** Resolves the event ID a commerce projection uses: an explicit, validated ID, or a freshly minted one — always lowercased for Meta's dedup match. */
+/** Resolves and normalizes the UUID shared by browser commerce projections. */
 function canonicalEventId(explicit: string | undefined, fallback: string): string {
   const resolved = explicit ?? fallback;
   if (!isUuid(resolved)) {
@@ -510,210 +397,8 @@ function canonicalEventId(explicit: string | undefined, fallback: string): strin
   return resolved.toLowerCase();
 }
 
-type DestinationOptions = AnalyticsOptions["providers"];
-type GtagDataLayerEntry = unknown[] | IArguments;
-type FbqFunction = ((...args: unknown[]) => void) & {
-  callMethod?: (...args: unknown[]) => void;
-  queue?: unknown[][];
-  loaded?: boolean;
-  version?: string;
-};
-type AnalyticsWindow = Window &
-  typeof globalThis & {
-    dataLayer?: GtagDataLayerEntry[];
-    gtag?: (...args: unknown[]) => void;
-    fbq?: FbqFunction;
-    _fbq?: FbqFunction;
-  };
-
-/** Talks to `fbq`/`gtag` directly — no field mapping, callers build their own params. */
-class AnalyticsDestinations {
-  private readonly windowRef: AnalyticsWindow;
-  private readonly documentRef: Document;
-  private readonly options: DestinationOptions;
-  private readonly onError: AnalyticsOptions["onError"];
-  private metaStarted = false;
-  private ga4Started = false;
-  private externalIdHash: string | null = null;
-  private metaCustomerData: Record<string, string> = {};
-
-  constructor(
-    windowRef: Window & typeof globalThis,
-    documentRef: Document,
-    options: DestinationOptions,
-    onError: AnalyticsOptions["onError"],
-  ) {
-    this.windowRef = windowRef as AnalyticsWindow;
-    this.documentRef = documentRef;
-    this.options = options;
-    this.onError = onError;
-    validateDestinationOptions(options);
-    if (this.options?.ga4) this.startGa4();
-    if (this.options?.metaPixel) this.startMeta();
-  }
-
-  pixel(eventName: string, eventId: string, params: Record<string, unknown>): boolean {
-    if (!this.metaStarted || !this.windowRef.fbq) return false;
-    try {
-      this.windowRef.fbq("track", eventName, params, { eventID: eventId });
-      return true;
-    } catch (error) {
-      this.reportError(error, eventName, eventId);
-      return false;
-    }
-  }
-
-  hasPixel(): boolean { return this.metaStarted; }
-  hasGa4(): boolean { return this.ga4Started; }
-
-  setMetaCustomerData(values: Record<string, string>): void {
-    this.metaCustomerData = values;
-    this.updateMetaMatching();
-  }
-
-  /**
-   * Re-issues Meta's `fbq("init", ...)` with Advanced Matching's
-   * `external_id`, which Meta documents as safe to call again to update
-   * matching info — it does not re-fire an automatic PageView the way the
-   * full base snippet's init would, since this SDK never uses that snippet.
-   */
-  setExternalId(hash: string | null): void {
-    this.externalIdHash = hash;
-    this.updateMetaMatching();
-  }
-
-  private updateMetaMatching(): void {
-    if (!this.metaStarted || !this.options?.metaPixel) return;
-    try {
-      this.windowRef.fbq?.("init", this.options.metaPixel.pixelId, {
-        ...(this.externalIdHash ? { external_id: this.externalIdHash } : {}),
-        ...this.metaCustomerData,
-      });
-    } catch (error) {
-      this.reportError(error, "AdvancedMatching", undefined);
-    }
-  }
-
-  /**
-   * Sets GA4's User-ID for cross-session/cross-device reporting. Requires
-   * the User-ID feature to be turned on for the GA4 property (a dashboard
-   * setting, not something this SDK can flip) — sending it without that
-   * enabled is harmless, GA4 just won't use it for reporting.
-   */
-  setGa4UserId(shopperId: string | null): void {
-    if (!this.ga4Started) return;
-    try {
-      this.windowRef.gtag?.("set", { user_id: shopperId });
-    } catch (error) {
-      this.reportError(error, "UserId", undefined);
-    }
-  }
-
-  ga4(eventName: string, params: Record<string, unknown>): boolean {
-    if (!this.ga4Started || !this.windowRef.gtag) return false;
-    try {
-      this.windowRef.gtag("event", eventName, params);
-      return true;
-    } catch (error) {
-      this.reportError(
-        error,
-        eventName,
-        typeof params.event_id === "string" ? params.event_id : undefined,
-      );
-      return false;
-    }
-  }
-
-  private reportError(
-    error: unknown,
-    eventName: string,
-    eventId: string | undefined,
-  ): void {
-    try {
-      this.onError?.(error, { eventName, eventId });
-    } catch {
-      // onError must never break delivery — see AnalyticsOptions.onError.
-    }
-  }
-
-  private startMeta(): void {
-    if (this.metaStarted || !this.options?.metaPixel) return;
-    this.metaStarted = true;
-    if (!this.windowRef.fbq) {
-      const fbq: FbqFunction = (...args: unknown[]) => {
-        if (fbq.callMethod) fbq.callMethod(...args);
-        else fbq.queue?.push(args);
-      };
-      fbq.queue = [];
-      fbq.loaded = true;
-      fbq.version = "2.0";
-      this.windowRef.fbq = fbq;
-      this.windowRef._fbq = fbq;
-      loadProviderScript(
-        this.documentRef,
-        "chaos-meta-pixel",
-        "https://connect.facebook.net/en_US/fbevents.js",
-      );
-    }
-    this.windowRef.fbq("init", this.options.metaPixel.pixelId);
-  }
-
-  private startGa4(): void {
-    if (this.ga4Started || !this.options?.ga4) return;
-    this.ga4Started = true;
-    const dataLayer = (this.windowRef.dataLayer ??= []);
-    this.windowRef.gtag ??= function gtag() {
-      dataLayer.push(arguments);
-    };
-    this.windowRef.gtag("js", new Date());
-    this.windowRef.gtag("config", this.options.ga4.measurementId, {
-      send_page_view: false,
-    });
-    loadProviderScript(
-      this.documentRef,
-      "chaos-google-tag",
-      `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(this.options.ga4.measurementId)}`,
-    );
-  }
-}
-
-function normalizeMetaText(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const normalized = value.trim().toLowerCase().replace(/\s+/g, "");
-  return normalized || undefined;
-}
-
-function validateDestinationOptions(options: DestinationOptions): void {
-  if (options?.metaPixel && !/^[0-9]{5,32}$/.test(options.metaPixel.pixelId)) {
-    throw new TypeError("providers.metaPixel.pixelId must contain 5-32 digits");
-  }
-  if (options?.ga4 && !/^G-[A-Z0-9]{4,20}$/.test(options.ga4.measurementId)) {
-    throw new TypeError(
-      "providers.ga4.measurementId must be a GA4 measurement ID",
-    );
-  }
-}
-
 function isNonEmptyText(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-function loadProviderScript(
-  documentRef: Document,
-  id: string,
-  source: string,
-): void {
-  if (
-    documentRef.getElementById?.(id) ||
-    !documentRef.createElement ||
-    !documentRef.head
-  )
-    return;
-  const script = documentRef.createElement("script");
-  script.id = id;
-  script.async = true;
-  script.src = source;
-  documentRef.head.appendChild(script);
 }
 
 function validateMoney(valueMinor: number, currency: string): void {
@@ -772,12 +457,16 @@ function discountedGa4PurchaseItems(input: PurchaseAnalyticsInput): Array<{
     (last, item, index) => item.priceMinor > 0 ? index : last,
     -1,
   );
-  const result = [] as Array<{ item_id: string; quantity: number; price: number; discount: number }>;
+  const result = [] as Array<{
+    item_id: string;
+    quantity: number;
+    price: number;
+    discount: number;
+  }>;
   input.items.forEach((item, index) => {
     const lineGross = BigInt(item.priceMinor) * BigInt(item.quantity);
-    const lineDiscount = index === lastPositive
-      ? remaining
-      : discount * lineGross / gross;
+    const lineDiscount =
+      index === lastPositive ? remaining : (discount * lineGross) / gross;
     remaining -= lineDiscount;
     const each = Number(lineDiscount / BigInt(item.quantity));
     const extra = Number(lineDiscount % BigInt(item.quantity));
@@ -797,62 +486,6 @@ function discountedGa4PurchaseItems(input: PurchaseAnalyticsInput): Array<{
   return result;
 }
 
-function analyticsStorageNamespace(publishableKey: string): string {
-  return fnv1a32(publishableKey).toString(36);
-}
-
-function observeHistory(
-  windowRef: Window & typeof globalThis,
-  listener: () => void,
-): () => void {
-  const history = windowRef.history;
-  if (!history?.pushState || !history?.replaceState) return () => {};
-  let state = historyObservers.get(history);
-  if (!state) {
-    const pushState = history.pushState.bind(history);
-    const replaceState = history.replaceState.bind(history);
-    const listeners = new Set<() => void>();
-    const notify = () => {
-      for (const registeredListener of [...listeners]) registeredListener();
-    };
-    const pushWrapper: History["pushState"] = (...args) => {
-      pushState(...args);
-      notify();
-    };
-    const replaceWrapper: History["replaceState"] = (...args) => {
-      replaceState(...args);
-      notify();
-    };
-    state = { listeners, pushState, replaceState, pushWrapper, replaceWrapper };
-    historyObservers.set(history, state);
-    history.pushState = pushWrapper;
-    history.replaceState = replaceWrapper;
-  }
-  state.listeners.add(listener);
-  return () => {
-    const current = historyObservers.get(history);
-    if (!current) return;
-    current.listeners.delete(listener);
-    if (current.listeners.size === 0) {
-      if (history.pushState === current.pushWrapper)
-        history.pushState = current.pushState;
-      if (history.replaceState === current.replaceWrapper)
-        history.replaceState = current.replaceState;
-      historyObservers.delete(history);
-    }
-  };
-}
-
-interface HistoryObserverState {
-  listeners: Set<() => void>;
-  pushState: History["pushState"];
-  replaceState: History["replaceState"];
-  pushWrapper: History["pushState"];
-  replaceWrapper: History["replaceState"];
-}
-
-const historyObservers = new WeakMap<History, HistoryObserverState>();
-
 function isUuid(value: string | null | undefined): boolean {
   return (
     typeof value === "string" &&
@@ -862,68 +495,6 @@ function isUuid(value: string | null | undefined): boolean {
   );
 }
 
-function readCookie(documentRef: Document, name: string): string | undefined {
-  const cookie = documentRef.cookie;
-  if (typeof cookie !== "string") return undefined;
-  const value = cookie
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(`${name}=`));
-  if (!value) return undefined;
-  const raw = value.slice(name.length + 1);
-  if (!raw) return undefined;
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
-
-function writeCookie(documentRef: Document, name: string, value: string): void {
-  try {
-    const secure =
-      documentRef.location?.protocol === "https:" ? "; Secure" : "";
-    documentRef.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${META_FBC_MAX_AGE_SECONDS}; Path=/; SameSite=Lax${secure}`;
-  } catch {
-    // Cookie storage is optional; the event still carries the matching value.
-  }
-}
-
 function nonEmpty(value: string | undefined): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
-
-function boundedText(
-  value: string | undefined,
-  maximumLength: number,
-): string | undefined {
-  return typeof value === "string" &&
-    value.length >= 1 &&
-    value.length <= maximumLength &&
-    !CONTROL_CHARACTERS.test(value)
-    ? value
-    : undefined;
-}
-
-function readStoredJson(storage: Storage | undefined, key: string): unknown {
-  try {
-    const value = storage?.getItem(key);
-    return value ? JSON.parse(value) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function writeStoredJson(
-  storage: Storage | undefined,
-  key: string,
-  value: unknown,
-): void {
-  try {
-    storage?.setItem(key, JSON.stringify(value));
-  } catch {
-    // Storage is optional; the fbc pairing is best-effort.
-  }
 }

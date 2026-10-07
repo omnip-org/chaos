@@ -33,7 +33,10 @@ export interface ClientOptions {
   /** Chaos API origin + prefix, e.g. "https://chaos.example.com/api/v1". */
   baseUrl?: string;
   fetch?: typeof fetch;
-  /** Where the shopper token is persisted between requests. Defaults to window.localStorage when available. */
+  /**
+   * Where the shopper token is persisted between requests. Defaults to
+   * window.localStorage when available.
+   */
   storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
   randomUUID?: () => string;
   /**
@@ -79,9 +82,13 @@ export interface RequestOptions<
 
 /** Public Storefront facade; protocol, session and event state live internally. */
 export class ChaosStorefrontClient {
+  /** @internal */
   readonly publishableKey: string;
+  /** @internal */
   readonly baseUrl: string;
+  /** @internal */
   readonly randomUUID: () => string;
+  /** @internal */
   readonly now: () => number;
 
   private readonly transport: StorefrontTransport;
@@ -106,7 +113,8 @@ export class ChaosStorefrontClient {
     this.now = options.now ?? (() => Date.now());
     if (!this.randomUUID) {
       throw new TypeError(
-        "randomUUID is required (pass options.randomUUID in environments without globalThis.crypto)",
+        "randomUUID is required (pass options.randomUUID in environments " +
+          "without globalThis.crypto)",
       );
     }
 

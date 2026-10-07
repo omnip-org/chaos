@@ -25,10 +25,9 @@ interface EmbeddedCheckoutRequest {
 export class PaymentsResource {
   /**
    * One idempotency key per cart id, minted on the first checkout attempt and
-   * reused for every later attempt on that cart. A dropped response therefore
-   * retries under the same key (the server returns the existing checkout
-   * instead of starting a second one); a cart id is single-use for checkout
-   * anyway, since the first success locks it.
+   * reused for later attempts in this client. After a page reload the server
+   * recovers the same pending checkout from the Cart and request fingerprint,
+   * even though the new client mints a different key.
    */
   private readonly idempotencyKeys = new Map<string, string>();
 
@@ -47,10 +46,19 @@ export class PaymentsResource {
     cartId: string,
     options: EmbeddedCheckoutOptions,
   ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
-    return this.client.cart.runExclusive(cartId, async () => {
-      const cart = await this.client.cart.snapshot(cartId);
-      return this.createEmbeddedCheckoutForCart(cart, options);
+    const { cart, checkout } = await this.client.cart.runExclusive(
+      cartId,
+      async () => {
+        const cart = await this.client.cart.snapshot(cartId);
+        const checkout = await this.createEmbeddedCheckoutForCart(cart, options);
+        return { cart, checkout };
+      },
+    );
+    this.client.recordCheckoutCreation({
+      checkout: checkout.data,
+      source_cart: cart,
     });
+    return checkout;
   }
 
   /**
