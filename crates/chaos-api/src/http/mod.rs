@@ -526,6 +526,10 @@ mod tests {
                 "/api/v1/orders/00000000-0000-4000-8000-000000000001/details",
             ),
             (
+                Method::GET,
+                "/api/v1/orders/00000000-0000-4000-8000-000000000001/checkout",
+            ),
+            (
                 Method::POST,
                 "/webhooks/v1/payment/stripe/00000000-0000-0000-0000-000000000000",
             ),
@@ -564,37 +568,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn removed_order_recovery_routes_and_legacy_prefixes_are_not_routed() {
+    async fn removed_order_endpoints_and_legacy_prefixes_are_rejected() {
         let requests = [
-            Request::get("/api/v1/orders/pending-payment")
+            (
+                Request::get("/api/v1/orders/pending-payment")
+                    .body(Body::empty())
+                    .unwrap(),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                Request::post("/api/v1/orders/00000000-0000-0000-0000-000000000000/checkout")
+                    .body(Body::empty())
+                    .unwrap(),
+                StatusCode::METHOD_NOT_ALLOWED,
+            ),
+            (
+                Request::get("/api/v1/checkouts/pending")
+                    .body(Body::empty())
+                    .unwrap(),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                Request::get("/api/v1/orders/00000000-0000-0000-0000-000000000000")
+                    .body(Body::empty())
+                    .unwrap(),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                Request::post("/api/v1/orders/tracking")
+                    .body(Body::empty())
+                    .unwrap(),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                Request::get("/storefront/v1/products")
+                    .body(Body::empty())
+                    .unwrap(),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                Request::post(
+                    "/integrations/v1/webhooks/stripe/00000000-0000-0000-0000-000000000000",
+                )
                 .body(Body::empty())
                 .unwrap(),
-            Request::post("/api/v1/orders/00000000-0000-0000-0000-000000000000/checkout")
-                .body(Body::empty())
-                .unwrap(),
-            Request::get("/api/v1/orders/00000000-0000-0000-0000-000000000000/checkout")
-                .body(Body::empty())
-                .unwrap(),
-            Request::get("/api/v1/checkouts/pending")
-                .body(Body::empty())
-                .unwrap(),
-            Request::get("/api/v1/orders/00000000-0000-0000-0000-000000000000")
-                .body(Body::empty())
-                .unwrap(),
-            Request::post("/api/v1/orders/tracking")
-                .body(Body::empty())
-                .unwrap(),
-            Request::get("/storefront/v1/products")
-                .body(Body::empty())
-                .unwrap(),
-            Request::post("/integrations/v1/webhooks/stripe/00000000-0000-0000-0000-000000000000")
-                .body(Body::empty())
-                .unwrap(),
+                StatusCode::NOT_FOUND,
+            ),
         ];
 
-        for request in requests {
+        for (request, expected_status) in requests {
             let response = router(test_state()).oneshot(request).await.unwrap();
-            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            assert_eq!(response.status(), expected_status);
         }
     }
 
