@@ -5,22 +5,8 @@ import { createHash } from "node:crypto";
 import { ChaosStorefrontAnalytics } from "../events/browser.js";
 import type { EmbeddedCheckoutCreation } from "../types.js";
 
-class MemoryStorage {
-  private readonly values = new Map<string, string>();
-
-  getItem(key: string): string | null {
-    return this.values.get(key) ?? null;
-  }
-
-  setItem(key: string, value: string): void {
-    this.values.set(key, value);
-  }
-
-}
-
 function harness(
   options: {
-    sessionStorage?: MemoryStorage;
     search?: string;
     cookie?: string;
     providers?: {
@@ -46,11 +32,8 @@ function harness(
         scripts.push(script),
     },
   };
-  const window = {
-    sessionStorage: options.sessionStorage ?? new MemoryStorage(),
-  };
+  const window = {};
   const analytics = new ChaosStorefrontAnalytics({
-    publishableKey: "public_test",
     document: document as unknown as Document,
     window: window as unknown as Window & typeof globalThis,
     now: () => time,
@@ -106,6 +89,15 @@ test("keeps a fresh _fbc cookie in sync with the current fbclid", () => {
     environment.document.cookie,
     new RegExp(`_fbc=${encodeURIComponent(expectedFbc)}`),
   );
+});
+
+test("reuses the _fbc cookie for the current Meta click", () => {
+  const cookie = "_fbc=fb.1.1234567890123.current-click";
+  const environment = harness({
+    cookie,
+    search: "?fbclid=current-click",
+  });
+  assert.equal(environment.document.cookie, cookie);
 });
 
 test("retains a long Meta click identifier within the attribution bound", () => {

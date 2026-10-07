@@ -1,28 +1,18 @@
 import type { CheckoutAttribution } from "../types.js";
 import { readBrowserCookie } from "./meta-attribution.js";
-import { lastTouchUtmTags, type UtmKey } from "./utm.js";
-
-type UtmStorage = Pick<Storage, "getItem" | "setItem"> | null;
 
 /**
  * Ad-platform attribution captured by the checkout call for the later
  * server-side Meta CAPI `Purchase`.
  *
- * `_fbp` is set by Meta's Pixel; `_fbc` is chaos-js's own copy of the
- * `fbclid` URL param (see `events/browser.ts`'s `maintainFbcCookie`). Both are
- * plain, non-HttpOnly cookies by Meta's design, so reading them needs no extra
- * wiring. `source_url` is the current page URL — chaos-rust forwards it as the
- * CAPI `event_source_url`.
+ * `_fbp` is set by Meta's Pixel; `_fbc` is Meta's click cookie, maintained from
+ * a landing `fbclid` by `meta-attribution.ts` even when Pixel is disabled. Both
+ * are plain, non-HttpOnly cookies by Meta's design. `source_url` is the current
+ * page URL — chaos-rust forwards it as the CAPI `event_source_url`.
  *
- * `utm` is the *last touch* (journey entry point), read from `storage` so an
- * MPA navigation that dropped `utm_*` from the URL does not lose it — the live
- * URL is only the fallback. This is what reaches the server-side Purchase
- * event via `carts.attribution`.
  * @internal
  */
-export function defaultAdAttribution(
-  storage: UtmStorage,
-): CheckoutAttribution {
+export function defaultAdAttribution(): CheckoutAttribution {
   const documentRef =
     typeof globalThis.document === "undefined"
       ? undefined
@@ -31,12 +21,8 @@ export function defaultAdAttribution(
   const fbp = readBrowserCookie(documentRef, "_fbp");
   const sourceUrl =
     typeof window === "undefined" ? undefined : window.location.href;
-  const utm = lastTouchUtmTags(storage) as
-    | Partial<Record<UtmKey, string>>
-    | undefined;
   return {
     ...(sourceUrl && { source_url: sourceUrl }),
-    ...(utm && { utm }),
     ...((fbc || fbp) && { meta: { ...(fbc && { fbc }), ...(fbp && { fbp }) } }),
   };
 }

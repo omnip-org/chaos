@@ -13,10 +13,9 @@ import type {
 import { maintainMetaFbcCookie } from "./meta-attribution.js";
 
 interface StorefrontEventCoordinatorOptions {
-  baseUrl: string;
-  publishableKey: string;
-  events?: Omit<AnalyticsOptions, "publishableKey">;
+  events?: AnalyticsOptions;
   now: () => number;
+  randomUUID: () => string;
 }
 
 /** Keeps browser analytics outside the API client and resource classes. */
@@ -26,20 +25,14 @@ export class StorefrontEventCoordinator {
 
   constructor(options: StorefrontEventCoordinatorOptions) {
     const documentRef = options.events?.document ?? resolveDocument();
-    const sessionStorage = resolveSessionStorage(options.events?.sessionStorage);
-    const analyticsKey = `${options.baseUrl}\0${options.publishableKey}`;
     if (options.events) {
       this.analytics = new ChaosStorefrontAnalytics({
-        publishableKey: analyticsKey,
+        now: options.now,
+        randomUUID: options.randomUUID,
         ...options.events,
       });
     } else {
-      maintainMetaFbcCookie(
-        analyticsKey,
-        documentRef,
-        sessionStorage,
-        options.now,
-      );
+      maintainMetaFbcCookie(documentRef, options.now);
       this.analytics = null;
     }
   }
@@ -133,16 +126,5 @@ function resolveDocument(): Document | undefined {
     return globalThis.document;
   } catch {
     return undefined;
-  }
-}
-
-function resolveSessionStorage(
-  explicit: Storage | undefined,
-): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {
-  if (explicit) return explicit;
-  try {
-    return globalThis.sessionStorage ?? null;
-  } catch {
-    return null;
   }
 }

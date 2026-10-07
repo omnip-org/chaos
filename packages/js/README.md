@@ -127,9 +127,45 @@ const mounted = await mountEmbeddedCheckout(action, document.querySelector("#che
 // shopper-owned Order until Chaos's payment webhook marks it paid. Each read
 // automatically attempts Pixel and GA4 Purchase for a confirmed paid Order.
 const orderId = new URLSearchParams(location.search).get("order_id")!;
-const { data: order } = await chaos.orders.getCheckoutOrder(orderId);
+const { data: order } = await chaos.orders.waitForCheckoutOrder(orderId);
 if (order.status === "confirmed" && order.payment_status === "paid") showSuccess();
 ```
+
+### Browser and server runtimes
+
+The client can perform pure Storefront API reads during SSR, but its shopper,
+checkout and analytics behavior is browser-oriented. In a browser it can use
+`localStorage`, the current URL, first-party cookies and the DOM. It can
+therefore persist a shopper, capture checkout attribution, load
+Pixel/GA4 and mount Stripe Embedded Checkout.
+
+On a server, create a client per incoming request. Do not share one client as
+a process singleton: it holds the current shopper token, cart snapshots and
+checkout idempotency keys in memory. Use an absolute `baseUrl`, leave `events`
+unset, disable browser persistence and seed a request-owned shopper token only
+when the operation needs one:
+
+```ts
+const chaos = new ChaosStorefrontClient({
+  publishableKey: process.env.CHAOS_PUBLISHABLE_KEY!,
+  baseUrl: "https://chaos.example.com/api/v1",
+  storage: null,
+  autoAcquireShopperToken: false,
+});
+
+if (shopperTokenFromThisRequest) {
+  chaos.setShopperToken(shopperTokenFromThisRequest);
+}
+const product = await chaos.catalog.getProduct(productSlug);
+```
+
+The SDK never falls back to a server runtime's process-wide `localStorage`.
+Server execution also has no browser cookies or page URL, so it cannot
+automatically collect `_fbc`, `_fbp`, UTM parameters or
+`source_url`, and Pixel/GA4 delivery is unavailable. Keep checkout and the
+shopper-facing event-producing resource calls in the browser. In particular,
+a server-originated checkout request would otherwise identify the application
+server's network and user-agent context instead of the shopper's browser.
 
 ### Contract boundary
 
@@ -157,6 +193,28 @@ a shared HTTP cache cannot reuse one Channel or Shopper response for another.
 Treat `shopper_token` as opaque. The SDK stores its `shopper_id` beside it and
 hashes that id for Meta's `external_id` matching. It does not use the anonymous
 shopper id as GA4 User-ID, which is reserved for an authenticated account id.
+
+Chaos-owned browser keys use one versioned namespace scoped by API base URL and
+publishable key:
+
+```text
+chaos.storefront.v1.<scope>.shopper.token
+chaos.storefront.v1.<scope>.shopper.id
+chaos.storefront.v1.<scope>.attribution.utm.first
+```
+
+The shopper identity and first-touch UTM use `ClientOptions.storage`
+(`localStorage` by default). Cart ids, Order ids and analytics event ids are
+not persisted.
+
+The first-touch UTM snapshot only bridges a landing page to lazy shopper
+creation after an MPA navigation. It feeds Chaos's own shopper acquisition
+record and is not supplied to GA4 or Meta CAPI. The browser Google tag collects
+campaign parameters from the landing-page URL independently; Meta CAPI uses
+`_fbc`, `_fbp`, `source_url`, request context and order identity. Checkout does
+not persist or replay a last-touch UTM snapshot. A caller with a separate
+first-party attribution model can still pass `options.attribution.utm`
+explicitly.
 
 Event delivery starts as soon as `ChaosStorefrontClient` is constructed with
 an `events` option; a destination (Pixel, GA4) stays off until its config key
@@ -189,7 +247,7 @@ immediately when configured.
 | Search | Successful first page with a non-empty `q` | `Search` | `search` | — |
 | Cart addition | Successful line mutation whose quantity increased | `AddToCart` | `add_to_cart` | — |
 | Checkout start | Successful embedded checkout creation or recovery | `InitiateCheckout` | `begin_checkout` | — |
-| Purchase | Confirmed paid `orders.getCheckoutOrder` response | `Purchase` | `purchase` | `Purchase` at payment confirmation |
+| Purchase | Confirmed paid `orders.waitForCheckoutOrder` response | `Purchase` | `purchase` | `Purchase` at payment confirmation |
 
 Browser commerce delivery is best effort and never changes the Storefront
 operation's result. It does not keep a local event ledger. Repeated operations
@@ -227,9 +285,12 @@ Product still counts. Variant changes stay local UI state and do not emit
 another product view. There is no public event method for the storefront to call.
 
 `purchase` is a projection of a server-confirmed Order.
-`orders.getCheckoutOrder` uses the existing shopper token to read the saved
-Order and attempts Pixel/GA4 Purchase whenever the response is confirmed and
-paid (including partially refunded or refunded after an earlier payment).
+`orders.waitForCheckoutOrder` uses the existing shopper token and polls the
+saved Order until it is paid or reaches a failed, expired or cancelled state.
+It defaults to a one-second interval and a 30-second timeout and accepts an
+`AbortSignal`. A confirmed paid response attempts Pixel/GA4 Purchase before it
+is returned (including partially refunded or refunded after an earlier
+payment). `orders.getCheckoutOrder` remains available for a single read.
 The authenticated Order read returns the current `orders` row with its flat
 contact and address columns, plus related lines and fulfillment progress; it
 does not use a checkout-time snapshot.
@@ -247,8 +308,9 @@ plus `fbc`, `fbp`, client IP and user agent, in `user_data`, while its
 `custom_data` contains the order, value, currency and items. Customer identity
 is never copied into either Purchase `custom_data` object.
 
-The client maintains a first-party `_fbc` cookie from a landing `fbclid`,
-bounded and capped at 90 days, even when browser event providers are omitted.
+When a landing URL contains `fbclid`, the client maintains Meta's standard
+first-party `_fbc` cookie for up to 90 days, even when browser event providers
+are omitted. It reuses a matching cookie and keeps no additional Chaos cache.
 `chaos.payments.createEmbeddedCheckout*` reads this same `_fbc` cookie (and
 Pixel's own `_fbp` cookie) by default when building the checkout request
 `attribution` — see below.
@@ -320,7 +382,8 @@ classes. Its stateful infrastructure is kept under `src/internal/`:
 - `transport.ts` owns HTTP headers, URLs, JSON and API error decoding.
 - `shopper-session.ts` owns the shopper credential, attribution and browser
   persistence.
-- `storefront-events.ts` owns Pixel/GA4 projection and checkout-return markers.
+- `browser-storage.ts` owns versioned, store-scoped browser key names.
+- `storefront-events.ts` owns Pixel/GA4 projection.
 
 Resource classes contain Storefront operations and recovery rules; they do
 not construct authentication headers or access browser storage directly.

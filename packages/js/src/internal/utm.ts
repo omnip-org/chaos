@@ -4,23 +4,16 @@
  * A single-page storefront could read `window.location` at every SDK call and
  * be done. An MPA storefront cannot: the visitor lands on `/?utm_source=x`,
  * navigates (full page load, `utm_*` gone from the URL), and only then adds to
- * cart or checks out. So the SDK persists two snapshots in `storage`:
+ * cart. The SDK therefore persists the first store-scoped UTM snapshot until
+ * the lazy shopper-session creation can forward it to
+ * `shoppers.attribution.first_seen`. GA4 owns session campaign attribution;
+ * checkout does not replay this snapshot to GA4 or Meta.
  *
- * - **first touch** (`utm_first_touch`) — written once, on the first page load
- *   that carries `utm_*`, never overwritten. The visitor's acquisition source.
- *   Forwarded to shopper-session creation, which the server records as
- *   `shoppers.attribution.first_seen`.
- * - **last touch** (`utm_last_touch`) — overwritten on every page load that
- *   carries `utm_*`; a load with none leaves it untouched. The entry point of
- *   the visitor's *current* shopping journey. Forwarded to checkout
- *   (`attribution.utm` → Meta CAPI Purchase) and to the `last_seen` session
- *   refresh.
- *
- * `recordPageUtm(storage)` runs once per client construction (i.e. once per
- * page load) and does both writes. The read helpers fall back to the live URL
- * only when `storage` holds nothing — a same-page landing still works with no
- * persisted value.
+ * `recordFirstTouchUtm` runs once per client construction. Its read helper
+ * falls back to the live URL when storage is unavailable.
  */
+
+import type { BrowserStorage } from "./browser-storage.js";
 
 export const UTM_KEYS = [
   "source",
@@ -51,34 +44,22 @@ export function readUtmTags(): UtmTags | undefined {
   return Object.keys(utm).length > 0 ? utm : undefined;
 }
 
-type StoredUtmParams = Partial<Record<`utm_${UtmKey}`, string>>;
+type UtmStorage = BrowserStorage | null;
 
-function toStoredParams(
-  tags: Partial<Record<UtmKey, string>> | undefined,
-): StoredUtmParams {
-  const params: StoredUtmParams = {};
-  if (tags) {
-    for (const [key, value] of Object.entries(tags)) {
-      if (value) params[`utm_${key as UtmKey}`] = value;
-    }
-  }
-  return params;
-}
-
-type UtmStorage = Pick<Storage, "getItem" | "setItem"> | null;
-
-const FIRST_TOUCH_STORAGE_KEY = "chaos.storefront.utm_first_touch";
-const LAST_TOUCH_STORAGE_KEY = "chaos.storefront.utm_last_touch";
-
-function readStored(
-  storage: UtmStorage,
-  key: string,
-): StoredUtmParams | undefined {
+function readStored(storage: UtmStorage, key: string): UtmTags | undefined {
   try {
     const raw = storage?.getItem(key);
     if (!raw) return undefined;
-    const parsed = JSON.parse(raw) as StoredUtmParams;
-    return parsed && typeof parsed === "object" ? parsed : undefined;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const tags: UtmTags = {};
+    for (const key of UTM_KEYS) {
+      const value = (parsed as Record<string, unknown>)[key];
+      if (typeof value === "string" && value) tags[key] = value;
+    }
+    return Object.keys(tags).length > 0 ? tags : undefined;
   } catch {
     return undefined;
   }
@@ -87,7 +68,7 @@ function readStored(
 function writeStored(
   storage: UtmStorage,
   key: string,
-  value: StoredUtmParams,
+  value: UtmTags,
 ): void {
   try {
     storage?.setItem(key, JSON.stringify(value));
@@ -96,30 +77,17 @@ function writeStored(
   }
 }
 
-function fromStoredParams(
-  params: StoredUtmParams | undefined,
-): UtmTags | undefined {
-  if (!params) return undefined;
-  const tags: UtmTags = {};
-  for (const key of UTM_KEYS) {
-    const value = params[`utm_${key}`];
-    if (value) tags[key] = value;
-  }
-  return Object.keys(tags).length > 0 ? tags : undefined;
-}
-
 /**
- * Records the current page's `utm_*` into `storage`: first touch if nothing
- * was recorded before, last touch every time. A page load with no `utm_*`
- * changes neither. Call once per page load (client construction).
+ * Records the current page's `utm_*` once when no first touch exists yet.
+ * A page load with no `utm_*` changes nothing. Call once per page load.
  */
-export function recordPageUtm(storage: UtmStorage): void {
-  const current = toStoredParams(readUtmTags());
-  if (Object.keys(current).length === 0) return;
-  if (!readStored(storage, FIRST_TOUCH_STORAGE_KEY)) {
-    writeStored(storage, FIRST_TOUCH_STORAGE_KEY, current);
-  }
-  writeStored(storage, LAST_TOUCH_STORAGE_KEY, current);
+export function recordFirstTouchUtm(
+  storage: UtmStorage,
+  key: string,
+): void {
+  const current = readUtmTags();
+  if (!current) return;
+  if (!readStored(storage, key)) writeStored(storage, key, current);
 }
 
 /**
@@ -127,24 +95,9 @@ export function recordPageUtm(storage: UtmStorage): void {
  * back to the live URL when nothing is persisted yet (same-page landing
  * before `recordPageUtm` has a prior load to draw on).
  */
-export function firstTouchUtmTags(storage: UtmStorage): UtmTags | undefined {
-  return (
-    fromStoredParams(readStored(storage, FIRST_TOUCH_STORAGE_KEY)) ??
-    readUtmTags()
-  );
-}
-
-/**
- * `utm_*` tags for the checkout `attribution.utm` body and the `last_seen`
- * refresh — the entry point of the current shopping journey.
- * Falls back to the live URL when nothing is persisted. `undefined` when
- * there is nothing anywhere, so the attribution body omits `utm` entirely.
- */
-export function lastTouchUtmTags(
+export function firstTouchUtmTags(
   storage: UtmStorage,
+  key: string,
 ): UtmTags | undefined {
-  return (
-    fromStoredParams(readStored(storage, LAST_TOUCH_STORAGE_KEY)) ??
-    readUtmTags()
-  );
+  return readStored(storage, key) ?? readUtmTags();
 }

@@ -204,10 +204,6 @@ export class CartResource {
     if (!this.pendingWarmup) {
       this.pendingWarmup = (async () => {
         await this.client.acquireShopperToken();
-        // A returning visitor who came back through a different ad: bump
-        // last_seen with this journey's utm_*. Never awaited — enrichment,
-        // not part of warmup's contract.
-        this.client.refreshLastSeen();
         return this.resume();
       })().finally(() => {
         this.pendingWarmup = null;

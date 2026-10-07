@@ -26,7 +26,7 @@ import type {
 
 const DEFAULT_CART_SNAPSHOT_TTL_MS = 30_000;
 
-export type StorefrontEventsOptions = Omit<AnalyticsOptions, "publishableKey">;
+export type StorefrontEventsOptions = AnalyticsOptions;
 
 export interface ClientOptions {
   publishableKey: string;
@@ -78,6 +78,8 @@ export interface RequestOptions<
   requestId?: string;
   /** Business idempotency key sent as Idempotency-Key. */
   idempotencyKey?: string;
+  /** Cancels the underlying fetch. */
+  signal?: AbortSignal;
 }
 
 /** Public Storefront facade; protocol, session and event state live internally. */
@@ -124,9 +126,8 @@ export class ChaosStorefrontClient {
       ...(options.fetch ? { fetch: options.fetch } : {}),
     });
     this.events = new StorefrontEventCoordinator({
-      publishableKey: this.publishableKey,
-      baseUrl: this.baseUrl,
       now: this.now,
+      randomUUID: this.randomUUID,
       ...(options.events ? { events: options.events } : {}),
     });
     this.sessions = new ShopperSessionStore({
@@ -164,16 +165,6 @@ export class ChaosStorefrontClient {
     return this.sessions.firstTouchUtm();
   }
 
-  /** @internal Last-touch attribution used by checkout and session refresh. */
-  lastTouchUtm(): CheckoutUtm | undefined {
-    return this.sessions.lastTouchUtm();
-  }
-
-  /** @internal Storage used to assemble checkout attribution. */
-  get attributionStorage(): Pick<Storage, "getItem" | "setItem"> | null {
-    return this.sessions.attributionStorage;
-  }
-
   /** Acquires one shopper session; concurrent callers share the request. */
   async acquireShopperToken(): Promise<string> {
     return this.sessions.acquire(() => this.issueShopperSession());
@@ -197,19 +188,6 @@ export class ChaosStorefrontClient {
   /** @internal Whether this client created the current shopper identity. */
   get shopperSessionWasMintedHere(): boolean {
     return this.sessions.wasMintedHere;
-  }
-
-  /** @internal Best-effort last-touch refresh for a returning shopper. */
-  refreshLastSeen(): void {
-    const utm = this.sessions.takeLastSeenUtm();
-    if (!utm) return;
-    void this.request("/shopper/sessions/touch", {
-      method: "POST",
-      body: { attribution: { utm } },
-      requiresShopperToken: true,
-    }).catch(() => {
-      // Attribution enrichment must never fail the cart flow that triggered it.
-    });
   }
 
   /** Low-level Storefront request entry point used by the typed resources. */

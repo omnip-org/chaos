@@ -1,4 +1,3 @@
-import { fnv1a32 } from "./hash.js";
 import {
   isValidMetaBrowserId,
   MAX_META_BROWSER_ID_LENGTH,
@@ -7,13 +6,9 @@ import {
 const META_FBC_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
-type SessionStorage = Pick<Storage, "getItem" | "setItem">;
-
 /** Keeps Meta's click id available for the later checkout attribution payload. */
 export function maintainMetaFbcCookie(
-  namespaceSource: string,
   documentRef: Document | undefined,
-  sessionStorage: SessionStorage | null | undefined,
   now: () => number,
 ): void {
   if (!documentRef) return;
@@ -24,20 +19,13 @@ export function maintainMetaFbcCookie(
   );
   if (!fbclid || /\s/.test(fbclid)) return;
 
-  const storageKey =
-    `chaos.analytics.${fnv1a32(namespaceSource).toString(36)}.meta.fbc.v2`;
-  const stored = readStoredJson(sessionStorage, storageKey);
-  const fbc = isStoredFbc(stored, fbclid)
-    ? stored.fbc
-    : `fb.1.${Math.floor(now())}.${fbclid}`;
+  const existing = readBrowserCookie(documentRef, "_fbc");
+  if (isFbcForClick(existing, fbclid)) return;
+
+  const fbc = `fb.1.${Math.floor(now())}.${fbclid}`;
   if (!isValidMetaBrowserId(fbc)) return;
 
-  if (!isStoredFbc(stored, fbclid)) {
-    writeStoredJson(sessionStorage, storageKey, { fbclid, fbc });
-  }
-  if (readBrowserCookie(documentRef, "_fbc") !== fbc) {
-    writeCookie(documentRef, "_fbc", fbc);
-  }
+  writeCookie(documentRef, "_fbc", fbc);
 }
 
 /** Reads a browser cookie without allowing malformed percent encoding to fail checkout. */
@@ -61,19 +49,8 @@ export function readBrowserCookie(
   }
 }
 
-interface StoredFbc {
-  fbclid: string;
-  fbc: string;
-}
-
-function isStoredFbc(value: unknown, fbclid: string): value is StoredFbc {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const candidate = value as Record<string, unknown>;
-  return (
-    candidate.fbclid === fbclid &&
-    typeof candidate.fbc === "string" &&
-    isValidMetaBrowserId(candidate.fbc)
-  );
+function isFbcForClick(value: string | undefined, fbclid: string): boolean {
+  return isValidMetaBrowserId(value) && value.endsWith(`.${fbclid}`);
 }
 
 function boundedText(
@@ -97,29 +74,5 @@ function writeCookie(documentRef: Document, name: string, value: string): void {
       `Path=/; SameSite=Lax${secure}`;
   } catch {
     // Cookie storage is optional.
-  }
-}
-
-function readStoredJson(
-  storage: SessionStorage | null | undefined,
-  key: string,
-): unknown {
-  try {
-    const value = storage?.getItem(key);
-    return value ? JSON.parse(value) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function writeStoredJson(
-  storage: SessionStorage | null | undefined,
-  key: string,
-  value: unknown,
-): void {
-  try {
-    storage?.setItem(key, JSON.stringify(value));
-  } catch {
-    // Session storage is optional.
   }
 }

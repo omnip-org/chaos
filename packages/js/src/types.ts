@@ -284,6 +284,16 @@ export interface OwnOrder extends OrderLookup {
   shipping_country_code: string | null;
 }
 
+/** Polling controls for resolving a Stripe return into a terminal Order. */
+export interface WaitForCheckoutOrderOptions {
+  /** Delay between pending-order reads. Defaults to 1000 ms. */
+  intervalMs?: number;
+  /** Maximum total wait. Defaults to 30000 ms. */
+  timeoutMs?: number;
+  /** Cancels polling when the confirmation page is left or replaced. */
+  signal?: AbortSignal;
+}
+
 /** Storefront-facing options for creating an embedded checkout. */
 export interface EmbeddedCheckoutOptions {
   /** Stripe appends the Order UUID to this URL before redirecting the shopper. */

@@ -30,10 +30,8 @@ import type {
 
 /** Projects Storefront commerce events directly to Meta Pixel and GA4. */
 export interface AnalyticsOptions {
-  publishableKey: string;
   document?: Document;
   window?: Window & typeof globalThis;
-  sessionStorage?: Storage;
   randomUUID?: () => string;
   now?: () => number;
   providers?: AnalyticsProviderOptions;
@@ -53,9 +51,6 @@ export class ChaosStorefrontAnalytics {
   private externalIdSource: string | null = null;
 
   constructor(options: AnalyticsOptions) {
-    if (!options?.publishableKey) {
-      throw new TypeError("publishableKey is required");
-    }
     const documentRef = options.document ?? globalThis.document;
     const windowRef =
       options.window ?? (globalThis as unknown as Window & typeof globalThis);
@@ -71,12 +66,7 @@ export class ChaosStorefrontAnalytics {
       options.providers,
       options.onError,
     );
-    maintainMetaFbcCookie(
-      options.publishableKey,
-      documentRef,
-      options.sessionStorage ?? windowRef.sessionStorage,
-      options.now ?? Date.now,
-    );
+    maintainMetaFbcCookie(documentRef, options.now ?? Date.now);
   }
 
   /**

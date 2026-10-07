@@ -8,6 +8,7 @@ export interface TransportRequestOptions<
   body?: unknown;
   requestId?: string;
   idempotencyKey?: string;
+  signal?: AbortSignal;
 }
 
 interface TransportOptions {
@@ -46,6 +47,7 @@ export class StorefrontTransport {
     const init: RequestInit = {
       method: options.method ?? "GET",
       headers,
+      ...(options.signal ? { signal: options.signal } : {}),
     };
     if (options.body !== undefined) init.body = JSON.stringify(options.body);
 

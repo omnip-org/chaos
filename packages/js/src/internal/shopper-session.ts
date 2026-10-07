@@ -1,24 +1,19 @@
 import { ChaosApiError } from "../errors.js";
-import { scopedStorageKey } from "./hash.js";
+import {
+  storefrontStorageKeys,
+  type BrowserStorage,
+  type StorefrontStorageKeys,
+} from "./browser-storage.js";
 import {
   firstTouchUtmTags,
-  lastTouchUtmTags,
-  recordPageUtm,
+  recordFirstTouchUtm,
 } from "./utm.js";
 import type { CheckoutUtm, DataEnvelope, ShopperSession } from "../types.js";
-
-const SHOPPER_TOKEN_STORAGE_PREFIX = "chaos.storefront.shopper_token";
-const SHOPPER_ID_STORAGE_PREFIX = "chaos.storefront.shopper_id";
-
-export type StorefrontStorage = Pick<
-  Storage,
-  "getItem" | "setItem" | "removeItem"
->;
 
 interface ShopperSessionStoreOptions {
   baseUrl: string;
   publishableKey: string;
-  storage?: StorefrontStorage | null;
+  storage?: BrowserStorage | null;
   autoAcquire: boolean;
   setAnalyticsShopperId: (shopperId: string) => void;
   clearAnalyticsShopperId: () => void;
@@ -26,31 +21,24 @@ interface ShopperSessionStoreOptions {
 
 /** Owns the anonymous shopper credential, identity and attribution storage. */
 export class ShopperSessionStore {
-  private readonly storage: StorefrontStorage | null;
-  private readonly tokenStorageKey: string;
-  private readonly shopperIdStorageKey: string;
+  private readonly storage: BrowserStorage | null;
+  private readonly keys: StorefrontStorageKeys;
   private shopperToken: string | null;
   private pendingSession: Promise<string> | null = null;
   private mintedHere = false;
 
   constructor(private readonly options: ShopperSessionStoreOptions) {
     this.storage = resolveStorage(options.storage);
-    this.tokenStorageKey = scopedStorageKey(
-      SHOPPER_TOKEN_STORAGE_PREFIX,
+    this.keys = storefrontStorageKeys(
       options.baseUrl,
       options.publishableKey,
     );
-    this.shopperIdStorageKey = scopedStorageKey(
-      SHOPPER_ID_STORAGE_PREFIX,
-      options.baseUrl,
-      options.publishableKey,
-    );
-    this.shopperToken = this.read(this.tokenStorageKey);
+    this.shopperToken = this.read(this.keys.shopperToken);
     if (this.shopperToken) {
-      const shopperId = this.read(this.shopperIdStorageKey);
+      const shopperId = this.read(this.keys.shopperId);
       if (shopperId) options.setAnalyticsShopperId(shopperId);
     }
-    recordPageUtm(this.storage);
+    recordFirstTouchUtm(this.storage, this.keys.attributionUtmFirst);
   }
 
   get token(): string | null {
@@ -61,33 +49,26 @@ export class ShopperSessionStore {
     return this.mintedHere;
   }
 
-  get attributionStorage(): Pick<Storage, "getItem" | "setItem"> | null {
-    return this.storage;
-  }
-
   firstTouchUtm(): CheckoutUtm | undefined {
-    return firstTouchUtmTags(this.storage);
-  }
-
-  lastTouchUtm(): CheckoutUtm | undefined {
-    return lastTouchUtmTags(this.storage);
+    return firstTouchUtmTags(this.storage, this.keys.attributionUtmFirst);
   }
 
   setToken(token: string | null): void {
     const tokenChanged = token !== this.shopperToken;
     this.shopperToken = token;
-    if (token) this.write(this.tokenStorageKey, token);
-    else this.remove(this.tokenStorageKey);
+    if (token) this.write(this.keys.shopperToken, token);
+    else this.remove(this.keys.shopperToken);
 
     if (!token || tokenChanged) {
-      this.remove(this.shopperIdStorageKey);
+      this.mintedHere = false;
+      this.remove(this.keys.shopperId);
       this.options.clearAnalyticsShopperId();
     }
   }
 
   install(session: ShopperSession): void {
     this.setToken(session.shopper_token);
-    this.write(this.shopperIdStorageKey, session.shopper_id);
+    this.write(this.keys.shopperId, session.shopper_id);
     this.options.setAnalyticsShopperId(session.shopper_id);
     this.mintedHere = true;
   }
@@ -120,23 +101,6 @@ export class ShopperSessionStore {
     return this.acquire(issue);
   }
 
-  /** Returns this journey's UTM once per tab for a returning shopper. */
-  takeLastSeenUtm(): CheckoutUtm | undefined {
-    if (!this.shopperToken || this.mintedHere) return undefined;
-    const utm = this.lastTouchUtm();
-    if (!utm) return undefined;
-
-    const sessionStorage = resolveSessionStorage();
-    const throttleKey = `${this.tokenStorageKey}.last_seen_synced`;
-    try {
-      if (sessionStorage?.getItem(throttleKey)) return undefined;
-      sessionStorage?.setItem(throttleKey, "1");
-    } catch {
-      // Refresh remains safe when browser storage cannot throttle it.
-    }
-    return utm;
-  }
-
   private read(key: string): string | null {
     try {
       return this.storage?.getItem(key) ?? null;
@@ -163,19 +127,12 @@ export class ShopperSessionStore {
 }
 
 function resolveStorage(
-  explicit: StorefrontStorage | null | undefined,
-): StorefrontStorage | null {
+  explicit: BrowserStorage | null | undefined,
+): BrowserStorage | null {
   if (explicit !== undefined) return explicit;
+  if (typeof globalThis.window === "undefined") return null;
   try {
     return globalThis.localStorage ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function resolveSessionStorage(): Pick<Storage, "getItem" | "setItem"> | null {
-  try {
-    return globalThis.sessionStorage ?? null;
   } catch {
     return null;
   }
