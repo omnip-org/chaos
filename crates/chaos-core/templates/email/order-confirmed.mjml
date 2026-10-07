@@ -1,45 +1,68 @@
 {% extends "base.mjml" %}
 {% block title %}{{ brand.name }} · Order {{ order_number }} confirmed{% endblock %}
-{% block preheader %}Your payment for order {{ order_number }} was received.{% endblock %}
+{% block preheader %}Thank you for your order. Payment received for {{ order_number }}.{% endblock %}
 {% block content %}
-<mj-section background-color="{{ brand.surface_color }}" padding="8px 24px 24px">
+<mj-section background-color="{{ brand.surface_color }}" padding="38px 40px 30px" css-class="letter-pad">
   <mj-column>
-    <mj-text color="{{ brand.muted_text_color }}" font-size="12px" font-weight="600" padding="0 0 4px">Order {{ order_number }}</mj-text>
-    <mj-text color="{{ brand.text_color }}" font-size="22px" font-weight="700" line-height="29px" padding="0 0 12px">Your order is confirmed</mj-text>
-    <mj-text padding="0">We've received your payment and are getting it ready.</mj-text>
+    <mj-text color="{{ brand.text_color }}" font-size="26px" font-weight="600" letter-spacing="-0.3px" line-height="35px" padding="0 0 13px">{% if recipient_name %}Thank you, {{ recipient_name }}{% else %}Thank you for your order{% endif %}</mj-text>
+    <mj-text color="{{ brand.muted_text_color }}" line-height="25px">
+      Your order is confirmed, and we’ve received your payment.
+    </mj-text>
   </mj-column>
 </mj-section>
 
-<mj-section background-color="{{ brand.surface_color }}" padding="0 24px 24px">
+<mj-section background-color="{{ brand.surface_color }}" padding="0 40px 34px" css-class="letter-pad">
+  <mj-column border-top="1px solid {{ brand.accent_color }}" border-bottom="1px solid {{ brand.accent_color }}" padding="13px 0">
+    <mj-table padding="0">
+      <tr>
+        <td style="padding:0;color:{{ brand.muted_text_color }};font-size:12px;font-weight:600;line-height:18px">Order number</td>
+        <td align="right" style="padding:0;color:{{ brand.primary_color }};font-size:12px;font-weight:600;line-height:18px">Confirmed</td>
+      </tr>
+      <tr>
+        <td colspan="2" style="padding:2px 0 0;color:{{ brand.text_color }};font-size:14px;font-weight:600;line-height:21px">{{ order_number }}</td>
+      </tr>
+    </mj-table>
+  </mj-column>
+</mj-section>
+
+<mj-section background-color="{{ brand.surface_color }}" padding="0 40px 34px" css-class="letter-pad">
+  <mj-column>
+    <mj-text mj-class="section-title" padding="0 0 7px">What happens next</mj-text>
+    <mj-text color="{{ brand.muted_text_color }}" font-size="14px" line-height="24px">
+      We’re preparing your items now. We’ll email you with delivery details when your order ships. You can check the latest status at any time from your order page.
+    </mj-text>
+  </mj-column>
+</mj-section>
+
+<mj-section background-color="{{ brand.surface_color }}" padding="0 40px 8px" css-class="letter-pad">
+  <mj-column>
+    <mj-text mj-class="section-title">Order details</mj-text>
+  </mj-column>
+</mj-section>
+
+<mj-section background-color="{{ brand.surface_color }}" padding="0 40px 32px" css-class="letter-pad">
   <mj-column>
     <mj-table padding="0">
-      <thead>
-        <tr>
-          <th colspan="2" align="left" style="padding:0 0 8px;border-bottom:1px solid {{ brand.accent_color }};font-size:12px;color:{{ brand.muted_text_color }};font-weight:600">Item</th>
-          <th align="center" style="padding:0 8px 8px;border-bottom:1px solid {{ brand.accent_color }};font-size:12px;color:{{ brand.muted_text_color }};font-weight:600">Qty</th>
-          <th align="right" style="padding:0 0 8px;border-bottom:1px solid {{ brand.accent_color }};font-size:12px;color:{{ brand.muted_text_color }};font-weight:600">Amount</th>
-        </tr>
-      </thead>
       <tbody>
         {% for item in line_items %}
         <tr>
-          <td width="44" style="padding:12px 12px 12px 0;border-bottom:1px solid {{ brand.accent_color }};vertical-align:top">
+          <td width="60" style="width:60px;padding:15px 12px 15px 0;border-bottom:1px solid {{ brand.accent_color }};vertical-align:top">
             {% if item.image_url %}
-            <img src="{{ item.image_url }}" alt="" width="44" height="44" style="display:block;width:44px;height:44px;border:0;border-radius:6px;object-fit:cover" />
+            <img src="{{ item.image_url }}" alt="" width="48" height="48" style="display:block;width:48px;height:48px;border:0;border-radius:3px;object-fit:cover" />
             {% else %}
-            <div style="width:44px;height:44px;border-radius:6px;background:{{ brand.accent_color }}"></div>
+            <div style="width:48px;height:48px;background:{{ brand.background_color }};color:{{ brand.muted_text_color }};font-size:17px;line-height:48px;text-align:center">◇</div>
             {% endif %}
           </td>
-          <td style="padding:12px 0;border-bottom:1px solid {{ brand.accent_color }};font-size:14px;color:{{ brand.text_color }};vertical-align:top">
-            <div style="margin:0 0 4px;font-weight:600;line-height:19px">{{ item.product_title }}</div>
-            <div style="color:{{ brand.muted_text_color }};font-size:12px;line-height:18px">{{ item.variant_title }}{% if item.sku %} · {{ item.sku }}{% endif %}</div>
+          <td style="padding:15px 8px 15px 0;border-bottom:1px solid {{ brand.accent_color }};vertical-align:top">
+            <div style="margin:0 0 3px;color:{{ brand.text_color }};font-size:14px;font-weight:700;line-height:21px">{{ item.product_title }}</div>
+            <div style="color:{{ brand.muted_text_color }};font-size:12px;line-height:20px">{{ item.variant_title }} · Qty {{ item.quantity }}</div>
+            {% if item.sku %}<div class="mobile-hide" style="color:{{ brand.muted_text_color }};font-size:11px;line-height:18px">SKU {{ item.sku }}</div>{% endif %}
           </td>
-          <td align="center" style="padding:12px 8px;border-bottom:1px solid {{ brand.accent_color }};font-size:14px;color:{{ brand.text_color }};vertical-align:top">{{ item.quantity }}</td>
-          <td align="right" style="padding:12px 0;border-bottom:1px solid {{ brand.accent_color }};font-size:14px;color:{{ brand.text_color }};white-space:nowrap;vertical-align:top">{{ item.subtotal_amount }} {{ currency }}</td>
+          <td width="88" align="right" style="width:88px;padding:15px 0;border-bottom:1px solid {{ brand.accent_color }};color:{{ brand.text_color }};font-size:13px;font-weight:700;line-height:21px;white-space:nowrap;vertical-align:top">{{ item.subtotal_amount }} {{ currency }}</td>
         </tr>
         {% else %}
         <tr>
-          <td colspan="4" style="padding:12px 0;color:{{ brand.muted_text_color }};font-size:14px">No item details available.</td>
+          <td style="padding:14px 0;color:{{ brand.muted_text_color }};font-size:14px;line-height:22px"><strong style="color:{{ brand.text_color }}">No item details available.</strong><br />The complete order is available through the link below.</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -48,11 +71,10 @@
 </mj-section>
 
 {% if shipping_address %}
-<mj-section background-color="{{ brand.surface_color }}" padding="0 24px 24px">
+<mj-section background-color="{{ brand.surface_color }}" padding="0 40px 32px" css-class="letter-pad">
   <mj-column>
-    <mj-divider border-width="1px" border-color="{{ brand.accent_color }}" padding="0 0 16px" />
-    <mj-text color="{{ brand.muted_text_color }}" font-size="12px" font-weight="600" padding="0 0 4px">Shipping address</mj-text>
-    <mj-text padding="0">
+    <mj-text mj-class="section-title" padding="0 0 8px">Shipping address</mj-text>
+    <mj-text font-size="14px" line-height="23px">
       <strong>{{ shipping_address.full_name }}</strong><br />
       {% for line in shipping_address.lines %}{{ line }}{% if not loop.last %}<br />{% endif %}{% endfor %}
     </mj-text>
@@ -60,30 +82,31 @@
 </mj-section>
 {% endif %}
 
-<mj-section background-color="{{ brand.surface_color }}" padding="0 24px 24px">
+<mj-section background-color="{{ brand.surface_color }}" padding="0 40px 34px" css-class="letter-pad">
   <mj-column>
+    <mj-text mj-class="section-title" padding="0 0 8px">Payment summary</mj-text>
     <mj-table padding="0">
       <tr>
-        <td style="padding:8px 0;color:{{ brand.muted_text_color }};font-size:14px">Subtotal</td>
-        <td align="right" style="padding:8px 0;color:{{ brand.text_color }};font-size:14px">{{ subtotal_amount }} {{ currency }}</td>
+        <td style="padding:6px 0;color:{{ brand.muted_text_color }};font-size:13px;line-height:21px">Subtotal</td>
+        <td align="right" style="padding:6px 0;color:{{ brand.text_color }};font-size:13px;line-height:21px">{{ subtotal_amount }} {{ currency }}</td>
       </tr>
       {% if discount_amount %}
       <tr>
-        <td style="padding:8px 0;color:{{ brand.muted_text_color }};font-size:14px">Discount</td>
-        <td align="right" style="padding:8px 0;color:{{ brand.text_color }};font-size:14px">-{{ discount_amount }} {{ currency }}</td>
+        <td style="padding:6px 0;color:{{ brand.muted_text_color }};font-size:13px;line-height:21px">Discount</td>
+        <td align="right" style="padding:6px 0;color:{{ brand.primary_color }};font-size:13px;line-height:21px">−{{ discount_amount }} {{ currency }}</td>
       </tr>
       {% endif %}
       <tr>
-        <td style="padding:8px 0;color:{{ brand.muted_text_color }};font-size:14px">Shipping</td>
-        <td align="right" style="padding:8px 0;color:{{ brand.text_color }};font-size:14px">{{ shipping_amount }} {{ currency }}</td>
+        <td style="padding:6px 0;color:{{ brand.muted_text_color }};font-size:13px;line-height:21px">Shipping</td>
+        <td align="right" style="padding:6px 0;color:{{ brand.text_color }};font-size:13px;line-height:21px">{{ shipping_amount }} {{ currency }}</td>
       </tr>
       <tr>
-        <td style="padding:8px 0;color:{{ brand.muted_text_color }};font-size:14px">Tax</td>
-        <td align="right" style="padding:8px 0;color:{{ brand.text_color }};font-size:14px">{{ tax_amount }} {{ currency }}</td>
+        <td style="padding:6px 0 13px;color:{{ brand.muted_text_color }};font-size:13px;line-height:21px">Tax</td>
+        <td align="right" style="padding:6px 0 13px;color:{{ brand.text_color }};font-size:13px;line-height:21px">{{ tax_amount }} {{ currency }}</td>
       </tr>
       <tr>
-        <td style="padding:12px 0 0;border-top:1px solid {{ brand.accent_color }};color:{{ brand.text_color }};font-size:14px;font-weight:700">Total</td>
-        <td align="right" style="padding:12px 0 0;border-top:1px solid {{ brand.accent_color }};color:{{ brand.text_color }};font-size:14px;font-weight:700">{{ total_amount }} {{ currency }}</td>
+        <td style="padding:12px 0 0;border-top:1px solid {{ brand.text_color }};color:{{ brand.text_color }};font-size:16px;font-weight:600;line-height:24px">Total paid</td>
+        <td align="right" style="padding:12px 0 0;border-top:1px solid {{ brand.text_color }};color:{{ brand.text_color }};font-size:17px;font-weight:700;line-height:24px;white-space:nowrap">{{ total_amount }} {{ currency }}</td>
       </tr>
     </mj-table>
   </mj-column>

@@ -1,1 +1,1 @@
-{{ brand.name }} · Order {{ order_number }} confirmed
+Order confirmed — {{ order_number }}

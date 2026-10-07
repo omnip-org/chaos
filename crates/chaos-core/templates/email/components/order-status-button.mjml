@@ -1,5 +1,5 @@
-<mj-section background-color="{{ brand.surface_color }}" padding="0 24px 24px">
+<mj-section background-color="{{ brand.surface_color }}" padding="8px 40px 36px" css-class="letter-pad">
   <mj-column>
-    <mj-button href="{{ lookup_url }}" padding="0" align="center">Order Status</mj-button>
+    <mj-button href="{{ lookup_url }}" padding="0" align="left">View order</mj-button>
   </mj-column>
 </mj-section>

@@ -260,6 +260,8 @@ impl PostgresEmailRepository {
             .map_err(database_error)?;
         let row = sqlx::query_as::<_, EmailOrderConfirmationRow>(
             "SELECT order_row.contact_email::text AS contact_email, \
+                    COALESCE(NULLIF(BTRIM(order_row.shipping_full_name), ''), \
+                             NULLIF(BTRIM(order_row.billing_full_name), '')) AS recipient_name, \
                     order_row.order_number AS order_number, \
                     order_row.subtotal_amount_minor AS subtotal_amount_minor, \
                     order_row.discount_amount_minor AS discount_amount_minor, \
@@ -299,6 +301,7 @@ impl PostgresEmailRepository {
         .ok_or_else(email_provider_unavailable)?;
         let EmailOrderConfirmationRow {
             contact_email,
+            recipient_name,
             order_number,
             subtotal_amount_minor,
             discount_amount_minor,
@@ -363,6 +366,7 @@ impl PostgresEmailRepository {
             reply_to: configuration.reply_to_email,
             idempotency_key: format!("order-confirmed-{}", order_id.simple()),
             data: OrderConfirmationEmailData {
+                recipient_name,
                 order_number,
                 subtotal_amount_minor,
                 discount_amount_minor,
@@ -399,6 +403,8 @@ impl PostgresEmailRepository {
             .map_err(database_error)?;
         let row = sqlx::query_as::<_, EmailFulfillmentUpdateRow>(
             "SELECT order_row.contact_email::text AS contact_email, \
+                    COALESCE(NULLIF(BTRIM(order_row.shipping_full_name), ''), \
+                             NULLIF(BTRIM(order_row.billing_full_name), '')) AS recipient_name, \
                     order_row.order_number AS order_number, \
                     channel.origin AS origin, \
                     account.provider AS provider, \
@@ -425,6 +431,7 @@ impl PostgresEmailRepository {
         .ok_or_else(email_provider_unavailable)?;
         let EmailFulfillmentUpdateRow {
             contact_email,
+            recipient_name,
             order_number,
             origin,
             provider,
@@ -456,6 +463,7 @@ impl PostgresEmailRepository {
             reply_to: configuration.reply_to_email,
             idempotency_key: format!("{idempotency_prefix}-{}", fulfillment_id.simple()),
             data: FulfillmentEmailData {
+                recipient_name,
                 order_number,
                 status,
                 tracking_number: tracking_number.map(str::to_owned),
@@ -482,6 +490,7 @@ type EmailProviderAccountRow = (
 #[derive(sqlx::FromRow)]
 struct EmailOrderConfirmationRow {
     contact_email: Option<String>,
+    recipient_name: Option<String>,
     order_number: String,
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
@@ -505,6 +514,7 @@ struct EmailOrderConfirmationRow {
 #[derive(sqlx::FromRow)]
 struct EmailFulfillmentUpdateRow {
     contact_email: Option<String>,
+    recipient_name: Option<String>,
     order_number: String,
     origin: String,
     provider: String,

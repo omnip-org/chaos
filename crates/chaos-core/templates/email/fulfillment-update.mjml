@@ -1,31 +1,63 @@
 {% extends "base.mjml" %}
 {% if status == "delivered" %}
-  {% set label = "Delivery update" %}
-  {% set headline = "Your order has arrived" %}
-  {% set body = "Order " ~ order_number ~ " has been delivered. We hope you enjoy it." %}
+  {% set state = "Delivered" %}
+  {% set headline = "Your order was delivered" %}
+  {% set body = "Order " ~ order_number ~ " was delivered. Thank you for shopping with us." %}
 {% else %}
-  {% set label = "Shipping update" %}
-  {% set headline = "Your order is on its way" %}
-  {% set body = "Order " ~ order_number ~ " has shipped and is on its way to you." %}
+  {% set state = "Shipped" %}
+  {% set headline = "Your order is on the way" %}
+  {% set body = "Order " ~ order_number ~ " has shipped." %}
 {% endif %}
 {% block title %}{{ brand.name }} · {{ headline }}{% endblock %}
 {% block preheader %}{{ body }}{% endblock %}
 {% block content %}
-<mj-section background-color="{{ brand.surface_color }}" padding="8px 24px 24px">
+<mj-section background-color="{{ brand.surface_color }}" padding="38px 40px 30px" css-class="letter-pad">
   <mj-column>
-    <mj-text color="{{ brand.muted_text_color }}" font-size="12px" font-weight="600" padding="0 0 4px">{{ label }}</mj-text>
-    <mj-text color="{{ brand.text_color }}" font-size="22px" font-weight="700" line-height="29px" padding="0 0 12px">{{ headline }}</mj-text>
-    <mj-text padding="0">{{ body }}</mj-text>
+    <mj-text color="{{ brand.text_color }}" font-size="26px" font-weight="600" letter-spacing="-0.3px" line-height="35px" padding="0 0 13px">{{ headline }}</mj-text>
+    <mj-text color="{{ brand.muted_text_color }}" line-height="25px">{% if recipient_name %}Hi {{ recipient_name }},<br />{% endif %}{{ body }}</mj-text>
+  </mj-column>
+</mj-section>
+
+<mj-section background-color="{{ brand.surface_color }}" padding="0 40px 34px" css-class="letter-pad">
+  <mj-column border-top="1px solid {{ brand.accent_color }}" border-bottom="1px solid {{ brand.accent_color }}" padding="13px 0">
+    <mj-table padding="0">
+      <tr>
+        <td style="padding:0;color:{{ brand.muted_text_color }};font-size:12px;font-weight:600;line-height:18px">Order number</td>
+        <td align="right" style="padding:0;color:{{ brand.muted_text_color }};font-size:12px;font-weight:600;line-height:18px">Status</td>
+      </tr>
+      <tr>
+        <td style="padding:2px 0 0;color:{{ brand.text_color }};font-size:14px;font-weight:600;line-height:21px">{{ order_number }}</td>
+        <td align="right" style="padding:2px 0 0;color:{{ brand.primary_color }};font-size:14px;font-weight:700;line-height:21px">{{ state }}</td>
+      </tr>
+    </mj-table>
   </mj-column>
 </mj-section>
 
 {% if tracking_number %}
-<mj-section background-color="{{ brand.surface_color }}" padding="0 24px 24px">
+<mj-section background-color="{{ brand.surface_color }}" padding="0 40px 32px" css-class="letter-pad">
   <mj-column>
-    <mj-divider border-width="1px" border-color="{{ brand.accent_color }}" padding="0 0 16px" />
-    <mj-text color="{{ brand.muted_text_color }}" font-size="12px" font-weight="600" padding="0 0 4px">Tracking</mj-text>
-    <mj-text padding="0">
-      {% if tracking_url %}<a href="{{ tracking_url }}" style="color:{{ brand.primary_color }};font-weight:600;text-decoration:underline">{{ tracking_number }}</a>{% else %}<strong>{{ tracking_number }}</strong>{% endif %}
+    <mj-text mj-class="section-title" padding="0 0 7px">Tracking</mj-text>
+    <mj-text font-size="16px" font-weight="700" line-height="23px">
+      {% if tracking_url %}<a href="{{ tracking_url }}" style="color:{{ brand.primary_color }};text-decoration:underline;text-underline-offset:3px">{{ tracking_number }}</a>{% else %}{{ tracking_number }}{% endif %}
+    </mj-text>
+    <mj-text color="{{ brand.muted_text_color }}" font-size="12px" line-height="19px" padding="7px 0 0">Tracking updates may take a few minutes to appear.</mj-text>
+  </mj-column>
+</mj-section>
+{% elif status == "shipped" %}
+<mj-section background-color="{{ brand.surface_color }}" padding="0 40px 32px" css-class="letter-pad">
+  <mj-column>
+    <mj-text mj-class="section-title" padding="0 0 7px">Delivery updates</mj-text>
+    <mj-text color="{{ brand.muted_text_color }}" font-size="14px" line-height="24px">
+      Tracking details aren’t available for this shipment. You can use the button below to check the latest order status.
+    </mj-text>
+  </mj-column>
+</mj-section>
+{% else %}
+<mj-section background-color="{{ brand.surface_color }}" padding="0 40px 32px" css-class="letter-pad">
+  <mj-column>
+    <mj-text mj-class="section-title" padding="0 0 7px">Can’t find your order?</mj-text>
+    <mj-text color="{{ brand.muted_text_color }}" font-size="14px" line-height="24px">
+      Check around the delivery location or ask someone at the address. If you still need help, reply to this email.
     </mj-text>
   </mj-column>
 </mj-section>

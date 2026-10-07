@@ -1,16 +1,24 @@
 {{ brand.name }}
 
-{% if status == "delivered" %}Your order has arrived
+{% if status == "delivered" %}Your order was delivered
 
-Order {{ order_number }} has been delivered. We hope you enjoy it.
+{% if recipient_name %}Hi {{ recipient_name }},
+
+{% endif %}
+Order {{ order_number }} has been delivered. Thank you for shopping with us.
+If you can't find your order, check around the delivery location or ask someone at the address. Reply to this email if you still need help.
 {% else %}Your order is on its way
 
+{% if recipient_name %}Hi {{ recipient_name }},
+
+{% endif %}
 Order {{ order_number }} has shipped and is on its way to you.
 {% if tracking_number %}
 Tracking number: {{ tracking_number }}
 {% if tracking_url %}Track your shipment: {{ tracking_url }}
-{% endif %}{% endif %}{% endif %}
-View your order: {{ lookup_url }}
+{% endif %}{% else %}Tracking details aren't available for this shipment. Check your order page for the latest status.
+{% endif %}{% endif %}
+View order: {{ lookup_url }}
 
 Need help? Just reply to this email.
 

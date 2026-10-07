@@ -1,1 +1,1 @@
-{{ brand.name }} · Order {{ order_number }} {{ status }}
+{% if status == "delivered" %}Your order was delivered — {{ order_number }}{% else %}Your order has shipped — {{ order_number }}{% endif %}

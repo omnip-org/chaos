@@ -90,6 +90,7 @@ pub struct EmailOrderLineItem {
 /// presentation-ready business values and no provider credentials.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrderConfirmationEmailData {
+    pub recipient_name: Option<String>,
     pub order_number: String,
     pub subtotal_amount_minor: i64,
     pub discount_amount_minor: i64,
@@ -121,6 +122,7 @@ impl FulfillmentEmailStatus {
 /// Template input for a shipped or delivered notification.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FulfillmentEmailData {
+    pub recipient_name: Option<String>,
     pub order_number: String,
     pub status: FulfillmentEmailStatus,
     pub tracking_number: Option<String>,

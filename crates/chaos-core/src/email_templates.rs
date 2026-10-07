@@ -213,6 +213,7 @@ impl EmailTemplateRenderer {
             message: error.to_string(),
         })?;
         let mut order = OrderConfirmationEmailData {
+            recipient_name: Some("Preview Buyer".into()),
             order_number: "PREVIEW-1".into(),
             subtotal_amount_minor: 1_000,
             discount_amount_minor: 100,
@@ -241,9 +242,11 @@ impl EmailTemplateRenderer {
         order.discount_amount_minor = 0;
         order.line_items.clear();
         order.shipping_address = None;
+        order.recipient_name = None;
         self.render_order_confirmation(&order)?;
 
         let mut fulfillment = FulfillmentEmailData {
+            recipient_name: Some("Preview Buyer".into()),
             order_number: "PREVIEW-1".into(),
             status: FulfillmentEmailStatus::Shipped,
             tracking_number: Some("TRACK-1".into()),
@@ -252,6 +255,7 @@ impl EmailTemplateRenderer {
             brand: EmailBrandConfiguration::defaults("Preview Store".into()),
         };
         self.render_fulfillment_update(&fulfillment)?;
+        fulfillment.recipient_name = None;
         fulfillment.tracking_number = None;
         fulfillment.tracking_url = None;
         self.render_fulfillment_update(&fulfillment)?;
@@ -327,6 +331,7 @@ struct ShippingAddressView<'a> {
 #[derive(Serialize)]
 struct OrderConfirmationView<'a> {
     brand: BrandView<'a>,
+    recipient_name: Option<&'a str>,
     order_number: &'a str,
     subtotal_amount: String,
     discount_amount: Option<String>,
@@ -343,6 +348,7 @@ impl<'a> From<&'a OrderConfirmationEmailData> for OrderConfirmationView<'a> {
     fn from(data: &'a OrderConfirmationEmailData) -> Self {
         Self {
             brand: BrandView::from(&data.brand),
+            recipient_name: data.recipient_name.as_deref(),
             order_number: &data.order_number,
             subtotal_amount: format_money(data.subtotal_amount_minor, &data.currency),
             discount_amount: (data.discount_amount_minor > 0)
@@ -383,6 +389,7 @@ impl<'a> From<&'a OrderConfirmationEmailData> for OrderConfirmationView<'a> {
 #[derive(Serialize)]
 struct FulfillmentUpdateView<'a> {
     brand: BrandView<'a>,
+    recipient_name: Option<&'a str>,
     order_number: &'a str,
     status: &'static str,
     tracking_number: Option<&'a str>,
@@ -401,6 +408,7 @@ impl<'a> From<&'a FulfillmentEmailData> for FulfillmentUpdateView<'a> {
         };
         Self {
             brand: BrandView::from(&data.brand),
+            recipient_name: data.recipient_name.as_deref(),
             order_number: &data.order_number,
             status: data.status.as_str(),
             tracking_number,
@@ -463,6 +471,7 @@ mod tests {
         let rendered = EmailTemplateRenderer::embedded()
             .unwrap()
             .render_fulfillment_update(&FulfillmentEmailData {
+                recipient_name: Some("A <Buyer>".into()),
                 order_number: "ORD-<7>".into(),
                 status: FulfillmentEmailStatus::Shipped,
                 tracking_number: Some("1Z<99>".into()),
@@ -472,7 +481,7 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(rendered.subject, "A <Store> · Order ORD-<7> shipped");
+        assert_eq!(rendered.subject, "Your order has shipped — ORD-<7>");
         assert!(rendered.text.contains("on its way to you."));
         assert!(rendered.text.contains("Tracking number: 1Z<99>"));
         assert!(
@@ -481,6 +490,7 @@ mod tests {
                 .contains("Track your shipment: https://track.example/pkg?id=1&x=2")
         );
         assert!(rendered.html.contains("ORD-&lt;7&gt;"));
+        assert!(rendered.html.contains("Hi A &lt;Buyer&gt;"));
         assert!(rendered.html.contains("1Z&lt;99&gt;"));
         assert!(
             rendered
@@ -496,6 +506,7 @@ mod tests {
         let rendered = EmailTemplateRenderer::embedded()
             .unwrap()
             .render_fulfillment_update(&FulfillmentEmailData {
+                recipient_name: None,
                 order_number: "ORD-8".into(),
                 status: FulfillmentEmailStatus::Delivered,
                 tracking_number: Some("SHOULD-NOT-APPEAR".into()),
@@ -505,7 +516,7 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(rendered.subject, "Example Store · Order ORD-8 delivered");
+        assert_eq!(rendered.subject, "Your order was delivered — ORD-8");
         assert!(rendered.text.contains("has been delivered"));
         assert!(!rendered.text.contains("Tracking"));
         assert!(!rendered.text.contains("SHOULD-NOT-APPEAR"));
@@ -528,6 +539,7 @@ mod tests {
         let rendered = EmailTemplateRenderer::embedded()
             .unwrap()
             .render_order_confirmation(&OrderConfirmationEmailData {
+                recipient_name: Some("Buyer & Co.".into()),
                 order_number: "ORD-<42>".into(),
                 subtotal_amount_minor: 1300,
                 discount_amount_minor: 100,
@@ -554,7 +566,7 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(rendered.subject, "A <Store> · Order ORD-<42> confirmed");
+        assert_eq!(rendered.subject, "Order confirmed — ORD-<42>");
         assert!(rendered.text.contains("T-shirt <classic> / Blue / M"));
         assert!(rendered.text.contains("Subtotal: 13.00 USD"));
         assert!(rendered.text.contains("Discount: -1.00 USD"));
@@ -589,6 +601,7 @@ mod tests {
     fn renders_optional_order_sections_and_currency_exponents() {
         let renderer = EmailTemplateRenderer::embedded().unwrap();
         let mut data = OrderConfirmationEmailData {
+            recipient_name: None,
             order_number: "ORD-43".into(),
             subtotal_amount_minor: 1234,
             discount_amount_minor: 0,

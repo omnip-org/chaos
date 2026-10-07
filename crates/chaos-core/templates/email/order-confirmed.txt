@@ -1,6 +1,13 @@
 {{ brand.name }}
 
-Your order {{ order_number }} has been confirmed.
+{% if recipient_name %}Thank you, {{ recipient_name }}.
+{% else %}Thank you for your order.
+{% endif %}
+
+Your order {{ order_number }} has been confirmed, and we're preparing it now.
+
+What happens next:
+We'll email you with delivery details when your order ships. You can check the latest status at any time from your order page.
 
 Items:
 {% for item in line_items %}- {{ item.product_title }} / {{ item.variant_title }}{% if item.sku %}, SKU {{ item.sku }}{% endif %} × {{ item.quantity }} — {{ item.subtotal_amount }} {{ currency }}
@@ -18,9 +25,8 @@ Subtotal: {{ subtotal_amount }} {{ currency }}
 Tax: {{ tax_amount }} {{ currency }}
 Total: {{ total_amount }} {{ currency }}
 
-View your order: {{ lookup_url }}
+View order: {{ lookup_url }}
 
 Need help? Just reply to this email.
 
-Thank you for your order.
 {{ brand.name }}
