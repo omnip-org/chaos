@@ -125,7 +125,6 @@ export class PaymentsResource {
       },
     );
     const checkout = requireEmbeddedCheckoutSession(response);
-    this.client.rememberCheckoutOrder(checkout.data.order_id);
     return checkout;
   }
 }

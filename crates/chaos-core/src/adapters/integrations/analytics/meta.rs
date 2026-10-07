@@ -240,7 +240,7 @@ fn purchase_custom_data(command: &AnalyticsDeliveryCommand) -> Value {
     if let Some(currency) = command.properties.get("currency").and_then(Value::as_str) {
         object.insert("currency".into(), json!(currency.to_ascii_uppercase()));
     }
-    let (contents, content_ids) = meta_contents(
+    let (contents, content_ids, num_items) = meta_contents(
         command.properties.get("items"),
         command.properties.get("currency").and_then(Value::as_str),
     );
@@ -248,6 +248,7 @@ fn purchase_custom_data(command: &AnalyticsDeliveryCommand) -> Value {
         object.insert("contents".into(), contents);
         object.insert("content_ids".into(), json!(content_ids));
         object.insert("content_type".into(), json!("product"));
+        object.insert("num_items".into(), json!(num_items));
     }
     Value::Object(object)
 }
@@ -286,16 +287,21 @@ fn hashed_context_value(properties: &Value, key: &str) -> Vec<String> {
         .collect()
 }
 
-fn meta_contents(items: Option<&Value>, currency: Option<&str>) -> (Option<Value>, Vec<String>) {
+fn meta_contents(
+    items: Option<&Value>,
+    currency: Option<&str>,
+) -> (Option<Value>, Vec<String>, i64) {
     let mut contents = Vec::new();
+    let mut num_items = 0_i64;
     if let Some(items) = items.and_then(Value::as_array) {
         for item in items {
             let Some(item) = item.as_object() else {
                 continue;
             };
             let Some(id) = item
-                .get("product_variant_id")
-                .or_else(|| item.get("product_id"))
+                .get("product_id")
+                // Retain compatibility with already-stored legacy events.
+                .or_else(|| item.get("product_variant_id"))
                 .and_then(Value::as_str)
                 .filter(|id| !id.trim().is_empty())
             else {
@@ -306,6 +312,7 @@ fn meta_contents(items: Option<&Value>, currency: Option<&str>) -> (Option<Value
                 .and_then(Value::as_i64)
                 .filter(|quantity| *quantity > 0)
                 .unwrap_or(1);
+            num_items = num_items.saturating_add(item_quantity);
             let item_price = item
                 .get("price_minor")
                 .and_then(Value::as_i64)
@@ -319,14 +326,19 @@ fn meta_contents(items: Option<&Value>, currency: Option<&str>) -> (Option<Value
             contents.push(Value::Object(content));
         }
     }
-    let content_ids = contents
+    let mut content_ids = Vec::new();
+    for id in contents
         .iter()
-        .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_owned))
-        .collect::<Vec<_>>();
+        .filter_map(|item| item.get("id").and_then(Value::as_str))
+    {
+        if !content_ids.iter().any(|existing| existing == id) {
+            content_ids.push(id.to_owned());
+        }
+    }
     if contents.is_empty() {
-        (None, content_ids)
+        (None, content_ids, 0)
     } else {
-        (Some(Value::Array(contents)), content_ids)
+        (Some(Value::Array(contents)), content_ids, num_items)
     }
 }
 
@@ -511,16 +523,17 @@ mod tests {
         assert_eq!(payload["data"][0]["custom_data"]["currency"], json!("USD"));
         assert_eq!(
             payload["data"][0]["custom_data"]["contents"],
-            json!([{"id": "variant-1", "quantity": 2, "item_price": 6.49}])
+            json!([{"id": "product-1", "quantity": 2, "item_price": 6.49}])
         );
         assert_eq!(
             payload["data"][0]["custom_data"]["content_ids"],
-            json!(["variant-1"])
+            json!(["product-1"])
         );
         assert_eq!(
             payload["data"][0]["custom_data"]["content_type"],
             json!("product")
         );
+        assert_eq!(payload["data"][0]["custom_data"]["num_items"], json!(2));
         assert!(payload["data"][0]["custom_data"].get("_source").is_none());
         assert!(payload["data"][0]["custom_data"].get("_meta").is_none());
     }

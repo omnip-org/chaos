@@ -3,27 +3,10 @@ import test from "node:test";
 import { createHash } from "node:crypto";
 
 import { ChaosStorefrontAnalytics } from "../events/browser.js";
-
-class FakeTarget {
-  private readonly listeners = new Map<string, Set<() => void>>();
-
-  addEventListener(name: string, listener: () => void): void {
-    const listeners = this.listeners.get(name) ?? new Set();
-    listeners.add(listener);
-    this.listeners.set(name, listeners);
-  }
-
-  removeEventListener(name: string, listener: () => void): void {
-    this.listeners.get(name)?.delete(listener);
-  }
-}
+import type { EmbeddedCheckoutCreation } from "../types.js";
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
-
-  get length(): number {
-    return this.values.size;
-  }
 
   getItem(key: string): string | null {
     return this.values.get(key) ?? null;
@@ -33,68 +16,39 @@ class MemoryStorage {
     this.values.set(key, value);
   }
 
-  removeItem(key: string): void {
-    this.values.delete(key);
-  }
-
-  key(index: number): string | null {
-    return [...this.values.keys()][index] ?? null;
-  }
 }
 
 function harness(
   options: {
-    autoStart?: boolean;
-    localStorage?: MemoryStorage;
     sessionStorage?: MemoryStorage;
     search?: string;
-    referrer?: string;
     cookie?: string;
-    href?: string;
-    userAgent?: string;
     providers?: {
       metaPixel?: { pixelId: string };
       ga4?: { measurementId: string };
     };
   } = {},
 ) {
-  let time = Date.parse("2026-08-16T00:00:00Z");
+  const time = Date.parse("2026-08-16T00:00:00Z");
   let sequence = 0;
   const scripts: Array<{ id: string; src: string; async: boolean }> = [];
-  const document = Object.assign(new FakeTarget(), {
+  const location = {
+    search: options.search ?? "?fbclid=fb-secret&gclid=g-secret",
+    protocol: "https:",
+  };
+  const document = {
     cookie: options.cookie ?? "",
-    visibilityState: "visible",
-    title: "Catalog",
-    referrer: options.referrer ?? "https://search.example/results?q=private",
-    location: {
-      href: options.href ?? "https://shop.example/products",
-      pathname: "/products",
-      search: options.search ?? "?fbclid=fb-secret&gclid=g-secret",
-    },
+    location,
     getElementById: (id: string) => scripts.find((script) => script.id === id),
     createElement: () => ({ id: "", src: "", async: false }),
     head: {
       appendChild: (script: { id: string; src: string; async: boolean }) =>
         scripts.push(script),
     },
-  });
-  const window = Object.assign(new FakeTarget(), {
-    localStorage: options.localStorage ?? new MemoryStorage(),
+  };
+  const window = {
     sessionStorage: options.sessionStorage ?? new MemoryStorage(),
-    history: {
-      pushState: (
-        _data: unknown,
-        _unused: string,
-        _url?: string | URL | null,
-      ) => {},
-      replaceState: (
-        _data: unknown,
-        _unused: string,
-        _url?: string | URL | null,
-      ) => {},
-    },
-    navigator: { userAgent: options.userAgent ?? "ChaosTest/1.0" },
-  });
+  };
   const analytics = new ChaosStorefrontAnalytics({
     publishableKey: "public_test",
     document: document as unknown as Document,
@@ -102,7 +56,6 @@ function harness(
     now: () => time,
     randomUUID: () =>
       `00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`,
-    autoStart: options.autoStart ?? false,
     ...(options.providers ? { providers: options.providers } : {}),
   });
   return { analytics, document, window, scripts };
@@ -114,9 +67,9 @@ function ga4Calls(window: unknown): unknown[][] {
   );
 }
 
-function ga4SetCalls(window: unknown): unknown[][] {
+function ga4ConfigCalls(window: unknown): unknown[][] {
   return (window as { dataLayer: unknown[][] }).dataLayer.filter(
-    (call) => call[0] === "set",
+    (call) => call[0] === "config",
   );
 }
 
@@ -173,36 +126,6 @@ test("does not resurrect a stale fbclid without a current one", () => {
   assert.doesNotMatch(environment.document.cookie, /_fbc=/);
 });
 
-test("keeps history observation active when one of multiple analytics clients stops", () => {
-  const first = harness({
-    autoStart: false,
-    providers: { ga4: { measurementId: "G-TEST1234" } },
-  });
-  const second = new ChaosStorefrontAnalytics({
-    publishableKey: "public_test",
-    document: first.document as unknown as Document,
-    window: first.window as unknown as Window & typeof globalThis,
-    now: () => 0,
-    randomUUID: () => "00000000-0000-4000-8000-000000000099",
-    autoStart: false,
-    providers: { ga4: { measurementId: "G-TEST1234" } },
-  });
-  first.analytics.start();
-  second.start();
-
-  const pageViews = () =>
-    ga4Calls(first.window).filter((call) => call[1] === "page_view").length;
-
-  first.window.history.pushState({}, "", "/first");
-  assert.equal(pageViews(), 2);
-
-  first.analytics.stop();
-  first.window.history.pushState({}, "", "/second");
-
-  assert.equal(pageViews(), 3);
-  second.stop();
-});
-
 test("keeps one stable provider event identity", () => {
   const environment = harness({
     providers: {
@@ -210,19 +133,24 @@ test("keeps one stable provider event identity", () => {
       ga4: { measurementId: "G-TEST1234" },
     },
   });
-  const eventId = environment.analytics.viewContent({
-    productId: "00000000-0000-4000-8000-000000000200",
-    productVariantId: "00000000-0000-4000-8000-000000000100",
-    priceMinor: 1999,
-    currency: "USD",
-  });
+  const eventId = environment.analytics.viewContent(
+    "00000000-0000-4000-8000-000000000200",
+  );
   const metaTrack = fbqCalls(environment.window).find(
     (call) => call[1] === "ViewContent",
   );
   assert.deepEqual(metaTrack?.[3], { eventID: eventId });
+  const ga4 = ga4Calls(environment.window).find(
+    (call) => call[1] === "view_item",
+  );
+  assert.deepEqual((ga4?.[2] as { items: unknown[] }).items, [
+    {
+      item_id: "00000000-0000-4000-8000-000000000200",
+    },
+  ]);
 });
 
-test("recordAddToCart dedupes a repeated explicit event ID", () => {
+test("recordAddToCart forwards a repeated explicit event ID", () => {
   const environment = harness({
     providers: {
       metaPixel: { pixelId: "12345" },
@@ -234,6 +162,8 @@ test("recordAddToCart dedupes a repeated explicit event ID", () => {
     cartId: "00000000-0000-4000-8000-000000000001",
     productId: "00000000-0000-4000-8000-000000000002",
     productVariantId: "00000000-0000-4000-8000-000000000003",
+    itemName: "Running shoe",
+    itemVariant: "Blue / 42",
     quantity: 1,
     priceMinor: 1_000,
     valueMinor: 1_000,
@@ -246,44 +176,30 @@ test("recordAddToCart dedupes a repeated explicit event ID", () => {
     (call) => call[1] === "AddToCart",
   );
   assert.deepEqual(metaTrack?.[3], { eventID: explicitEventId });
+  const ga4 = ga4Calls(environment.window).find(
+    (call) => call[1] === "add_to_cart",
+  );
+  assert.deepEqual((ga4?.[2] as { items: unknown[] }).items, [
+    {
+      item_id: "00000000-0000-4000-8000-000000000002",
+      item_name: "Running shoe",
+      item_variant: "Blue / 42",
+      quantity: 1,
+      price: 10,
+    },
+  ]);
 
-  // Re-sending the same event ID is a no-op: Meta dedup relies on exactly
-  // one projection per ID.
   const secondId = environment.analytics.recordAddToCart(input, explicitEventId);
-  assert.equal(secondId, null);
+  assert.equal(secondId, explicitEventId);
   assert.equal(
     fbqCalls(environment.window).filter((call) => call[1] === "AddToCart").length,
-    1,
+    2,
   );
-});
-
-test("prunes provider_event dedup keys older than 90 days on construction", () => {
-  const localStorage = new MemoryStorage();
-  const first = harness({ localStorage });
-  const eventId = first.analytics.recordAddToCart({
-    cartId: "00000000-0000-4000-8000-000000000001",
-    productId: "00000000-0000-4000-8000-000000000002",
-    productVariantId: "00000000-0000-4000-8000-000000000003",
-    quantity: 1,
-    priceMinor: 1_000,
-    valueMinor: 1_000,
-    currency: "usd",
-  });
-  let staleKey: string | null = null;
-  for (let index = 0; index < localStorage.length; index += 1) {
-    const key = localStorage.key(index);
-    if (key?.includes(`add_to_cart.${eventId}`)) staleKey = key;
-  }
-  assert.ok(staleKey, "dedup key should exist after recording");
-  const wellPastRetention = new Date(
-    Date.parse("2026-08-16T00:00:00Z") - 91 * 24 * 60 * 60 * 1000,
-  ).toISOString();
-  localStorage.setItem(staleKey!, wellPastRetention);
-
-  // Constructing a fresh instance against the same storage prunes on startup.
-  harness({ localStorage });
-
-  assert.equal(localStorage.getItem(staleKey!), null);
+  assert.equal(
+    ga4Calls(environment.window).filter((call) => call[1] === "add_to_cart")
+      .length,
+    2,
+  );
 });
 
 test("high-level commerce methods project canonical event properties", () => {
@@ -306,12 +222,12 @@ test("high-level commerce methods project canonical event properties", () => {
   );
   assert.deepEqual(metaTrack?.[3], { eventID: eventId });
   assert.deepEqual(metaTrack?.[2], {
-    content_ids: ["00000000-0000-4000-8000-000000000003"],
+    content_ids: ["00000000-0000-4000-8000-000000000002"],
     content_type: "product",
     value: 12.98,
     currency: "USD",
     contents: [
-      { id: "00000000-0000-4000-8000-000000000003", quantity: 2, item_price: 6.49 },
+      { id: "00000000-0000-4000-8000-000000000002", quantity: 2, item_price: 6.49 },
     ],
     num_items: 2,
   });
@@ -354,13 +270,12 @@ test("recordCartMutation mints a browser-owned event ID", () => {
   assert.deepEqual(metaTrack?.[3], { eventID: returnedId });
 });
 
-test("records InitiateCheckout with the public order number", () => {
+test("records begin_checkout with the standard GA4 ecommerce fields", () => {
   const environment = harness({
     providers: { ga4: { measurementId: "G-TEST1234" } },
   });
-  const eventId = environment.analytics.recordInitiateCheckout({
+  environment.analytics.recordInitiateCheckout({
     cartId: "00000000-0000-4000-8000-000000000011",
-    orderNumber: "W-20260830-7K4M9Q2D",
     valueMinor: 2_000,
     currency: "usd",
     items: [
@@ -376,15 +291,20 @@ test("records InitiateCheckout with the public order number", () => {
     (entry) => entry[1] === "begin_checkout",
   );
   const parameters = call?.[2] as Record<string, unknown>;
-  assert.equal(parameters.transaction_id, "W-20260830-7K4M9Q2D");
-  assert.equal(parameters.event_id, eventId);
+  assert.equal(parameters.value, 20);
+  assert.equal(parameters.currency, "USD");
+  assert.equal(parameters.transaction_id, undefined);
+  assert.equal(parameters.event_id, undefined);
 });
 
 test("attributes server checkout creation to the source Cart", () => {
   const environment = harness({
-    providers: { ga4: { measurementId: "G-TEST1234" } },
+    providers: {
+      metaPixel: { pixelId: "12345" },
+      ga4: { measurementId: "G-TEST1234" },
+    },
   });
-  const eventId = environment.analytics.recordCheckoutCreation({
+  const checkoutCreation: EmbeddedCheckoutCreation = {
     checkout: {
       order_id: "00000000-0000-4000-8000-000000000001",
       order_number: "W-20260830-7K4M9Q2D",
@@ -423,49 +343,67 @@ test("attributes server checkout creation to the source Cart", () => {
       created_at: "2026-08-16T00:00:00Z",
       updated_at: "2026-08-16T00:00:00Z",
     },
-  });
+  };
+  const eventId = environment.analytics.recordCheckoutCreation(checkoutCreation);
+  const duplicateId = environment.analytics.recordCheckoutCreation(checkoutCreation);
   const call = ga4Calls(environment.window).find(
     (entry) => entry[1] === "begin_checkout",
   );
   const parameters = call?.[2] as Record<string, unknown>;
-  assert.equal(parameters.transaction_id, "W-20260830-7K4M9Q2D");
-  assert.equal(parameters.event_id, eventId);
+  assert.equal(eventId, "00000000-0000-4000-8000-000000000001");
+  assert.equal(parameters.transaction_id, undefined);
+  assert.equal(parameters.event_id, undefined);
+  assert.equal(duplicateId, "00000000-0000-4000-8000-000000000001");
+  assert.equal(
+    ga4Calls(environment.window).filter((entry) => entry[1] === "begin_checkout")
+      .length,
+    2,
+  );
   const items = parameters.items as Array<Record<string, unknown>>;
-  assert.equal(items[0]?.item_id, "00000000-0000-4000-8000-000000000025");
+  assert.equal(items[0]?.item_id, "00000000-0000-4000-8000-000000000024");
+  assert.equal(items[0]?.item_name, "Test product");
+  assert.equal(items[0]?.item_variant, "Test variant");
+  const metaCalls = fbqCalls(environment.window).filter(
+    (entry) => entry[1] === "InitiateCheckout",
+  );
+  assert.equal(metaCalls.length, 2);
+  assert.deepEqual(
+    metaCalls.map((entry) => entry[3]),
+    [{ eventID: eventId }, { eventID: eventId }],
+  );
 });
 
 test("maps browser Meta standard event payloads", () => {
   const environment = harness({
     providers: { metaPixel: { pixelId: "12345" } },
   });
-  environment.analytics.pageView({
-    path: "/products",
-    title: "Shoes",
-  });
-  const viewContentId = environment.analytics.viewContent({
-    productId: "product-1",
-    productVariantId: "variant-1",
-    priceMinor: 1999,
-    currency: "USD",
-  });
+  const viewContentId = environment.analytics.viewContent("product-1");
   const searchId = environment.analytics.search({ query: "shoes" });
   const calls = fbqCalls(environment.window);
   const findCall = (name: string) => calls.find((call) => call[1] === name);
 
-  // page_view is GA4-only: it is not a Meta Standard Event, so it never
-  // reaches fbq (see the class doc comment on ChaosStorefrontAnalytics).
   assert.equal(findCall("PageView"), undefined);
   assert.deepEqual(findCall("ViewContent")?.[2], {
-    value: 19.99,
-    currency: "USD",
-    content_ids: ["variant-1"],
+    content_ids: ["product-1"],
     content_type: "product",
-    contents: [{ id: "variant-1", quantity: 1, item_price: 19.99 }],
-    num_items: 1,
   });
   assert.deepEqual(findCall("Search")?.[2], { search_string: "shoes" });
   assert.deepEqual(findCall("ViewContent")?.[3], { eventID: viewContentId });
   assert.deepEqual(findCall("Search")?.[3], { eventID: searchId });
+});
+
+test("lets the Google tag collect PageView automatically", () => {
+  const environment = harness({
+    providers: { ga4: { measurementId: "G-TEST1234" } },
+  });
+  const config = ga4ConfigCalls(environment.window);
+  assert.equal(config.length, 1);
+  assert.equal(config[0]?.[1], "G-TEST1234");
+  assert.equal(config[0]?.[2], undefined);
+  assert.equal(
+    ga4Calls(environment.window).some((call) => call[1] === "page_view"),
+    false,
+  );
 });
 
 test("maps purchase items to Meta content fields", () => {
@@ -490,12 +428,13 @@ test("maps purchase items to Meta content fields", () => {
   );
   assert.equal(eventId, "00000000-0000-4000-8000-000000000999");
   assert.deepEqual(purchase?.[2], {
-    content_ids: ["variant-1"],
+    content_ids: ["product-1"],
     content_type: "product",
     value: 12.99,
     currency: "USD",
-    contents: [{ id: "variant-1", quantity: 2, item_price: 6.49 }],
+    contents: [{ id: "product-1", quantity: 2, item_price: 6.49 }],
     num_items: 2,
+    order_id: "00000000-0000-4000-8000-000000000999",
   });
 });
 
@@ -520,12 +459,13 @@ test("uses the zero-decimal MGA currency scale in browser Meta payloads", () => 
     (call) => call[1] === "Purchase",
   );
   assert.deepEqual(purchase?.[2], {
-    content_ids: ["variant-1"],
+    content_ids: ["product-1"],
     content_type: "product",
     value: 1_299,
     currency: "MGA",
-    contents: [{ id: "variant-1", quantity: 1, item_price: 1_299 }],
+    contents: [{ id: "product-1", quantity: 1, item_price: 1_299 }],
     num_items: 1,
+    order_id: "00000000-0000-4000-8000-000000000998",
   });
 });
 
@@ -541,7 +481,14 @@ test("Purchase gives GA4 net item revenue and keeps Meta's paid total", () => {
     ga4ValueMinor: 2001,
     taxMinor: 119,
     shippingMinor: 300,
-    items: [{ productId: "product-1", productVariantId: "variant-1", quantity: 2, priceMinor: 1100 }],
+    items: [{
+      productId: "product-1",
+      productVariantId: "variant-1",
+      itemName: "Test product",
+      itemVariant: "Test variant",
+      quantity: 2,
+      priceMinor: 1100,
+    }],
   });
   const pixel = fbqCalls(environment.window).find((call) => call[1] === "Purchase");
   assert.equal((pixel?.[2] as { value: number }).value, 24.20);
@@ -551,18 +498,40 @@ test("Purchase gives GA4 net item revenue and keeps Meta's paid total", () => {
   assert.equal(ga4.value, 20.01);
   assert.equal(ga4.tax, 1.19);
   assert.equal(ga4.shipping, 3);
-  const items = ga4.items as Array<{ price: number; quantity: number; discount: number }>;
+  const items = ga4.items as Array<{
+    item_name?: string;
+    item_variant?: string;
+    price: number;
+    quantity: number;
+    discount: number;
+  }>;
+  assert.equal(items[0]?.item_name, "Test product");
+  assert.equal(items[0]?.item_variant, "Test variant");
   assert.equal(items.reduce((sum, item) => sum + item.price * item.quantity, 0).toFixed(2), "20.01");
   assert.equal(items.reduce((sum, item) => sum + item.discount * item.quantity, 0).toFixed(2), "1.99");
   environment.analytics.recordPurchase({
     orderId: id, currency: "USD", valueMinor: 2420, ga4ValueMinor: 2001,
     items: [{ productId: "product-1", productVariantId: "variant-1", quantity: 2, priceMinor: 1100 }],
   });
-  assert.equal(fbqCalls(environment.window).filter((call) => call[1] === "Purchase").length, 1);
-  assert.equal(ga4Calls(environment.window).filter((call) => call[1] === "purchase").length, 1);
+  const pixelPurchases = fbqCalls(environment.window).filter(
+    (call) => call[1] === "Purchase",
+  );
+  const ga4Purchases = ga4Calls(environment.window).filter(
+    (call) => call[1] === "purchase",
+  );
+  assert.equal(pixelPurchases.length, 2);
+  assert.deepEqual(
+    pixelPurchases.map((call) => call[3]),
+    [{ eventID: id }, { eventID: id }],
+  );
+  assert.equal(ga4Purchases.length, 2);
+  assert.deepEqual(
+    ga4Purchases.map((call) => (call[2] as { transaction_id: string }).transaction_id),
+    [id, id],
+  );
 });
 
-test("a failed Pixel call can retry without repeating GA4 Purchase", () => {
+test("a failed Pixel call can retry while stable platform ids handle repeats", () => {
   const environment = harness({
     providers: { metaPixel: { pixelId: "12345" }, ga4: { measurementId: "G-TEST1234" } },
   });
@@ -579,7 +548,7 @@ test("a failed Pixel call can retry without repeating GA4 Purchase", () => {
   window.fbq = original;
   environment.analytics.recordPurchase(input);
   assert.equal(fbqCalls(environment.window).filter((call) => call[1] === "Purchase").length, 1);
-  assert.equal(ga4Calls(environment.window).filter((call) => call[1] === "purchase").length, 1);
+  assert.equal(ga4Calls(environment.window).filter((call) => call[1] === "purchase").length, 2);
 });
 
 test("manual Purchase remains compatible with the original minimal Order input", () => {
@@ -655,14 +624,15 @@ test("setShopperId ignores a repeated call for the same shopper id", async () =>
   assert.equal(fbqAdvancedMatchingCalls(environment.window).length, 1);
 });
 
-test("setShopperId sets GA4's User-ID synchronously with the raw shopper id", () => {
+test("does not use an anonymous shopper id as GA4 User-ID", () => {
   const environment = harness({
     providers: { ga4: { measurementId: "G-TEST1234" } },
   });
   environment.analytics.setShopperId("01a0b983-9909-7990-a021-01afc9aab9c8");
-  const calls = ga4SetCalls(environment.window);
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0]?.[1], {
-    user_id: "01a0b983-9909-7990-a021-01afc9aab9c8",
-  });
+  assert.equal(
+    (environment.window as unknown as { dataLayer: unknown[][] }).dataLayer.some(
+      (call) => call[0] === "set",
+    ),
+    false,
+  );
 });

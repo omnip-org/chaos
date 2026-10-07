@@ -3,6 +3,7 @@ import test, { mock } from "node:test";
 
 import { ChaosStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
+import { defaultAdAttribution } from "../internal/attribution.js";
 import type { OwnOrder } from "../types.js";
 
 class MemoryStorage {
@@ -37,6 +38,14 @@ function shopperSessionResponse(token: string): Response {
 
 function shopperToken(headers: Headers): string | null {
   return headers.get("x-chaos-shopper-token");
+}
+
+function restoreGlobal(
+  key: "document" | "window" | "sessionStorage",
+  descriptor: PropertyDescriptor | undefined,
+): void {
+  if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+  else Reflect.deleteProperty(globalThis, key);
 }
 
 test("checkout order lookup keeps the original shopper identity", async () => {
@@ -90,32 +99,21 @@ test("guest order search uses GET with number and email, without a shopper token
   }]);
 });
 
-test("only a fresh, paid checkout attempts a browser Purchase", async () => {
-  const priorSessionStorage = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
-  Object.defineProperty(globalThis, "sessionStorage", { value: new MemoryStorage(), configurable: true });
-  try {
-    const client = new ChaosStorefrontClient({
-      publishableKey: "public_test", storage: null, now: () => 1_000_000,
-      fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
-    });
-    const calls: string[] = [];
-    client.recordConfirmedPurchase = (order) => { calls.push(order.id); };
-    const order = {
-      id: "00000000-0000-4000-8000-000000000001",
-      order_number: "W-12345678", status: "confirmed", payment_status: "paid",
-    } as OwnOrder;
-    await client.recordCheckoutPurchase(order);
-    client.rememberCheckoutOrder(order.id);
-    await client.recordCheckoutPurchase({ ...order, id: "00000000-0000-4000-8000-000000000002" });
-    await client.recordCheckoutPurchase({ ...order, payment_status: "pending" });
-    await client.recordCheckoutPurchase(order);
-    await client.recordCheckoutPurchase(order);
-    // Provider-level deduplication handles repeat reads and permits a failed provider to retry.
-    assert.deepEqual(calls, [order.id, order.id]);
-  } finally {
-    if (priorSessionStorage) Object.defineProperty(globalThis, "sessionStorage", priorSessionStorage);
-    else Reflect.deleteProperty(globalThis, "sessionStorage");
-  }
+test("every confirmed checkout read attempts browser Purchase", async () => {
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test", storage: null,
+    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+  });
+  const calls: string[] = [];
+  client.recordConfirmedPurchase = (order) => { calls.push(order.id); };
+  const order = {
+    id: "00000000-0000-4000-8000-000000000001",
+    order_number: "W-12345678", status: "confirmed", payment_status: "paid",
+  } as OwnOrder;
+  await client.recordCheckoutPurchase({ ...order, payment_status: "pending" });
+  await client.recordCheckoutPurchase(order);
+  await client.recordCheckoutPurchase(order);
+  assert.deepEqual(calls, [order.id, order.id]);
 });
 
 test("defers shopper session creation until a browser request needs it", async () => {
@@ -548,6 +546,95 @@ test("catalog.listProducts forwards query parameters", async () => {
   assert.equal(captured.url?.searchParams.get("collection"), "sale");
 });
 
+test("catalog search records only the first page of a non-empty query", async () => {
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async () =>
+      jsonResponse(200, {
+        data: [],
+        meta: { page: { has_more: false } },
+      })) as unknown as typeof fetch,
+  });
+  const searches: string[] = [];
+  client.recordSearch = ({ query }) => searches.push(query);
+
+  await client.catalog.listProducts({ q: "  shoes  " });
+  await client.catalog.listProducts({ q: "shoes", cursor: "next-page" });
+  await client.catalog.listProducts({ q: "   " });
+
+  assert.deepEqual(searches, ["shoes"]);
+});
+
+test("catalog.getProduct does not report a view before the UI displays it", async () => {
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async () =>
+      jsonResponse(200, {
+        data: {
+          id: "product-1",
+          handle: "running-shoe",
+          title: "Running shoe",
+          variants: [],
+        },
+      })) as unknown as typeof fetch,
+  });
+  let views = 0;
+  client.recordProductView = () => {
+    views += 1;
+  };
+
+  await client.catalog.getProduct("running-shoe");
+
+  assert.equal(views, 0);
+});
+
+test("catalog.openProduct records the Product even when every Variant is sold out", async () => {
+  const product = {
+    id: "product-1",
+    handle: "running-shoe",
+    title: "Running shoe",
+    description: "",
+    media: [],
+    collections: [],
+    options: [
+      {
+        id: "color",
+        name: "Color",
+        position: 0,
+        values: [
+          { id: "black", value: "Black", position: 0 },
+          { id: "white", value: "White", position: 1 },
+        ],
+      },
+    ],
+    variants: [
+      {
+        id: "variant-sold-out",
+        title: "Black",
+        track_inventory: true,
+        available_quantity: 0,
+        price: { amount_minor: 1_000, currency: "USD" },
+        selected_options: [
+          { option_id: "color", option_value_id: "black" },
+        ],
+      },
+    ],
+  };
+  const client = new ChaosStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async () => jsonResponse(200, { data: product })) as unknown as typeof fetch,
+  });
+  const views: string[] = [];
+  client.recordProductView = (openedProduct) => views.push(openedProduct.id);
+
+  const response = await client.catalog.openProduct("running-shoe");
+  assert.equal(response.data, product);
+  assert.deepEqual(views, ["product-1"]);
+});
+
 test("payments create an embedded Checkout session with SDK-owned request details", async () => {
   const requests: Array<{
     url: string;
@@ -743,6 +830,103 @@ test("checkout defaults source_url to the current page in a browser", async () =
     } else {
       Reflect.deleteProperty(globalThis, "window");
     }
+  }
+});
+
+test("checkout captures Meta click attribution without browser event providers", async () => {
+  const priorDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const priorSessionStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "sessionStorage",
+  );
+  const documentRef = {
+    cookie: "",
+    location: {
+      protocol: "https:",
+      search: "?fbclid=checkout-click",
+    },
+  };
+  Object.defineProperty(globalThis, "document", {
+    value: documentRef,
+    configurable: true,
+  });
+  Object.defineProperty(globalThis, "window", {
+    value: { location: { href: "https://shop.example.com/products/shoe" } },
+    configurable: true,
+  });
+  Object.defineProperty(globalThis, "sessionStorage", {
+    value: new MemoryStorage(),
+    configurable: true,
+  });
+
+  try {
+    let checkoutBody: string | undefined;
+    const client = new ChaosStorefrontClient({
+      publishableKey: "public_test",
+      storage: null,
+      now: () => 1_234_567_890_123,
+      fetch: (async (url: string, init: RequestInit) => {
+        if (url.endsWith("/shopper/sessions")) {
+          return shopperSessionResponse("shopper-token");
+        }
+        if (url.endsWith("/carts/cart-1")) {
+          return jsonResponse(200, {
+            data: {
+              id: "cart-1",
+              currency: "USD",
+              subtotal_amount_minor: 2_000,
+              lines: [],
+            },
+          });
+        }
+        if (url.endsWith("/checkout")) {
+          checkoutBody = typeof init.body === "string" ? init.body : undefined;
+          return jsonResponse(201, {
+            data: {
+              order_id: "00000000-0000-4000-8000-000000000001",
+              order_number: "W-20260830-00000001",
+              client_action: {
+                type: "stripe_checkout_embedded",
+                public_key: "pk_test_stripe",
+                client_token: "cs_test_secret",
+              },
+            },
+          });
+        }
+        return jsonResponse(404, {
+          error: { code: "cart_not_found", message: "not found" },
+        });
+      }) as unknown as typeof fetch,
+    });
+
+    await client.payments.createEmbeddedCheckout("cart-1", {
+      returnUrl: "https://shop.example.com/checkout/success",
+    });
+
+    assert.deepEqual(JSON.parse(checkoutBody ?? "{}").attribution, {
+      source_url: "https://shop.example.com/products/shoe",
+      meta: { fbc: "fb.1.1234567890123.checkout-click" },
+    });
+  } finally {
+    restoreGlobal("document", priorDocument);
+    restoreGlobal("window", priorWindow);
+    restoreGlobal("sessionStorage", priorSessionStorage);
+  }
+});
+
+test("checkout attribution tolerates compact and malformed cookies", () => {
+  const priorDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", {
+    value: { cookie: "_fbp=malformed%E0%A4%A;other=value" },
+    configurable: true,
+  });
+  try {
+    assert.deepEqual(defaultAdAttribution(null).meta, {
+      fbp: "malformed%E0%A4%A",
+    });
+  } finally {
+    restoreGlobal("document", priorDocument);
   }
 });
 

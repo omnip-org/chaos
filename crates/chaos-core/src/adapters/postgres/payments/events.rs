@@ -39,11 +39,11 @@ struct RefundDetailRow {
 struct OrderIdentityRow {
     contact_email: Option<String>,
     contact_phone: Option<String>,
-    shipping_full_name: Option<String>,
-    shipping_locality: Option<String>,
-    shipping_administrative_area: Option<String>,
-    shipping_postal_code: Option<String>,
-    shipping_country_code: Option<String>,
+    full_name: Option<String>,
+    locality: Option<String>,
+    administrative_area: Option<String>,
+    postal_code: Option<String>,
+    country_code: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -330,10 +330,14 @@ pub(super) async fn apply_payment_event(
         .map_err(database_error)?;
         let identity = sqlx::query_as::<_, OrderIdentityRow>(
             "SELECT order_row.contact_email::text AS contact_email, order_row.contact_phone, \
-                    order_row.shipping_full_name, \
-                    order_row.shipping_locality, order_row.shipping_administrative_area, \
-                    order_row.shipping_postal_code, \
-                    order_row.shipping_country_code::text AS shipping_country_code \
+                    COALESCE(order_row.shipping_full_name, order_row.billing_full_name) AS full_name, \
+                    COALESCE(order_row.shipping_locality, order_row.billing_locality) AS locality, \
+                    COALESCE(order_row.shipping_administrative_area, \
+                             order_row.billing_administrative_area) AS administrative_area, \
+                    COALESCE(order_row.shipping_postal_code, \
+                             order_row.billing_postal_code) AS postal_code, \
+                    COALESCE(order_row.shipping_country_code, \
+                             order_row.billing_country_code)::text AS country_code \
              FROM chaos_commerce.orders AS order_row \
              WHERE order_row.store_id = $1 AND order_row.id = $2",
         )
@@ -358,11 +362,11 @@ pub(super) async fn apply_payment_event(
             OrderIdentityContext {
                 email: identity.contact_email.as_deref(),
                 phone: identity.contact_phone.as_deref(),
-                full_name: identity.shipping_full_name.as_deref(),
-                locality: identity.shipping_locality.as_deref(),
-                administrative_area: identity.shipping_administrative_area.as_deref(),
-                postal_code: identity.shipping_postal_code.as_deref(),
-                country_code: identity.shipping_country_code.as_deref(),
+                full_name: identity.full_name.as_deref(),
+                locality: identity.locality.as_deref(),
+                administrative_area: identity.administrative_area.as_deref(),
+                postal_code: identity.postal_code.as_deref(),
+                country_code: identity.country_code.as_deref(),
             },
         );
         publish_topic_event(

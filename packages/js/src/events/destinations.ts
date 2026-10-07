@@ -77,15 +77,6 @@ export class AnalyticsDestinations {
     this.updateMetaMatching();
   }
 
-  setGa4UserId(shopperId: string | null): void {
-    if (!this.ga4Started) return;
-    try {
-      this.windowRef.gtag?.("set", { user_id: shopperId });
-    } catch (error) {
-      this.reportError(error, "UserId", undefined);
-    }
-  }
-
   ga4(eventName: string, parameters: Record<string, unknown>): boolean {
     if (!this.ga4Started || !this.windowRef.gtag) return false;
     try {
@@ -157,9 +148,7 @@ export class AnalyticsDestinations {
       dataLayer.push(arguments);
     };
     this.windowRef.gtag("js", new Date());
-    this.windowRef.gtag("config", this.options.ga4.measurementId, {
-      send_page_view: false,
-    });
+    this.windowRef.gtag("config", this.options.ga4.measurementId);
     loadProviderScript(
       this.documentRef,
       "chaos-google-tag",

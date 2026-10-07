@@ -1,8 +1,6 @@
 export { ChaosStorefrontClient } from "./client.js";
 export type { ClientOptions, RequestOptions, StorefrontEventsOptions } from "./client.js";
 
-export type { ViewContentAnalyticsInput } from "./events/types.js";
-
 export { ChaosApiError } from "./errors.js";
 
 export { resolveProductMedia } from "./media.js";

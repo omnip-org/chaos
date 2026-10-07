@@ -4,7 +4,6 @@ import type {
   AnalyticsCommerceItem,
   InitiateCheckoutAnalyticsInput,
   PurchaseAnalyticsInput,
-  ViewContentAnalyticsInput,
 } from "./types.js";
 
 /**
@@ -25,6 +24,12 @@ export interface MetaCommerceEventData {
   num_items: number;
 }
 
+export interface MetaViewContentEventData {
+  [key: string]: unknown;
+  content_ids: string[];
+  content_type: "product";
+}
+
 interface CommerceEventInput {
   valueMinor: number;
   currency: string;
@@ -36,7 +41,7 @@ function toContents(
   currency: string,
 ): MetaCommerceEventData["contents"] {
   return items.map((item) => ({
-    id: item.productVariantId,
+    id: item.productId,
     quantity: item.quantity,
     item_price: toMajorUnits(item.priceMinor, currency),
   }));
@@ -53,6 +58,10 @@ export function addToCartEventData(
       {
         productId: input.productId,
         productVariantId: input.productVariantId,
+        ...(input.itemName !== undefined ? { itemName: input.itemName } : {}),
+        ...(input.itemVariant !== undefined
+          ? { itemVariant: input.itemVariant }
+          : {}),
         quantity: input.quantity,
         priceMinor: input.priceMinor,
       },
@@ -71,25 +80,17 @@ export function initiateCheckoutEventData(
 export function purchaseEventData(
   input: PurchaseAnalyticsInput,
 ): MetaCommerceEventData {
-  return commerceEventData(input);
+  return { ...commerceEventData(input), order_id: input.orderId };
 }
 
 /** @internal */
 export function viewContentEventData(
-  input: ViewContentAnalyticsInput,
-): MetaCommerceEventData {
-  return commerceEventData({
-    valueMinor: input.priceMinor,
-    currency: input.currency,
-    items: [
-      {
-        productId: input.productId,
-        productVariantId: input.productVariantId ?? input.productId,
-        quantity: 1,
-        priceMinor: input.priceMinor,
-      },
-    ],
-  });
+  productId: string,
+): MetaViewContentEventData {
+  return {
+    content_ids: [productId],
+    content_type: "product",
+  };
 }
 
 function commerceEventData(
@@ -100,7 +101,7 @@ function commerceEventData(
   return {
     value: toMajorUnits(input.valueMinor, currency),
     currency,
-    content_ids: contents.map((content) => content.id),
+    content_ids: [...new Set(contents.map((content) => content.id))],
     content_type: "product",
     contents,
     num_items: input.items.reduce((total, item) => total + item.quantity, 0),

@@ -1,5 +1,11 @@
 import type { ChaosStorefrontClient } from "../client.js";
-import type { Collection, CursorPageParams, DataEnvelope, PageEnvelope, Product } from "../types.js";
+import type {
+  Collection,
+  CursorPageParams,
+  DataEnvelope,
+  PageEnvelope,
+  Product,
+} from "../types.js";
 
 const COLLECTION_CACHE_TTL_MS = 60_000;
 const collectionCache = new Map<string, CollectionCacheEntry>();
@@ -31,28 +37,25 @@ export class CatalogResource {
       "/products",
       { method: "GET", query: params },
     );
-    if (params.q) this.client.recordSearch({ query: params.q });
+    const query = params.q?.trim();
+    if (query && !params.cursor) this.client.recordSearch({ query });
     return response;
   }
 
-  /**
-   * Fires ViewContent for the product's first variant — a placeholder until
-   * the shopper picks one. Call `client.recordViewContent` again with the
-   * chosen `productVariantId` once they do (see events/types.ts).
-   */
   async getProduct(handle: string, params: GetProductParams = {}): Promise<DataEnvelope<Product>> {
-    const response = await this.client.request<DataEnvelope<Product>, GetProductParams>(
+    return this.client.request<DataEnvelope<Product>, GetProductParams>(
       `/products/${encodeURIComponent(handle)}`,
       { method: "GET", query: params },
     );
-    const [defaultVariant] = response.data.variants;
-    if (defaultVariant) {
-      this.client.recordViewContent({
-        productId: response.data.id,
-        priceMinor: defaultVariant.price.amount_minor,
-        currency: defaultVariant.price.currency,
-      });
-    }
+  }
+
+  /** Loads a Product for display and records one product-level ViewContent. */
+  async openProduct(
+    handle: string,
+    params: GetProductParams = {},
+  ): Promise<DataEnvelope<Product>> {
+    const response = await this.getProduct(handle, params);
+    this.client.recordProductView(response.data);
     return response;
   }
 

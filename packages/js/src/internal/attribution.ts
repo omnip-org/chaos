@@ -1,4 +1,5 @@
 import type { CheckoutAttribution } from "../types.js";
+import { readBrowserCookie } from "./meta-attribution.js";
 import { lastTouchUtmTags, type UtmKey } from "./utm.js";
 
 type UtmStorage = Pick<Storage, "getItem" | "setItem"> | null;
@@ -22,8 +23,12 @@ type UtmStorage = Pick<Storage, "getItem" | "setItem"> | null;
 export function defaultAdAttribution(
   storage: UtmStorage,
 ): CheckoutAttribution {
-  const fbc = readCookie("_fbc");
-  const fbp = readCookie("_fbp");
+  const documentRef =
+    typeof globalThis.document === "undefined"
+      ? undefined
+      : globalThis.document;
+  const fbc = readBrowserCookie(documentRef, "_fbc");
+  const fbp = readBrowserCookie(documentRef, "_fbp");
   const sourceUrl =
     typeof window === "undefined" ? undefined : window.location.href;
   const utm = lastTouchUtmTags(storage) as
@@ -43,12 +48,4 @@ export function hasAdAttribution(attribution: CheckoutAttribution): boolean {
       (attribution.utm && Object.keys(attribution.utm).length > 0) ||
       (attribution.meta && (attribution.meta.fbc || attribution.meta.fbp)),
   );
-}
-
-function readCookie(name: string): string | undefined {
-  const cookie = typeof document === "undefined" ? undefined : document.cookie;
-  if (typeof cookie !== "string") return undefined;
-  const prefix = `${name}=`;
-  const entry = cookie.split("; ").find((value) => value.startsWith(prefix));
-  return entry ? decodeURIComponent(entry.slice(prefix.length)) : undefined;
 }

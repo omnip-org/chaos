@@ -108,6 +108,8 @@ export function toPurchaseAnalyticsInput(order: ConfirmedPurchaseOrderInput): Pu
     items: order.lines.map((line) => ({
       productId: line.product_id,
       productVariantId: line.product_variant_id,
+      itemName: line.product_title,
+      itemVariant: line.variant_title,
       quantity: line.quantity,
       priceMinor: line.unit_price_amount_minor,
     })),

@@ -1,6 +1,5 @@
 import { ChaosApiError } from "./errors.js";
 import type { AnalyticsOptions } from "./events/browser.js";
-import type { ViewContentAnalyticsInput } from "./events/types.js";
 import { StorefrontEventCoordinator } from "./internal/storefront-events.js";
 import { ShopperSessionStore } from "./internal/shopper-session.js";
 import { StorefrontTransport } from "./internal/transport.js";
@@ -21,6 +20,7 @@ import type {
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutStart,
   OwnOrder,
+  Product,
   ShopperSession,
 } from "./types.js";
 
@@ -60,7 +60,7 @@ export interface ClientOptions {
    * of a separate `GET /carts/{id}`. 0 disables it. Defaults to 30000.
    */
   cartSnapshotTtlMs?: number;
-  /** Millisecond clock used for cart snapshots and checkout markers. */
+  /** Millisecond clock used for cart snapshots and attribution timestamps. */
   now?: () => number;
 }
 
@@ -236,11 +236,6 @@ export class ChaosStorefrontClient {
     this.events.recordCheckoutCreation(creation);
   }
 
-  /** @internal Marks a fresh checkout as eligible for browser Purchase. */
-  rememberCheckoutOrder(orderId: string): void {
-    this.events.rememberCheckoutOrder(orderId);
-  }
-
   /** @internal Called only after a shopper-owned Order read. */
   async recordCheckoutPurchase(order: OwnOrder): Promise<void> {
     await this.events.recordCheckoutPurchase(order, (confirmed) =>
@@ -248,19 +243,19 @@ export class ChaosStorefrontClient {
     );
   }
 
-  /** Projects a server-confirmed Order to configured browser providers. */
+  /** @internal Projects a server-confirmed Order to configured browser providers. */
   recordConfirmedPurchase(order: ConfirmedPurchaseOrderInput): void {
     this.events.recordConfirmedPurchase(order);
   }
 
-  /** Projects a storefront search to configured browser providers. */
+  /** @internal Projects a storefront search to configured browser providers. */
   recordSearch(input: { query: string }): void {
     this.events.recordSearch(input);
   }
 
-  /** Projects a product or selected variant view to browser providers. */
-  recordViewContent(input: ViewContentAnalyticsInput): void {
-    this.events.recordViewContent(input);
+  /** @internal Used after a Product detail page has been opened. */
+  recordProductView(product: Product): void {
+    this.events.recordProductView(product);
   }
 
   private async requestWithShopperTokenRetry<

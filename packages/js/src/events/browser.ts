@@ -1,5 +1,5 @@
 import { toPurchaseAnalyticsInput } from "../domain.js";
-import { compact } from "../internal/meta.js";
+import { maintainMetaFbcCookie } from "../internal/meta-attribution.js";
 import { sha256Hex } from "../internal/sha256.js";
 import { toMajorUnits } from "../money.js";
 import type {
@@ -9,7 +9,6 @@ import type {
   EmbeddedCheckoutStart,
   OwnOrder,
 } from "../types.js";
-import { BrowserEventState, observeHistory } from "./browser-state.js";
 import {
   AnalyticsDestinations,
   normalizeMetaText,
@@ -21,33 +20,23 @@ import {
   initiateCheckoutEventData,
   purchaseEventData,
   viewContentEventData,
-  type MetaCommerceEventData,
 } from "./meta-payload.js";
 import type {
   AddToCartAnalyticsInput,
   AnalyticsCommerceItem,
   InitiateCheckoutAnalyticsInput,
   PurchaseAnalyticsInput,
-  ViewContentAnalyticsInput,
 } from "./types.js";
 
-/** Projects the fixed Storefront event set directly to Meta Pixel and GA4. */
-export interface PageViewInput {
-  path?: string;
-  title?: string;
-}
-
+/** Projects Storefront commerce events directly to Meta Pixel and GA4. */
 export interface AnalyticsOptions {
   publishableKey: string;
   document?: Document;
   window?: Window & typeof globalThis;
-  storage?: Storage;
   sessionStorage?: Storage;
   randomUUID?: () => string;
   now?: () => number;
   providers?: AnalyticsProviderOptions;
-  /** Starts lifecycle and SPA page tracking. Defaults to true. */
-  autoStart?: boolean;
   /**
    * Best-effort delivery-failure hook: called when a browser provider call
    * (Pixel/GA4) throws, so a store can log or alert instead of failing
@@ -58,15 +47,8 @@ export interface AnalyticsOptions {
 }
 
 export class ChaosStorefrontAnalytics {
-  private readonly documentRef: Document;
-  private readonly windowRef: Window & typeof globalThis;
   private readonly randomUUID: () => string;
-  private readonly now: () => number;
   private readonly destinations: AnalyticsDestinations;
-  private readonly eventState: BrowserEventState;
-  private running = false;
-  private readonly onRouteChange = () => this.pageView();
-  private restoreHistory: (() => void) | null = null;
   /** The shopper id currently being (or last) hashed for `setShopperId`. */
   private externalIdSource: string | null = null;
 
@@ -74,65 +56,40 @@ export class ChaosStorefrontAnalytics {
     if (!options?.publishableKey) {
       throw new TypeError("publishableKey is required");
     }
-    this.documentRef = options.document ?? globalThis.document;
-    this.windowRef =
+    const documentRef = options.document ?? globalThis.document;
+    const windowRef =
       options.window ?? (globalThis as unknown as Window & typeof globalThis);
     this.randomUUID =
       options.randomUUID ??
       globalThis.crypto?.randomUUID.bind(globalThis.crypto);
-    this.now = options.now ?? Date.now;
-    if (!this.randomUUID || !this.documentRef || !this.windowRef) {
+    if (!this.randomUUID || !documentRef || !windowRef) {
       throw new TypeError("randomUUID, document, and window are required");
     }
     this.destinations = new AnalyticsDestinations(
-      this.windowRef,
-      this.documentRef,
+      windowRef,
+      documentRef,
       options.providers,
       options.onError,
     );
-    this.eventState = new BrowserEventState(
+    maintainMetaFbcCookie(
       options.publishableKey,
-      this.documentRef,
-      options.storage ?? this.windowRef?.localStorage,
-      options.sessionStorage ?? this.windowRef?.sessionStorage,
-      this.now,
+      documentRef,
+      options.sessionStorage ?? windowRef.sessionStorage,
+      options.now ?? Date.now,
     );
-    if (options.autoStart !== false) {
-      this.start();
-      this.pageView();
-    }
-  }
-
-  start(): void {
-    if (this.running) return;
-    this.running = true;
-    this.windowRef.addEventListener("popstate", this.onRouteChange);
-    this.restoreHistory = observeHistory(this.windowRef, this.onRouteChange);
-  }
-
-  stop(): void {
-    if (!this.running) return;
-    this.running = false;
-    this.windowRef.removeEventListener("popstate", this.onRouteChange);
-    this.restoreHistory?.();
-    this.restoreHistory = null;
   }
 
   /**
-   * Feeds the shopper id to both providers' cross-session identity features.
-   * GA4's User-ID takes the raw id directly — unlike Meta, it's an opaque
-   * join key, not hashed PII, so it's set synchronously with no extra work.
-   * Meta CAPI hashes the same canonical `shopper_id` into `external_id` (see
+   * Meta CAPI hashes the canonical `shopper_id` into `external_id` (see
    * `meta_user_data` in `adapters/integrations/analytics/meta.rs`); this
    * hashes it the same way for Pixel's Advanced Matching so the browser and
-   * server copies of an event resolve to the same Meta identity. Both are
-   * best-effort: a missing/unavailable Web Crypto API just leaves Pixel
-   * without its half.
+   * server copies of an event resolve to the same Meta identity. An anonymous
+   * shopper id is deliberately not sent as GA4 User-ID: Google reserves that
+   * field for an application's authenticated user identity.
    */
   setShopperId(shopperId: string | undefined): void {
     if (!shopperId || shopperId === this.externalIdSource) return;
     this.externalIdSource = shopperId;
-    this.destinations.setGa4UserId(shopperId);
     sha256Hex(shopperId)
       .then((hash) => {
         if (this.externalIdSource === shopperId) {
@@ -147,7 +104,6 @@ export class ChaosStorefrontAnalytics {
   clearShopperId(): void {
     if (!this.externalIdSource) return;
     this.externalIdSource = null;
-    this.destinations.setGa4UserId(null);
     this.destinations.setExternalId(null);
   }
 
@@ -188,18 +144,6 @@ export class ChaosStorefrontAnalytics {
     }
   }
 
-  pageView(input: PageViewInput = {}): string {
-    this.eventState.maintainFbcCookie();
-    const path = input.path ?? this.documentRef.location?.pathname ?? "/";
-    const title = input.title ?? nonEmpty(this.documentRef.title);
-    const eventId = this.randomUUID();
-    this.destinations.ga4(
-      "page_view",
-      compact({ event_id: eventId, page_path: path, page_title: title }),
-    );
-    return eventId;
-  }
-
   /** Records a successful cart addition in the browser. */
   recordAddToCart(input: AddToCartAnalyticsInput, eventId?: string): string | null {
     validateMoney(input.valueMinor, input.currency);
@@ -209,18 +153,20 @@ export class ChaosStorefrontAnalytics {
 
     const resolvedId = canonicalEventId(eventId, this.randomUUID());
     try {
-      return this.eventState.recordOnce("add_to_cart", resolvedId, () => {
-        const eventData = addToCartEventData(input);
-        this.destinations.pixel("AddToCart", resolvedId, eventData);
-        this.destinations.ga4("add_to_cart", {
-          event_id: resolvedId,
+      const eventData = addToCartEventData(input);
+      return this.projectCommerceEvent(
+        "add_to_cart",
+        "AddToCart",
+        resolvedId,
+        eventData,
+        {
           value: eventData.value,
           currency: eventData.currency,
-          items: toGa4Items(eventData.contents),
-        });
-      });
+          items: toGa4Items([input], input.currency),
+        },
+      );
     } catch {
-      // Provider/storage problems are best-effort; bad input above already threw.
+      // Provider problems are best-effort; bad input above already threw.
       return null;
     }
   }
@@ -233,27 +179,26 @@ export class ChaosStorefrontAnalytics {
     validateMoney(input.valueMinor, input.currency);
     if (!isUuid(input.cartId))
       throw new TypeError("cartId must be a valid UUID");
-    if (!isNonEmptyText(input.orderNumber))
-      throw new TypeError("orderNumber must be a non-empty string");
     if (!Array.isArray(input.items) || input.items.length === 0)
       throw new TypeError("items must contain at least one checkout item");
     for (const item of input.items) validateCommerceItem(item);
 
     const resolvedId = canonicalEventId(eventId, this.randomUUID());
     try {
-      return this.eventState.recordOnce("initiate_checkout", resolvedId, () => {
-        const eventData = initiateCheckoutEventData(input);
-        this.destinations.pixel("InitiateCheckout", resolvedId, eventData);
-        this.destinations.ga4("begin_checkout", {
-          event_id: resolvedId,
-          transaction_id: input.orderNumber,
+      const eventData = initiateCheckoutEventData(input);
+      return this.projectCommerceEvent(
+        "begin_checkout",
+        "InitiateCheckout",
+        resolvedId,
+        eventData,
+        {
           value: eventData.value,
           currency: eventData.currency,
-          items: toGa4Items(eventData.contents),
-        });
-      });
+          items: toGa4Items(input.items, input.currency),
+        },
+      );
     } catch {
-      // Provider/storage problems are best-effort; bad input above already threw.
+      // Provider problems are best-effort; bad input above already threw.
       return null;
     }
   }
@@ -270,6 +215,8 @@ export class ChaosStorefrontAnalytics {
       cartId: input.cart.id,
       productId: line.product_id,
       productVariantId: line.product_variant_id,
+      itemName: line.product_title,
+      itemVariant: line.variant_title,
       quantity,
       priceMinor: line.unit_price_amount_minor,
       valueMinor: line.unit_price_amount_minor * quantity,
@@ -284,36 +231,28 @@ export class ChaosStorefrontAnalytics {
     return this.recordInitiateCheckout(
       {
         cartId: input.source_cart.id,
-        orderNumber: input.checkout.order_number,
         valueMinor: input.source_cart.subtotal_amount_minor,
         currency: input.source_cart.currency,
         items: input.source_cart.lines.map((line) => ({
           productId: line.product_id,
           productVariantId: line.product_variant_id,
+          itemName: line.product_title,
+          itemVariant: line.variant_title,
           quantity: line.quantity,
           priceMinor: line.unit_price_amount_minor,
         })),
       },
+      input.checkout.order_id,
     );
   }
 
-  /**
-   * Records a product view. Pass `productVariantId` once the shopper has
-   * picked a specific variant (e.g. a color swatch) — otherwise ViewContent's
-   * `content_ids` stay at the product level, while AddToCart/Purchase report
-   * variant-level ids, breaking Meta's catalog matching for dynamic ads and
-   * "viewed but not bought" retargeting.
-   */
-  viewContent(input: ViewContentAnalyticsInput): string {
-    validateMoney(input.priceMinor, input.currency);
+  /** Records a Product detail page that was actually shown to the shopper. */
+  viewContent(productId: string): string {
     const eventId = this.randomUUID();
-    const eventData = viewContentEventData(input);
+    const eventData = viewContentEventData(productId);
     this.destinations.pixel("ViewContent", eventId, eventData);
     this.destinations.ga4("view_item", {
-      event_id: eventId,
-      value: eventData.value,
-      currency: eventData.currency,
-      items: toGa4Items(eventData.contents),
+      items: [{ item_id: productId }],
     });
     return eventId;
   }
@@ -321,11 +260,11 @@ export class ChaosStorefrontAnalytics {
   search({ query }: { query: string }): string {
     const eventId = this.randomUUID();
     this.destinations.pixel("Search", eventId, { search_string: query });
-    this.destinations.ga4("search", { event_id: eventId, search_term: query });
+    this.destinations.ga4("search", { search_term: query });
     return eventId;
   }
 
-  /** Projects a server-confirmed Purchase to browser providers exactly once per Order. */
+  /** Projects a server-confirmed Purchase using the Order id as provider identity. */
   recordPurchase(input: PurchaseAnalyticsInput): string | null {
     validateMoney(input.valueMinor, input.currency);
     if (!isUuid(input.orderId))
@@ -336,47 +275,31 @@ export class ChaosStorefrontAnalytics {
       const eventData = purchaseEventData(input);
       let sent = false;
       if (this.destinations.hasPixel) {
-        sent =
-          this.eventState.recordProviderOnce(
-            "meta",
-            "purchase",
-            orderId,
-            () => this.destinations.pixel("Purchase", orderId, eventData),
-          ) || sent;
+        sent = this.destinations.pixel("Purchase", orderId, eventData) || sent;
       }
       if (this.destinations.hasGa4) {
         sent =
-          this.eventState.recordProviderOnce(
-            "ga4",
-            "purchase",
-            orderId,
-            () =>
-              this.destinations.ga4("purchase", {
-                event_id: orderId,
-                transaction_id: orderId,
-                value: toMajorUnits(
-                  input.ga4ValueMinor ?? input.valueMinor,
-                  input.currency,
-                ),
-                currency: eventData.currency,
-                ...(input.taxMinor !== undefined
-                  ? { tax: toMajorUnits(input.taxMinor, input.currency) }
-                  : {}),
-                ...(input.shippingMinor !== undefined
-                  ? {
-                      shipping: toMajorUnits(
-                        input.shippingMinor,
-                        input.currency,
-                      ),
-                    }
-                  : {}),
-                items: discountedGa4PurchaseItems(input),
-              }),
-          ) || sent;
+          this.destinations.ga4("purchase", {
+            transaction_id: orderId,
+            value: toMajorUnits(
+              input.ga4ValueMinor ?? input.valueMinor,
+              input.currency,
+            ),
+            currency: eventData.currency,
+            ...(input.taxMinor !== undefined
+              ? { tax: toMajorUnits(input.taxMinor, input.currency) }
+              : {}),
+            ...(input.shippingMinor !== undefined
+              ? {
+                  shipping: toMajorUnits(input.shippingMinor, input.currency),
+                }
+              : {}),
+            items: discountedGa4PurchaseItems(input),
+          }) || sent;
       }
       return sent ? orderId : null;
     } catch {
-      // Provider/storage problems are best-effort; bad input above already threw.
+      // Provider problems are best-effort; bad input above already threw.
       return null;
     }
   }
@@ -385,6 +308,25 @@ export class ChaosStorefrontAnalytics {
   recordConfirmedPurchase(order: ConfirmedPurchaseOrderInput): string | null {
     const input = toPurchaseAnalyticsInput(order);
     return input ? this.recordPurchase(input) : null;
+  }
+
+  private projectCommerceEvent(
+    ga4EventName: "add_to_cart" | "begin_checkout",
+    pixelEventName: "AddToCart" | "InitiateCheckout",
+    eventId: string,
+    pixelParameters: Record<string, unknown>,
+    ga4Parameters: Record<string, unknown>,
+  ): string | null {
+    let sent = false;
+    if (this.destinations.hasPixel) {
+      sent =
+        this.destinations.pixel(pixelEventName, eventId, pixelParameters) || sent;
+    }
+    if (this.destinations.hasGa4) {
+      sent =
+        this.destinations.ga4(ga4EventName, ga4Parameters) || sent;
+    }
+    return sent ? eventId : null;
   }
 }
 
@@ -395,10 +337,6 @@ function canonicalEventId(explicit: string | undefined, fallback: string): strin
     throw new TypeError("commerce event_id must be a valid UUID");
   }
   return resolved.toLowerCase();
-}
-
-function isNonEmptyText(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
 }
 
 function validateMoney(valueMinor: number, currency: string): void {
@@ -420,21 +358,32 @@ function validateCommerceItem(item: AnalyticsCommerceItem): void {
     throw new RangeError("priceMinor must be a non-negative safe integer");
 }
 
-function toGa4Items(contents: MetaCommerceEventData["contents"]): Array<{
+function toGa4Items(
+  items: readonly AnalyticsCommerceItem[],
+  currency: string,
+): Array<{
   item_id: string;
+  item_name?: string;
+  item_variant?: string;
   quantity: number;
   price: number;
 }> {
-  return contents.map((content) => ({
-    item_id: content.id,
-    quantity: content.quantity,
-    price: content.item_price,
+  return items.map((item) => ({
+    item_id: item.productId,
+    ...(item.itemName !== undefined ? { item_name: item.itemName } : {}),
+    ...(item.itemVariant !== undefined
+      ? { item_variant: item.itemVariant }
+      : {}),
+    quantity: item.quantity,
+    price: toMajorUnits(item.priceMinor, currency),
   }));
 }
 
 /** Allocates an order discount in minor units so item revenue equals GA4 value. */
 function discountedGa4PurchaseItems(input: PurchaseAnalyticsInput): Array<{
   item_id: string;
+  item_name?: string;
+  item_variant?: string;
   quantity: number;
   price: number;
   discount: number;
@@ -446,7 +395,11 @@ function discountedGa4PurchaseItems(input: PurchaseAnalyticsInput): Array<{
   const discount = gross - BigInt(input.ga4ValueMinor ?? Number(gross));
   if (gross === 0n || discount < 0n || discount > gross) {
     return input.items.map((item) => ({
-      item_id: item.productVariantId,
+      item_id: item.productId,
+      ...(item.itemName !== undefined ? { item_name: item.itemName } : {}),
+      ...(item.itemVariant !== undefined
+        ? { item_variant: item.itemVariant }
+        : {}),
       quantity: item.quantity,
       price: toMajorUnits(item.priceMinor, input.currency),
       discount: 0,
@@ -459,6 +412,8 @@ function discountedGa4PurchaseItems(input: PurchaseAnalyticsInput): Array<{
   );
   const result = [] as Array<{
     item_id: string;
+    item_name?: string;
+    item_variant?: string;
     quantity: number;
     price: number;
     discount: number;
@@ -476,7 +431,11 @@ function discountedGa4PurchaseItems(input: PurchaseAnalyticsInput): Array<{
     ] as Array<[number, number]>) {
       if (quantity === 0) continue;
       result.push({
-        item_id: item.productVariantId,
+        item_id: item.productId,
+        ...(item.itemName !== undefined ? { item_name: item.itemName } : {}),
+        ...(item.itemVariant !== undefined
+          ? { item_variant: item.itemVariant }
+          : {}),
         quantity,
         price: toMajorUnits(item.priceMinor - unitDiscount, input.currency),
         discount: toMajorUnits(unitDiscount, input.currency),
@@ -493,8 +452,4 @@ function isUuid(value: string | null | undefined): boolean {
       value,
     )
   );
-}
-
-function nonEmpty(value: string | undefined): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
 }

@@ -1,6 +1,6 @@
 import type { ChaosStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
-import type { ConfirmedPurchaseOrderInput, DataEnvelope, OrderLookup, OwnOrder } from "../types.js";
+import type { DataEnvelope, OrderLookup, OwnOrder } from "../types.js";
 
 export interface OrderLookupParams {
   orderNumber: string;
@@ -16,7 +16,7 @@ export class OrdersResource {
     });
   }
 
-  /** Reads this shopper's existing Order and records a fresh paid checkout in the browser. */
+  /** Reads this shopper's existing Order and projects a paid checkout in the browser. */
   async getCheckoutOrder(orderId: string): Promise<DataEnvelope<OwnOrder>> {
     if (!this.client.getShopperToken()) {
       throw new ChaosApiError(401, "shopper_token_required", "the checkout shopper token is missing");
@@ -27,13 +27,5 @@ export class OrdersResource {
     );
     await this.client.recordCheckoutPurchase(result.data);
     return result;
-  }
-
-  /**
-   * Manual projection for integrations that already verified a current Order.
-   * Checkout return pages should use `getCheckoutOrder` instead.
-   */
-  recordConfirmedPurchase(order: ConfirmedPurchaseOrderInput): void {
-    this.client.recordConfirmedPurchase(order);
   }
 }

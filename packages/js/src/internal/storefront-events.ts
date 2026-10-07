@@ -2,18 +2,15 @@ import {
   ChaosStorefrontAnalytics,
   type AnalyticsOptions,
 } from "../events/browser.js";
-import type { ViewContentAnalyticsInput } from "../events/types.js";
 import type {
   CartLineMutation,
   ConfirmedPurchaseOrderInput,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutStart,
   OwnOrder,
+  Product,
 } from "../types.js";
-import { scopedStorageKey } from "./hash.js";
-
-const CHECKOUT_ORDER_STORAGE_PREFIX = "chaos.storefront.checkout_order";
-const CHECKOUT_ORDER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+import { maintainMetaFbcCookie } from "./meta-attribution.js";
 
 interface StorefrontEventCoordinatorOptions {
   baseUrl: string;
@@ -22,29 +19,29 @@ interface StorefrontEventCoordinatorOptions {
   now: () => number;
 }
 
-/** Keeps browser analytics and checkout-return state outside the API client. */
+/** Keeps browser analytics outside the API client and resource classes. */
 export class StorefrontEventCoordinator {
   private readonly analytics: ChaosStorefrontAnalytics | null;
-  private readonly checkoutStorage: Pick<
-    Storage,
-    "getItem" | "setItem" | "removeItem"
-  > | null;
-  private readonly checkoutOrderStorageKey: string;
   private warnedUnreachable = false;
 
-  constructor(private readonly options: StorefrontEventCoordinatorOptions) {
-    this.analytics = options.events
-      ? new ChaosStorefrontAnalytics({
-          publishableKey: `${options.baseUrl}\0${options.publishableKey}`,
-          ...options.events,
-        })
-      : null;
-    this.checkoutStorage = resolveCheckoutStorage(options.events?.sessionStorage);
-    this.checkoutOrderStorageKey = scopedStorageKey(
-      CHECKOUT_ORDER_STORAGE_PREFIX,
-      options.baseUrl,
-      options.publishableKey,
-    );
+  constructor(options: StorefrontEventCoordinatorOptions) {
+    const documentRef = options.events?.document ?? resolveDocument();
+    const sessionStorage = resolveSessionStorage(options.events?.sessionStorage);
+    const analyticsKey = `${options.baseUrl}\0${options.publishableKey}`;
+    if (options.events) {
+      this.analytics = new ChaosStorefrontAnalytics({
+        publishableKey: analyticsKey,
+        ...options.events,
+      });
+    } else {
+      maintainMetaFbcCookie(
+        analyticsKey,
+        documentRef,
+        sessionStorage,
+        options.now,
+      );
+      this.analytics = null;
+    }
   }
 
   setShopperId(shopperId: string): void {
@@ -69,17 +66,6 @@ export class StorefrontEventCoordinator {
     );
   }
 
-  rememberCheckoutOrder(orderId: string): void {
-    try {
-      this.checkoutStorage?.setItem(
-        this.checkoutOrderStorageKey,
-        JSON.stringify({ orderId, startedAt: this.options.now() }),
-      );
-    } catch {
-      // The payment handoff must work even when session storage is blocked.
-    }
-  }
-
   async recordCheckoutPurchase(
     order: OwnOrder,
     recordConfirmedPurchase: (order: ConfirmedPurchaseOrderInput) => void,
@@ -93,25 +79,10 @@ export class StorefrontEventCoordinator {
       return;
     }
     try {
-      const stored = this.checkoutStorage?.getItem(this.checkoutOrderStorageKey);
-      if (!stored) return;
-      const marker: unknown = JSON.parse(stored);
-      if (!marker || typeof marker !== "object") return;
-      const { orderId, startedAt } = marker as Record<string, unknown>;
-      const age =
-        typeof startedAt === "number" ? this.options.now() - startedAt : NaN;
-      if (
-        orderId !== order.id ||
-        !Number.isFinite(age) ||
-        age < 0 ||
-        age > CHECKOUT_ORDER_MAX_AGE_MS
-      ) {
-        return;
-      }
       await this.analytics?.setMetaOrderIdentity(order);
       recordConfirmedPurchase(order);
     } catch {
-      // Analytics and browser storage are best-effort after payment.
+      // Analytics are best-effort after payment.
     }
   }
 
@@ -125,9 +96,9 @@ export class StorefrontEventCoordinator {
     this.bestEffort("recordSearch", () => this.analytics?.search(input));
   }
 
-  recordViewContent(input: ViewContentAnalyticsInput): void {
-    this.bestEffort("recordViewContent", () =>
-      this.analytics?.viewContent(input),
+  recordProductView(product: Product): void {
+    this.bestEffort("recordProductView", () =>
+      this.analytics?.viewContent(product.id),
     );
   }
 
@@ -151,13 +122,21 @@ export class StorefrontEventCoordinator {
     this.warnedUnreachable = true;
     console.warn(
       `[chaos-js] ChaosStorefrontClient.${method}() ran with no \`document\` present, so it can ` +
-        "never reach Meta Pixel/GA4 from here (this is normal during SSR). Call the matching " +
-        "record* method again from a browser-hydrated component instead of relying on this call.",
+        "never reach Meta Pixel/GA4 from here (this is normal during SSR). Run the customer-facing " +
+        "resource operation through a browser ChaosStorefrontClient when it should emit an event.",
     );
   }
 }
 
-function resolveCheckoutStorage(
+function resolveDocument(): Document | undefined {
+  try {
+    return globalThis.document;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveSessionStorage(
   explicit: Storage | undefined,
 ): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {
   if (explicit) return explicit;

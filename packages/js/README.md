@@ -63,9 +63,12 @@ const chaos = new ChaosStorefrontClient({
 // session + create + get + put. Concurrent calls share one round of work.
 const cart = await chaos.cart.warmup();
 
-// Catalog reads record Search/ViewContent to the configured providers.
+// The first successful page of a non-empty query records one Search event.
 const { data: products } = await chaos.catalog.listProducts({ q: "shoes" });
-const { data: product } = await chaos.catalog.getProduct("running-shoes");
+// `openProduct` is the detail-page operation. It records Product-level
+// ViewContent/view_item internally, including when every Variant is sold out.
+// Use the pure `getProduct` read instead for SSR, prefetching or cache warming.
+const { data: product } = await chaos.catalog.openProduct("running-shoes");
 
 // Product media is returned as compact, reusable rules. Resolve the gallery
 // after the shopper selects a Variant: exact Variant, matching Option Value,
@@ -122,7 +125,7 @@ const mounted = await mountEmbeddedCheckout(action, document.querySelector("#che
 
 // On the return page, Stripe has appended order_id to the URL. Poll the
 // shopper-owned Order until Chaos's payment webhook marks it paid. Each read
-// automatically attempts Pixel and GA4 Purchase for this fresh checkout.
+// automatically attempts Pixel and GA4 Purchase for a confirmed paid Order.
 const orderId = new URLSearchParams(location.search).get("order_id")!;
 const { data: order } = await chaos.orders.getCheckoutOrder(orderId);
 if (order.status === "confirmed" && order.payment_status === "paid") showSuccess();
@@ -151,8 +154,9 @@ remain visible to the caller.
 Shopper-owned responses and issued credentials use `Cache-Control: private,
 no-store`. Storefront responses also vary on both Chaos credential headers so
 a shared HTTP cache cannot reuse one Channel or Shopper response for another.
-Treat `shopper_token` as opaque; `shopper_id` is the explicit analytics and
-identity value and may be stored beside it by this SDK.
+Treat `shopper_token` as opaque. The SDK stores its `shopper_id` beside it and
+hashes that id for Meta's `external_id` matching. It does not use the anonymous
+shopper id as GA4 User-ID, which is reserved for an authenticated account id.
 
 Event delivery starts as soon as `ChaosStorefrontClient` is constructed with
 an `events` option; a destination (Pixel, GA4) stays off until its config key
@@ -169,71 +173,85 @@ straight to creation. Cart identity is server-owned and is not persisted in
 browser storage. A consumer that already has a cart id can keep calling
 `cart.getOrCreate(id)` and ignore both.
 
-There are exactly six events — `page_view`, `view_content`, `search`,
-`add_to_cart`, `initiate_checkout`, `purchase` — and this SDK is the only
-thing that ever emits them client-side; there is no store-facing
-custom-event API. Five of the six project straight to the configured Meta
-Pixel and GA4 as they happen — there is no queue, no batching, and no
-chaos-owned analytics ledger; provider scripts are optional and load
-immediately when configured. `page_view` is GA4-only: it is not one of
-Meta's Standard Events (the base Pixel snippet fires it for traffic
-counting, but it isn't part of the commerce funnel Meta optimizes ads
-against the way `view_content`/`add_to_cart`/`purchase` are), so this SDK
-never sends it to Meta Pixel. GA4 automatic PageView collection stays
-disabled; Chaos maps semantic events to GA4 ecommerce names.
+The storefront funnel has six signals: `page_view`, `view_content`, `search`,
+`add_to_cart`, `initiate_checkout`, and `purchase`. The Google tag collects
+GA4 PageView automatically, including browser-history changes when that option
+is enabled in Enhanced Measurement. Chaos does not implement or send PageView
+itself, and it never sends Meta `PageView`. The other five events are projected
+by the SDK with no store-facing custom-event API. There is no queue, batching,
+or Chaos-owned analytics ledger; provider scripts are optional and load
+immediately when configured.
 
-`chaos.cart`/`chaos.catalog`/`chaos.payments` project `AddToCart`/
-`Search`/`ViewContent`/`InitiateCheckout` automatically after the matching
-request succeeds — route every mutation through them rather than the raw
-`chaos.request` escape hatch, or the matching event is silently skipped.
-Commerce item inputs retain `product_id` and `product_variant_id`; built-in
-Meta Pixel and GA4 commerce projections use `product_variant_id` as the
-item/content ID, and `view_content` falls back to `product_id` when no
-variant is supplied. AddToCart and InitiateCheckout mint their event ids in
-the browser. Purchase uses the Order id, shared with the server-side CAPI
-copy for Meta deduplication.
+| Storefront event | Trigger | Meta Pixel | GA4 | Meta CAPI |
+| --- | --- | --- | --- | --- |
+| Page view | Google tag automatic collection | — | `page_view` | — |
+| Product view | Successful `catalog.openProduct` | `ViewContent` | `view_item` | — |
+| Search | Successful first page with a non-empty `q` | `Search` | `search` | — |
+| Cart addition | Successful line mutation whose quantity increased | `AddToCart` | `add_to_cart` | — |
+| Checkout start | Successful embedded checkout creation or recovery | `InitiateCheckout` | `begin_checkout` | — |
+| Purchase | Confirmed paid `orders.getCheckoutOrder` response | `Purchase` | `purchase` | `Purchase` at payment confirmation |
 
-`catalog.getProduct`'s automatic `ViewContent` only knows the product's
-*first* variant — it has no way to know which one the shopper will actually
-see, since picking a different variant on the page (a color swatch, a size
-selector) is a local UI state change with no further request for the SDK to
-hook into. Call `chaos.recordViewContent` again once the shopper picks one:
+Browser commerce delivery is best effort and never changes the Storefront
+operation's result. It does not keep a local event ledger. Repeated operations
+are sent again with stable identifiers where the provider supports them.
+
+`chaos.cart` and `chaos.payments` project `AddToCart` and
+`InitiateCheckout` automatically after the matching request succeeds;
+the first successful page of a non-empty catalog query projects `Search`;
+cursor pagination does not. Route those operations through the typed resources
+rather than the raw `chaos.request` escape hatch, or the matching event is
+skipped.
+Commerce item inputs retain `product_id` and `product_variant_id`. Every Meta
+commerce event uses `product_id` for `content_ids` and `contents[].id`, keeping
+the catalog identity stable from ViewContent through Purchase. GA4 uses the
+same Product ID as `item_id` and keeps the selected Variant title in
+`item_variant`. AddToCart mints its event id in the browser.
+InitiateCheckout and Purchase use the Order UUID as Meta's event ID. A repeated
+checkout entry may produce another GA4 `begin_checkout`, which has no standard
+transaction ID. Browser Purchase also uses the Order UUID as GA4's
+`transaction_id` and shares its Meta event ID with the server-side CAPI copy.
+
+`catalog.getProduct` is a pure read because a successful request does not
+prove that its details reached the screen: it may be an SSR load, route
+prefetch, cache fill, or discarded render. Product detail pages use
+`catalog.openProduct` instead. It returns the same Product response and emits
+one Product-level `ViewContent`/`view_item` internally:
 
 ```ts
-chaos.recordViewContent({
-  productId: product.id,
-  productVariantId: selectedVariant.id,
-  priceMinor: selectedVariant.price.amount_minor,
-  currency: selectedVariant.price.currency,
-});
+const { data: product } = await chaos.catalog.openProduct("running-shoes");
 ```
 
-Skipping this leaves every `ViewContent` at the product level while
-`AddToCart`/`Purchase` report at the variant level, which breaks Meta's
-catalog matching for dynamic ads and "viewed but not bought" retargeting on
-any product with more than one variant. `priceMinor`/`currency` are required
-on every call, validated the same way `AddToCart`/`Purchase` already are.
+The event identifies the view only with `product.id`; it does not select a
+Variant, depend on inventory, or invent a Product price. Viewing a sold-out
+Product still counts. Variant changes stay local UI state and do not emit
+another product view. There is no public event method for the storefront to call.
 
-`purchase` is a projection of a server-confirmed Order. Checkout creation
-records the Order UUID in this tab; `orders.getCheckoutOrder` uses
-the existing shopper token to read the saved Order and automatically sends
-Pixel/GA4 Purchase only for that fresh checkout after payment is confirmed.
+`purchase` is a projection of a server-confirmed Order.
+`orders.getCheckoutOrder` uses the existing shopper token to read the saved
+Order and attempts Pixel/GA4 Purchase whenever the response is confirmed and
+paid (including partially refunded or refunded after an earlier payment).
 The authenticated Order read returns the current `orders` row with its flat
 contact and address columns, plus related lines and fulfillment progress; it
 does not use a checkout-time snapshot.
-The Order UUID is the Meta event ID and GA4 transaction ID. The SDK keeps
-separate per-provider dedup records so a failed provider can retry without
-repeating the other. It supplies saved Order identity to Meta Pixel Advanced
-Matching, while GA4 receives the net item amount, tax, and shipping without
-email or address. The manual `recordConfirmedPurchase` method remains for
-integrations that already have an authoritative Order, but order-history
-views should not call it.
+The Order UUID is the Meta event ID and GA4 transaction ID, so Meta can merge
+the browser and CAPI copies and GA4 can deduplicate repeated Purchase events.
+The SDK supplies saved Order identity to Meta Pixel Advanced Matching, while
+GA4 receives the net item amount, tax, and shipping without email or address.
+Order history and guest lookup reads never emit Purchase.
 
-The collector maintains a first-party `_fbc` cookie from a landing `fbclid`,
-bounded and capped at 90 days, independent of whether the Meta Pixel script
-has finished loading. `chaos.payments.createEmbeddedCheckout*` reads this
-same `_fbc` cookie (and Pixel's own `_fbp` cookie) by default when building
-the checkout request `attribution` — see below.
+Meta's browser and server transports express customer matching differently.
+The Pixel receives SHA-256 order identity through the customer-data argument
+of `fbq("init", pixelId, customerData)` before Purchase; the Purchase event
+parameters contain only commerce data. CAPI places the same hashed identity,
+plus `fbc`, `fbp`, client IP and user agent, in `user_data`, while its
+`custom_data` contains the order, value, currency and items. Customer identity
+is never copied into either Purchase `custom_data` object.
+
+The client maintains a first-party `_fbc` cookie from a landing `fbclid`,
+bounded and capped at 90 days, even when browser event providers are omitted.
+`chaos.payments.createEmbeddedCheckout*` reads this same `_fbc` cookie (and
+Pixel's own `_fbp` cookie) by default when building the checkout request
+`attribution` — see below.
 
 ### Server-side Meta Conversions API
 
