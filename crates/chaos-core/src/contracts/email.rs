@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chaos_domain::sales::PostalAddress;
 use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -83,6 +84,61 @@ pub struct EmailOrderLineItem {
     pub unit_price_amount_minor: i64,
     pub subtotal_amount_minor: i64,
     pub image_url: Option<String>,
+}
+
+/// Template input for the order-confirmation message. This contains only
+/// presentation-ready business values and no provider credentials.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderConfirmationEmailData {
+    pub order_number: String,
+    pub subtotal_amount_minor: i64,
+    pub discount_amount_minor: i64,
+    pub tax_amount_minor: i64,
+    pub shipping_amount_minor: i64,
+    pub total_amount_minor: i64,
+    pub currency: String,
+    pub lookup_url: String,
+    pub brand: EmailBrandConfiguration,
+    pub line_items: Vec<EmailOrderLineItem>,
+    pub shipping_address: Option<PostalAddress>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FulfillmentEmailStatus {
+    Shipped,
+    Delivered,
+}
+
+impl FulfillmentEmailStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Shipped => "shipped",
+            Self::Delivered => "delivered",
+        }
+    }
+}
+
+/// Template input for a shipped or delivered notification.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FulfillmentEmailData {
+    pub order_number: String,
+    pub status: FulfillmentEmailStatus,
+    pub tracking_number: Option<String>,
+    pub tracking_url: Option<String>,
+    pub lookup_url: String,
+    pub brand: EmailBrandConfiguration,
+}
+
+/// Provider routing and envelope metadata paired with typed template data.
+/// Persistence adapters prepare this value; the worker renders and sends it.
+pub struct PreparedEmail<T> {
+    pub provider: String,
+    pub credential_secret_reference: String,
+    pub from: String,
+    pub to: String,
+    pub reply_to: Option<String>,
+    pub idempotency_key: String,
+    pub data: T,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -41,7 +41,8 @@ pub use collection::{
 pub use email::{
     EmailAccountConfiguration, EmailBrandConfiguration, EmailBrandDetail, EmailDelivery,
     EmailMessage, EmailOrderLineItem, EmailProvider, EmailProviderAccountDetail,
-    EmailWebhookVerifier, VerifiedEmailWebhook,
+    EmailWebhookVerifier, FulfillmentEmailData, FulfillmentEmailStatus, OrderConfirmationEmailData,
+    PreparedEmail, VerifiedEmailWebhook,
 };
 pub use fulfillment::{FulfillmentDetail, FulfillmentProviderAccountDetail};
 pub use identity::{

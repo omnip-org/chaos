@@ -22,6 +22,7 @@ use chaos_core::{
         PaymentProviderRegistry,
     },
     email::EmailWorkers,
+    email_templates::EmailTemplateRenderer,
     webhooks::ProviderWebhookWorker,
 };
 
@@ -77,9 +78,11 @@ impl WorkerRuntime {
             dynamic_secrets.clone(),
             settings.dependency_timeout,
         )?) as Arc<dyn EmailProvider>;
+        let email_renderer = Arc::new(EmailTemplateRenderer::embedded()?);
         let email_workers = EmailWorkers::new(
             integration_queue,
             Arc::new(PostgresEmailRepository::new(infrastructure.runtime_pool())),
+            email_renderer,
             [email_provider],
         );
 

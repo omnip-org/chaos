@@ -1,0 +1,38 @@
+<mjml lang="en">
+  <mj-head>
+    <mj-title>{% block title %}{{ brand.name }}{% endblock %}</mj-title>
+    <mj-preview>{% block preheader %}{% endblock %}</mj-preview>
+    <mj-attributes>
+      <mj-all font-family="Arial, Helvetica, sans-serif" />
+      <mj-text color="{{ brand.text_color }}" font-size="14px" line-height="21px" padding="0" />
+      <mj-button background-color="{{ brand.primary_color }}" color="#FFFFFF" border-radius="6px" font-size="14px" font-weight="600" inner-padding="12px 24px" />
+    </mj-attributes>
+  </mj-head>
+  <mj-body width="600px" background-color="{{ brand.background_color }}">
+    <mj-section background-color="{{ brand.surface_color }}" padding="24px 24px 8px">
+      <mj-column>
+        <mj-table padding="0">
+          <tr>
+            {% if brand.logo_url %}
+            <td width="46" style="width:46px;padding:0 10px 0 0;vertical-align:middle">
+              <img src="{{ brand.logo_url }}" alt="" width="36" height="36" style="display:block;width:36px;height:36px;border:0;border-radius:9px;object-fit:contain" />
+            </td>
+            {% endif %}
+            <td style="padding:0;color:{{ brand.primary_color }};font-size:16px;font-weight:700;line-height:36px;vertical-align:middle">
+              {{ brand.name }}
+            </td>
+          </tr>
+        </mj-table>
+      </mj-column>
+    </mj-section>
+    {% block content %}{% endblock %}
+    <mj-section background-color="{{ brand.surface_color }}" padding="0 24px 24px">
+      <mj-column>
+        <mj-divider border-width="1px" border-color="{{ brand.accent_color }}" padding="0 0 20px" />
+        <mj-text align="center" color="{{ brand.muted_text_color }}" font-size="12px" line-height="18px">
+          Need help? Just reply to this email.
+        </mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

@@ -1,13 +1,9 @@
 use crate::{
     ApplicationError, Page,
     contracts::{
-        EmailAccountConfiguration, EmailBrandConfiguration, EmailBrandDetail, EmailMessage,
-        EmailOrderLineItem, EmailProviderAccountDetail,
-    },
-    email_templates::{
-        FulfillmentUpdateTemplateData, OrderConfirmationTemplateData,
-        default_fulfillment_update_template, default_order_confirmation_template,
-        render_fulfillment_update, render_order_confirmation,
+        EmailAccountConfiguration, EmailBrandConfiguration, EmailBrandDetail, EmailOrderLineItem,
+        EmailProviderAccountDetail, FulfillmentEmailData, FulfillmentEmailStatus,
+        OrderConfirmationEmailData, PreparedEmail,
     },
     error::database_error,
     store::StoreActor,
@@ -251,11 +247,11 @@ impl PostgresEmailRepository {
     /// not a transient failure: there is nobody to send the confirmation to,
     /// and retrying will not change that once the checkout session itself
     /// has settled without an email.
-    pub async fn prepare_order_confirmation(
+    pub async fn load_order_confirmation_email(
         &self,
         store_id: Uuid,
         order_id: Uuid,
-    ) -> Result<Option<(String, String, EmailMessage)>, ApplicationError> {
+    ) -> Result<Option<PreparedEmail<OrderConfirmationEmailData>>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.store_id', $1, true)")
             .bind(store_id.to_string())
@@ -359,50 +355,42 @@ impl PostgresEmailRepository {
         .map(email_order_line_item)
         .collect::<Vec<_>>();
         transaction.commit().await.map_err(database_error)?;
-        let template = render_order_confirmation(
-            &default_order_confirmation_template(),
-            &OrderConfirmationTemplateData {
-                order_number: &order_number,
+        Ok(Some(PreparedEmail {
+            provider,
+            credential_secret_reference,
+            from: sender,
+            to: contact_email,
+            reply_to: configuration.reply_to_email,
+            idempotency_key: format!("order-confirmed-{}", order_id.simple()),
+            data: OrderConfirmationEmailData {
+                order_number,
                 subtotal_amount_minor,
                 discount_amount_minor,
                 tax_amount_minor,
                 shipping_amount_minor,
                 total_amount_minor,
-                currency: &currency,
-                lookup_url: lookup_url.as_str(),
-                brand: &brand,
-                line_items: &line_items,
-                shipping_address: shipping_address.as_ref(),
+                currency,
+                lookup_url: lookup_url.into(),
+                brand,
+                line_items,
+                shipping_address,
             },
-        );
-        Ok(Some((
-            provider,
-            credential_secret_reference,
-            EmailMessage {
-                from: sender,
-                to: contact_email,
-                reply_to: configuration.reply_to_email,
-                subject: template.subject,
-                text: template.text,
-                html: Some(template.html),
-                idempotency_key: format!("order-confirmed-{}", order_id.simple()),
-            },
-        )))
+        }))
     }
 
-    /// Renders the shipped / delivered notice for a Fulfillment. Returns `None`
+    /// Loads the shipped / delivered notice data for a Fulfillment. Returns `None`
     /// when the Order still has no contact email — a terminal outcome, exactly
-    /// as in [`Self::prepare_order_confirmation`]. The idempotency key is keyed
+    /// as in [`Self::load_order_confirmation_email`]. The idempotency key is keyed
     /// by `fulfillment_id` so split shipments each send their own notice.
-    pub async fn prepare_fulfillment_update(
+    pub async fn load_fulfillment_update_email(
         &self,
         store_id: Uuid,
         order_id: Uuid,
         fulfillment_id: Uuid,
-        delivered: bool,
+        status: FulfillmentEmailStatus,
         tracking_number: Option<&str>,
         tracking_url: Option<&str>,
-    ) -> Result<Option<(String, String, EmailMessage)>, ApplicationError> {
+    ) -> Result<Option<PreparedEmail<FulfillmentEmailData>>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.store_id', $1, true)")
             .bind(store_id.to_string())
@@ -456,35 +444,26 @@ impl PostgresEmailRepository {
             .and_then(email_brand_detail)?
             .configuration;
         transaction.commit().await.map_err(database_error)?;
-        let template = render_fulfillment_update(
-            &default_fulfillment_update_template(),
-            &FulfillmentUpdateTemplateData {
-                order_number: &order_number,
-                delivered,
-                tracking_number,
-                tracking_url,
-                lookup_url: lookup_url.as_str(),
-                brand: &brand,
-            },
-        );
-        let idempotency_prefix = if delivered {
-            "order-delivered"
-        } else {
-            "order-shipped"
+        let idempotency_prefix = match status {
+            FulfillmentEmailStatus::Shipped => "order-shipped",
+            FulfillmentEmailStatus::Delivered => "order-delivered",
         };
-        Ok(Some((
+        Ok(Some(PreparedEmail {
             provider,
             credential_secret_reference,
-            EmailMessage {
-                from: sender,
-                to: contact_email,
-                reply_to: configuration.reply_to_email,
-                subject: template.subject,
-                text: template.text,
-                html: Some(template.html),
-                idempotency_key: format!("{idempotency_prefix}-{}", fulfillment_id.simple()),
+            from: sender,
+            to: contact_email,
+            reply_to: configuration.reply_to_email,
+            idempotency_key: format!("{idempotency_prefix}-{}", fulfillment_id.simple()),
+            data: FulfillmentEmailData {
+                order_number,
+                status,
+                tracking_number: tracking_number.map(str::to_owned),
+                tracking_url: tracking_url.map(str::to_owned),
+                lookup_url: lookup_url.into(),
+                brand,
             },
-        )))
+        }))
     }
 }
 

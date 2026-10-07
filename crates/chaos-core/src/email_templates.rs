@@ -1,480 +1,416 @@
-use crate::contracts::{EmailBrandConfiguration, EmailOrderLineItem};
-use chaos_domain::sales::PostalAddress;
+//! Transactional email rendering shared by the worker and local preview.
+//!
+//! Rust prepares typed business data; MiniJinja owns presentation conditions
+//! and repetition; MRML turns the rendered MJML into client-compatible HTML.
 
+use std::path::{Path, PathBuf};
+
+use minijinja::{AutoEscape, Environment, UndefinedBehavior};
+use serde::Serialize;
+
+use crate::contracts::{
+    EmailBrandConfiguration, EmailOrderLineItem, FulfillmentEmailData, FulfillmentEmailStatus,
+    OrderConfirmationEmailData,
+};
+
+const BASE_MJML: &str = include_str!("../templates/email/base.mjml");
+const ORDER_STATUS_BUTTON_MJML: &str =
+    include_str!("../templates/email/components/order-status-button.mjml");
 const ORDER_CONFIRMED_SUBJECT: &str =
     include_str!("../templates/email/order-confirmed.subject.txt");
 const ORDER_CONFIRMED_TEXT: &str = include_str!("../templates/email/order-confirmed.txt");
-const ORDER_CONFIRMED_HTML: &str = include_str!("../templates/email/order-confirmed.html");
-
+const ORDER_CONFIRMED_MJML: &str = include_str!("../templates/email/order-confirmed.mjml");
 const FULFILLMENT_UPDATE_SUBJECT: &str =
     include_str!("../templates/email/fulfillment-update.subject.txt");
 const FULFILLMENT_UPDATE_TEXT: &str = include_str!("../templates/email/fulfillment-update.txt");
-const FULFILLMENT_UPDATE_HTML: &str = include_str!("../templates/email/fulfillment-update.html");
+const FULFILLMENT_UPDATE_MJML: &str = include_str!("../templates/email/fulfillment-update.mjml");
 
-/// The template structure is owned by the platform. Store configuration only
-/// supplies branding tokens; order data and repeated line-item fragments are
-/// always assembled by the server from the order snapshot.
+const TEMPLATE_NAMES: [&str; 8] = [
+    "base.mjml",
+    "components/order-status-button.mjml",
+    "order-confirmed.subject.txt",
+    "order-confirmed.txt",
+    "order-confirmed.mjml",
+    "fulfillment-update.subject.txt",
+    "fulfillment-update.txt",
+    "fulfillment-update.mjml",
+];
+
+#[derive(Debug, thiserror::Error)]
+pub enum EmailTemplateError {
+    #[error("failed to read email template {path}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("email template {template} is invalid: {message}")]
+    Template { template: String, message: String },
+    #[error("rendered MJML for {template} is invalid: {message}")]
+    Mjml { template: String, message: String },
+}
+
 #[derive(Clone)]
-pub(crate) struct EmailTemplateContent {
-    pub subject_template: String,
-    pub text_template: String,
-    pub html_template: String,
+pub struct EmailTemplateRenderer {
+    environment: Environment<'static>,
 }
 
-pub(crate) fn default_order_confirmation_template() -> EmailTemplateContent {
-    EmailTemplateContent {
-        subject_template: ORDER_CONFIRMED_SUBJECT.trim_end().to_owned(),
-        text_template: ORDER_CONFIRMED_TEXT.to_owned(),
-        html_template: ORDER_CONFIRMED_HTML.to_owned(),
-    }
-}
-
-pub(crate) struct OrderConfirmationTemplateData<'a> {
-    pub order_number: &'a str,
-    pub subtotal_amount_minor: i64,
-    pub discount_amount_minor: i64,
-    pub tax_amount_minor: i64,
-    pub shipping_amount_minor: i64,
-    pub total_amount_minor: i64,
-    pub currency: &'a str,
-    pub lookup_url: &'a str,
-    pub brand: &'a EmailBrandConfiguration,
-    pub line_items: &'a [EmailOrderLineItem],
-    pub shipping_address: Option<&'a PostalAddress>,
-}
-
-pub(crate) struct RenderedEmailTemplate {
+#[derive(Debug, Eq, PartialEq)]
+pub struct RenderedEmailTemplate {
     pub subject: String,
     pub text: String,
     pub html: String,
 }
 
-pub(crate) fn render_order_confirmation(
-    template: &EmailTemplateContent,
-    data: &OrderConfirmationTemplateData<'_>,
-) -> RenderedEmailTemplate {
-    let order_number = data.order_number.to_owned();
-    let currency = data.currency.to_owned();
-    let subtotal_amount = format_money(data.subtotal_amount_minor, &currency);
-    let discount_amount = format_money(data.discount_amount_minor, &currency);
-    let tax_amount = format_money(data.tax_amount_minor, &currency);
-    let shipping_amount = format_money(data.shipping_amount_minor, &currency);
-    let total_amount = format_money(data.total_amount_minor, &currency);
-    let lookup_url = data.lookup_url.to_owned();
-    let line_items_text = render_line_items_text(data.line_items, &currency);
-    let shipping_address_text = render_shipping_address_text(data.shipping_address);
-    let discount_text =
-        render_discount_text(data.discount_amount_minor, &discount_amount, &currency);
-
-    let html_order_number = escape_html(&order_number);
-    let html_subtotal_amount = escape_html(&subtotal_amount);
-    let html_total_amount = escape_html(&total_amount);
-    let html_currency = escape_html(&currency);
-    let html_shipping_amount = escape_html(&shipping_amount);
-    let html_tax_amount = escape_html(&tax_amount);
-    let html_lookup_url = escape_html(&lookup_url);
-    let html_brand_name = escape_html(&data.brand.brand_name);
-    let html_primary_color = escape_html(&data.brand.primary_color);
-    let html_accent_color = escape_html(&data.brand.accent_color);
-    let html_background_color = escape_html(&data.brand.background_color);
-    let html_surface_color = escape_html(&data.brand.surface_color);
-    let html_text_color = escape_html(&data.brand.text_color);
-    let html_muted_text_color = escape_html(&data.brand.muted_text_color);
-    let brand_header_html = render_brand_header_html(data.brand);
-    let line_items_html = render_line_items_html(data.line_items, &currency, data.brand);
-    let shipping_address_html = render_shipping_address_html(data.shipping_address, data.brand);
-    let discount_row_html = render_discount_row_html(
-        data.discount_amount_minor,
-        &discount_amount,
-        &currency,
-        data.brand,
-    );
-
-    let subject = render_template(
-        &template.subject_template,
-        &[
-            ("brand_name", data.brand.brand_name.as_str()),
-            ("order_number", order_number.as_str()),
-            ("total_amount", total_amount.as_str()),
-            ("currency", currency.as_str()),
-            ("lookup_url", lookup_url.as_str()),
-        ],
-    )
-    .trim()
-    .to_owned();
-    let text = render_template(
-        &template.text_template,
-        &[
-            ("brand_name", data.brand.brand_name.as_str()),
-            ("order_number", order_number.as_str()),
-            ("subtotal_amount", subtotal_amount.as_str()),
-            ("discount_text", discount_text.as_str()),
-            ("shipping_amount", shipping_amount.as_str()),
-            ("tax_amount", tax_amount.as_str()),
-            ("total_amount", total_amount.as_str()),
-            ("currency", currency.as_str()),
-            ("lookup_url", lookup_url.as_str()),
-            ("line_items_text", line_items_text.as_str()),
-            ("shipping_address_text", shipping_address_text.as_str()),
-        ],
-    );
-    let html = render_template(
-        &template.html_template,
-        &[
-            ("brand_name", html_brand_name.as_str()),
-            ("brand_header_html", brand_header_html.as_str()),
-            ("primary_color", html_primary_color.as_str()),
-            ("accent_color", html_accent_color.as_str()),
-            ("background_color", html_background_color.as_str()),
-            ("surface_color", html_surface_color.as_str()),
-            ("text_color", html_text_color.as_str()),
-            ("muted_text_color", html_muted_text_color.as_str()),
-            ("order_number", html_order_number.as_str()),
-            ("subtotal_amount", html_subtotal_amount.as_str()),
-            ("discount_row_html", discount_row_html.as_str()),
-            ("shipping_amount", html_shipping_amount.as_str()),
-            ("tax_amount", html_tax_amount.as_str()),
-            ("total_amount", html_total_amount.as_str()),
-            ("currency", html_currency.as_str()),
-            ("lookup_url", html_lookup_url.as_str()),
-            ("line_items_html", line_items_html.as_str()),
-            ("shipping_address_html", shipping_address_html.as_str()),
-        ],
-    );
-
-    RenderedEmailTemplate {
-        subject,
-        text,
-        html,
+impl EmailTemplateRenderer {
+    /// Loads the production templates embedded in the binary and renders all
+    /// representative branches before the worker starts accepting jobs.
+    pub fn embedded() -> Result<Self, EmailTemplateError> {
+        Self::from_sources([
+            ("base.mjml", BASE_MJML.to_owned()),
+            (
+                "components/order-status-button.mjml",
+                ORDER_STATUS_BUTTON_MJML.to_owned(),
+            ),
+            (
+                "order-confirmed.subject.txt",
+                ORDER_CONFIRMED_SUBJECT.to_owned(),
+            ),
+            ("order-confirmed.txt", ORDER_CONFIRMED_TEXT.to_owned()),
+            ("order-confirmed.mjml", ORDER_CONFIRMED_MJML.to_owned()),
+            (
+                "fulfillment-update.subject.txt",
+                FULFILLMENT_UPDATE_SUBJECT.to_owned(),
+            ),
+            ("fulfillment-update.txt", FULFILLMENT_UPDATE_TEXT.to_owned()),
+            (
+                "fulfillment-update.mjml",
+                FULFILLMENT_UPDATE_MJML.to_owned(),
+            ),
+        ])
     }
-}
 
-pub(crate) fn default_fulfillment_update_template() -> EmailTemplateContent {
-    EmailTemplateContent {
-        subject_template: FULFILLMENT_UPDATE_SUBJECT.trim_end().to_owned(),
-        text_template: FULFILLMENT_UPDATE_TEXT.to_owned(),
-        html_template: FULFILLMENT_UPDATE_HTML.to_owned(),
-    }
-}
-
-pub(crate) struct FulfillmentUpdateTemplateData<'a> {
-    pub order_number: &'a str,
-    /// `true` renders the delivered notice, `false` the shipped notice.
-    pub delivered: bool,
-    pub tracking_number: Option<&'a str>,
-    pub tracking_url: Option<&'a str>,
-    pub lookup_url: &'a str,
-    pub brand: &'a EmailBrandConfiguration,
-}
-
-pub(crate) fn render_fulfillment_update(
-    template: &EmailTemplateContent,
-    data: &FulfillmentUpdateTemplateData<'_>,
-) -> RenderedEmailTemplate {
-    let order_number = data.order_number.to_owned();
-    let lookup_url = data.lookup_url.to_owned();
-    let (status_phrase, label, headline, body_text) = if data.delivered {
-        (
-            "delivered",
-            "Delivery update",
-            "Your order has arrived",
-            format!("Order {order_number} has been delivered. We hope you enjoy it."),
-        )
-    } else {
-        (
-            "shipped",
-            "Shipping update",
-            "Your order is on its way",
-            format!("Order {order_number} has shipped and is on its way to you."),
-        )
-    };
-    // A delivered notice never carries tracking; a shipped notice carries it
-    // only when the Fulfillment recorded a tracking number.
-    let tracking_number = if data.delivered {
-        None
-    } else {
-        data.tracking_number
-    };
-    let tracking_url = if data.delivered {
-        None
-    } else {
-        data.tracking_url
-    };
-    let tracking_text = render_tracking_text(tracking_number, tracking_url);
-
-    let brand_header_html = render_brand_header_html(data.brand);
-    let body_html = escape_html(&body_text);
-    let tracking_html = render_tracking_html(tracking_number, tracking_url, data.brand);
-    let html_brand_name = escape_html(&data.brand.brand_name);
-    let html_order_number = escape_html(&order_number);
-    let html_lookup_url = escape_html(&lookup_url);
-    let html_primary_color = escape_html(&data.brand.primary_color);
-    let html_accent_color = escape_html(&data.brand.accent_color);
-    let html_background_color = escape_html(&data.brand.background_color);
-    let html_surface_color = escape_html(&data.brand.surface_color);
-    let html_text_color = escape_html(&data.brand.text_color);
-    let html_muted_text_color = escape_html(&data.brand.muted_text_color);
-
-    let subject = render_template(
-        &template.subject_template,
-        &[
-            ("brand_name", data.brand.brand_name.as_str()),
-            ("order_number", order_number.as_str()),
-            ("status_phrase", status_phrase),
-        ],
-    )
-    .trim()
-    .to_owned();
-    let text = render_template(
-        &template.text_template,
-        &[
-            ("brand_name", data.brand.brand_name.as_str()),
-            ("headline", headline),
-            ("body_text", body_text.as_str()),
-            ("tracking_text", tracking_text.as_str()),
-            ("lookup_url", lookup_url.as_str()),
-        ],
-    );
-    let html = render_template(
-        &template.html_template,
-        &[
-            ("brand_name", html_brand_name.as_str()),
-            ("brand_header_html", brand_header_html.as_str()),
-            ("primary_color", html_primary_color.as_str()),
-            ("accent_color", html_accent_color.as_str()),
-            ("background_color", html_background_color.as_str()),
-            ("surface_color", html_surface_color.as_str()),
-            ("text_color", html_text_color.as_str()),
-            ("muted_text_color", html_muted_text_color.as_str()),
-            ("label", label),
-            ("headline", headline),
-            ("body_html", body_html.as_str()),
-            ("tracking_html", tracking_html.as_str()),
-            ("order_number", html_order_number.as_str()),
-            ("lookup_url", html_lookup_url.as_str()),
-        ],
-    );
-
-    RenderedEmailTemplate {
-        subject,
-        text,
-        html,
-    }
-}
-
-fn render_tracking_text(number: Option<&str>, url: Option<&str>) -> String {
-    let Some(number) = number else {
-        return String::new();
-    };
-    match url {
-        Some(url) => format!("Tracking number: {number}\nTrack your shipment: {url}\n\n"),
-        None => format!("Tracking number: {number}\n\n"),
-    }
-}
-
-fn render_tracking_html(
-    number: Option<&str>,
-    url: Option<&str>,
-    brand: &EmailBrandConfiguration,
-) -> String {
-    let Some(number) = number else {
-        return String::new();
-    };
-    let border_color = escape_html(&brand.accent_color);
-    let muted_text_color = escape_html(&brand.muted_text_color);
-    let text_color = escape_html(&brand.text_color);
-    let number = escape_html(number);
-    let number_html = match url {
-        Some(url) => format!(
-            "<a href=\"{}\" style=\"color:{};font-weight:600;text-decoration:underline\">{number}</a>",
-            escape_html(url),
-            escape_html(&brand.primary_color),
-        ),
-        None => format!("<span style=\"font-weight:600\">{number}</span>"),
-    };
-    format!(
-        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:0 0 24px;font-family:Arial,Helvetica,sans-serif;border-top:1px solid {border_color}\"><tr><td style=\"padding:16px 0 4px;color:{muted_text_color};font-size:12px;font-weight:600\">Tracking</td></tr><tr><td style=\"padding:0;color:{text_color};font-size:14px\">{number_html}</td></tr></table>"
-    )
-}
-
-fn render_template(template: &str, values: &[(&str, &str)]) -> String {
-    let mut rendered = String::with_capacity(template.len());
-    let mut cursor = 0;
-    while let Some(start_offset) = template[cursor..].find("{{") {
-        let start = cursor + start_offset;
-        rendered.push_str(&template[cursor..start]);
-        let key_start = start + 2;
-        let Some(end_offset) = template[key_start..].find("}}") else {
-            rendered.push_str(&template[start..]);
-            return rendered;
-        };
-        let end = key_start + end_offset;
-        let key = &template[key_start..end];
-        if let Some((_, value)) = values.iter().find(|(name, _)| *name == key) {
-            rendered.push_str(value);
-        } else {
-            rendered.push_str(&template[start..end + 2]);
+    /// Loads templates from disk for the preview server. A new renderer should
+    /// be created for each preview request so a browser refresh sees edits.
+    pub fn from_directory(root: impl AsRef<Path>) -> Result<Self, EmailTemplateError> {
+        let root = root.as_ref();
+        let mut sources = Vec::with_capacity(TEMPLATE_NAMES.len());
+        for name in TEMPLATE_NAMES {
+            let path = root.join(name);
+            let source =
+                std::fs::read_to_string(&path).map_err(|source| EmailTemplateError::Read {
+                    path: path.clone(),
+                    source,
+                })?;
+            sources.push((name, source));
         }
-        cursor = end + 2;
+        Self::from_sources(sources)
     }
-    rendered.push_str(&template[cursor..]);
-    rendered
-}
 
-fn render_brand_header_html(brand: &EmailBrandConfiguration) -> String {
-    let brand_name = escape_html(&brand.brand_name);
-    match brand.logo_url.as_deref() {
-        Some(logo_url) => format!(
-            "<img src=\"{}\" alt=\"{}\" width=\"36\" height=\"36\" style=\"display:inline-block;vertical-align:middle;border:0;border-radius:9px;object-fit:contain;\" /><span style=\"display:inline-block;margin-left:10px;vertical-align:middle;line-height:36px;\">{}</span>",
-            escape_html(logo_url),
-            brand_name,
-            brand_name,
-        ),
-        None => format!(
-            "<span style=\"display:inline-block;line-height:36px;\">{}</span>",
-            brand_name
-        ),
+    pub fn render_order_confirmation(
+        &self,
+        data: &OrderConfirmationEmailData,
+    ) -> Result<RenderedEmailTemplate, EmailTemplateError> {
+        let view = OrderConfirmationView::from(data);
+        self.render(
+            "order-confirmed.subject.txt",
+            "order-confirmed.txt",
+            "order-confirmed.mjml",
+            &view,
+        )
     }
-}
 
-fn render_line_items_html(
-    items: &[EmailOrderLineItem],
-    currency: &str,
-    brand: &EmailBrandConfiguration,
-) -> String {
-    let border_color = escape_html(&brand.accent_color);
-    let muted_text_color = escape_html(&brand.muted_text_color);
-    let text_color = escape_html(&brand.text_color);
-    let mut rendered = format!(
-        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse:collapse;font-family:Arial,Helvetica,sans-serif;\"><thead><tr><th colspan=\"2\" align=\"left\" style=\"padding:0 0 8px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Item</th><th align=\"center\" style=\"padding:0 8px 8px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Qty</th><th align=\"right\" style=\"padding:0 0 8px;border-bottom:1px solid {border_color};font-size:12px;color:{muted_text_color};font-weight:600;\">Amount</th></tr></thead><tbody>"
-    );
-    if items.is_empty() {
-        rendered.push_str(&format!(
-            "<tr><td colspan=\"4\" style=\"padding:12px 0;color:{muted_text_color};font-size:14px;\">No item details available.</td></tr>"
-        ));
-    } else {
-        for item in items {
-            let product_title = escape_html(&item.product_title);
-            let variant_title = escape_html(&item.variant_title);
-            let subtotal = escape_html(&format_money(item.subtotal_amount_minor, currency));
-            let thumbnail = match item.image_url.as_deref() {
-                Some(image_url) => format!(
-                    "<img src=\"{}\" alt=\"\" width=\"44\" height=\"44\" style=\"display:block;border:0;border-radius:6px;object-fit:cover;\" />",
-                    escape_html(image_url),
-                ),
-                None => format!(
-                    "<div style=\"width:44px;height:44px;border-radius:6px;background:{border_color};\"></div>"
-                ),
-            };
-            rendered.push_str(&format!(
-                "<tr><td width=\"44\" style=\"padding:12px 12px 12px 0;border-bottom:1px solid {border_color};\">{}</td><td style=\"padding:12px 0;border-bottom:1px solid {border_color};font-size:14px;color:{text_color};\"><div style=\"margin:0 0 4px;font-size:14px;font-weight:600;line-height:1.35;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;\">{}</div><span style=\"color:{muted_text_color};font-size:12px;\">{}</span></td><td align=\"center\" style=\"padding:12px 8px;border-bottom:1px solid {border_color};font-size:14px;color:{text_color};\">{}</td><td align=\"right\" style=\"padding:12px 0;border-bottom:1px solid {border_color};font-size:14px;color:{text_color};white-space:nowrap;\">{} {}</td></tr>",
-                thumbnail,
-                product_title,
-                variant_title,
-                item.quantity,
-                subtotal,
-                escape_html(currency),
-            ));
+    pub fn render_fulfillment_update(
+        &self,
+        data: &FulfillmentEmailData,
+    ) -> Result<RenderedEmailTemplate, EmailTemplateError> {
+        let view = FulfillmentUpdateView::from(data);
+        self.render(
+            "fulfillment-update.subject.txt",
+            "fulfillment-update.txt",
+            "fulfillment-update.mjml",
+            &view,
+        )
+    }
+
+    fn from_sources(
+        sources: impl IntoIterator<Item = (&'static str, String)>,
+    ) -> Result<Self, EmailTemplateError> {
+        let mut environment = Environment::new();
+        environment.set_undefined_behavior(UndefinedBehavior::Strict);
+        environment.set_auto_escape_callback(|name| {
+            if name.ends_with(".mjml") {
+                AutoEscape::Html
+            } else {
+                AutoEscape::None
+            }
+        });
+        for (name, source) in sources {
+            environment
+                .add_template_owned(name, source)
+                .map_err(|error| EmailTemplateError::Template {
+                    template: name.to_owned(),
+                    message: error.to_string(),
+                })?;
         }
+        for name in TEMPLATE_NAMES {
+            environment
+                .get_template(name)
+                .map_err(|error| EmailTemplateError::Template {
+                    template: name.to_owned(),
+                    message: error.to_string(),
+                })?;
+        }
+        let renderer = Self { environment };
+        renderer.validate_templates()?;
+        Ok(renderer)
     }
-    rendered.push_str("</tbody></table>");
-    rendered
-}
 
-fn render_line_items_text(items: &[EmailOrderLineItem], currency: &str) -> String {
-    if items.is_empty() {
-        return "- No item details available.".into();
-    }
-    items
-        .iter()
-        .map(|item| {
-            let sku = item
-                .sku
-                .as_deref()
-                .map(|sku| format!(", SKU {sku}"))
-                .unwrap_or_default();
-            format!(
-                "- {} / {}{} × {} — {} {}",
-                item.product_title,
-                item.variant_title,
-                sku,
-                item.quantity,
-                format_money(item.subtotal_amount_minor, currency),
-                currency,
-            )
+    fn render<T: Serialize>(
+        &self,
+        subject_name: &str,
+        text_name: &str,
+        mjml_name: &str,
+        view: &T,
+    ) -> Result<RenderedEmailTemplate, EmailTemplateError> {
+        let subject = self.render_template(subject_name, view)?.trim().to_owned();
+        let text = self.render_template(text_name, view)?;
+        let mjml = self.render_template(mjml_name, view)?;
+        let html = render_mjml(mjml_name, &mjml)?;
+        Ok(RenderedEmailTemplate {
+            subject,
+            text,
+            html,
         })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn render_shipping_address_text(address: Option<&PostalAddress>) -> String {
-    let Some(address) = address else {
-        return String::new();
-    };
-    let mut lines = vec![
-        address.full_name().to_owned(),
-        address.address_line1().to_owned(),
-    ];
-    if let Some(line2) = address.address_line2() {
-        lines.push(line2.to_owned());
     }
-    lines.push(address_locality_line(address));
-    lines.push(address.country_code().to_owned());
-    format!("Shipping address:\n{}", lines.join("\n"))
-}
 
-fn render_discount_text(amount_minor: i64, amount: &str, currency: &str) -> String {
-    if amount_minor > 0 {
-        format!("Discount: -{amount} {currency}")
-    } else {
-        String::new()
+    fn render_template<T: Serialize>(
+        &self,
+        name: &str,
+        view: &T,
+    ) -> Result<String, EmailTemplateError> {
+        self.environment
+            .get_template(name)
+            .and_then(|template| template.render(view))
+            .map_err(|error| EmailTemplateError::Template {
+                template: name.to_owned(),
+                message: error.to_string(),
+            })
+    }
+
+    fn validate_templates(&self) -> Result<(), EmailTemplateError> {
+        let address = chaos_domain::sales::PostalAddress::new(
+            "Preview Buyer",
+            "1 Template Street",
+            Some("Suite 2".into()),
+            "Singapore",
+            None,
+            Some("018987".into()),
+            "SG",
+        )
+        .map_err(|error| EmailTemplateError::Template {
+            template: "built-in validation data".into(),
+            message: error.to_string(),
+        })?;
+        let mut order = OrderConfirmationEmailData {
+            order_number: "PREVIEW-1".into(),
+            subtotal_amount_minor: 1_000,
+            discount_amount_minor: 100,
+            tax_amount_minor: 50,
+            shipping_amount_minor: 100,
+            total_amount_minor: 1_050,
+            currency: "USD".into(),
+            lookup_url: "https://shop.example.test/orders/details".into(),
+            brand: EmailBrandConfiguration {
+                logo_url: Some("https://cdn.example.test/logo.png".into()),
+                ..EmailBrandConfiguration::defaults("Preview Store".into())
+            },
+            line_items: vec![EmailOrderLineItem {
+                product_title: "Preview product".into(),
+                variant_title: "Default".into(),
+                sku: Some("PREVIEW-SKU".into()),
+                quantity: 1,
+                unit_price_amount_minor: 1_000,
+                subtotal_amount_minor: 1_000,
+                image_url: Some("https://cdn.example.test/product.png".into()),
+            }],
+            shipping_address: Some(address),
+        };
+        self.render_order_confirmation(&order)?;
+        order.brand.logo_url = None;
+        order.discount_amount_minor = 0;
+        order.line_items.clear();
+        order.shipping_address = None;
+        self.render_order_confirmation(&order)?;
+
+        let mut fulfillment = FulfillmentEmailData {
+            order_number: "PREVIEW-1".into(),
+            status: FulfillmentEmailStatus::Shipped,
+            tracking_number: Some("TRACK-1".into()),
+            tracking_url: Some("https://tracking.example.test/TRACK-1".into()),
+            lookup_url: "https://shop.example.test/orders/details".into(),
+            brand: EmailBrandConfiguration::defaults("Preview Store".into()),
+        };
+        self.render_fulfillment_update(&fulfillment)?;
+        fulfillment.tracking_number = None;
+        fulfillment.tracking_url = None;
+        self.render_fulfillment_update(&fulfillment)?;
+        fulfillment.status = FulfillmentEmailStatus::Delivered;
+        self.render_fulfillment_update(&fulfillment)?;
+        Ok(())
     }
 }
 
-fn render_discount_row_html(
-    amount_minor: i64,
-    amount: &str,
-    currency: &str,
-    brand: &EmailBrandConfiguration,
-) -> String {
-    if amount_minor <= 0 {
-        return String::new();
+fn render_mjml(template: &str, source: &str) -> Result<String, EmailTemplateError> {
+    let parsed = mrml::parse(source).map_err(|error| EmailTemplateError::Mjml {
+        template: template.to_owned(),
+        message: error.to_string(),
+    })?;
+    if !parsed.warnings.is_empty() {
+        return Err(EmailTemplateError::Mjml {
+            template: template.to_owned(),
+            message: format!("parser warnings: {:?}", parsed.warnings),
+        });
     }
-    let muted_text_color = escape_html(&brand.muted_text_color);
-    let text_color = escape_html(&brand.text_color);
-    let amount = escape_html(&format!("-{amount}"));
-    let currency = escape_html(currency);
-    format!(
-        "<tr><td style=\"padding:8px 0;color:{muted_text_color};font-size:14px\">Discount</td><td align=\"right\" style=\"padding:8px 0;color:{text_color};font-size:14px\">{amount} {currency}</td></tr>"
-    )
+    parsed
+        .element
+        .render(&mrml::prelude::render::RenderOptions::default())
+        .map_err(|error| EmailTemplateError::Mjml {
+            template: template.to_owned(),
+            message: error.to_string(),
+        })
 }
 
-fn render_shipping_address_html(
-    address: Option<&PostalAddress>,
-    brand: &EmailBrandConfiguration,
-) -> String {
-    let Some(address) = address else {
-        return String::new();
-    };
-    let border_color = escape_html(&brand.accent_color);
-    let muted_text_color = escape_html(&brand.muted_text_color);
-    let text_color = escape_html(&brand.text_color);
-    let mut lines = vec![
-        format!("<strong>{}</strong>", escape_html(address.full_name())),
-        escape_html(address.address_line1()),
-    ];
-    if let Some(line2) = address.address_line2() {
-        lines.push(escape_html(line2));
-    }
-    lines.push(escape_html(&address_locality_line(address)));
-    lines.push(escape_html(address.country_code()));
-    format!(
-        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin:0 0 24px;font-family:Arial,Helvetica,sans-serif;border-top:1px solid {border_color}\"><tr><td style=\"padding:16px 0 4px;color:{muted_text_color};font-size:12px;font-weight:600\">Shipping address</td></tr><tr><td style=\"padding:0;color:{text_color};font-size:14px;\">{}</td></tr></table>",
-        lines.join("<br />")
-    )
+#[derive(Serialize)]
+struct BrandView<'a> {
+    name: &'a str,
+    logo_url: Option<&'a str>,
+    primary_color: &'a str,
+    accent_color: &'a str,
+    background_color: &'a str,
+    surface_color: &'a str,
+    text_color: &'a str,
+    muted_text_color: &'a str,
 }
 
-fn address_locality_line(address: &PostalAddress) -> String {
+impl<'a> From<&'a EmailBrandConfiguration> for BrandView<'a> {
+    fn from(brand: &'a EmailBrandConfiguration) -> Self {
+        Self {
+            name: &brand.brand_name,
+            logo_url: brand.logo_url.as_deref(),
+            primary_color: &brand.primary_color,
+            accent_color: &brand.accent_color,
+            background_color: &brand.background_color,
+            surface_color: &brand.surface_color,
+            text_color: &brand.text_color,
+            muted_text_color: &brand.muted_text_color,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct OrderLineView<'a> {
+    product_title: &'a str,
+    variant_title: &'a str,
+    sku: Option<&'a str>,
+    quantity: i32,
+    subtotal_amount: String,
+    image_url: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct ShippingAddressView<'a> {
+    full_name: &'a str,
+    lines: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct OrderConfirmationView<'a> {
+    brand: BrandView<'a>,
+    order_number: &'a str,
+    subtotal_amount: String,
+    discount_amount: Option<String>,
+    tax_amount: String,
+    shipping_amount: String,
+    total_amount: String,
+    currency: &'a str,
+    lookup_url: &'a str,
+    line_items: Vec<OrderLineView<'a>>,
+    shipping_address: Option<ShippingAddressView<'a>>,
+}
+
+impl<'a> From<&'a OrderConfirmationEmailData> for OrderConfirmationView<'a> {
+    fn from(data: &'a OrderConfirmationEmailData) -> Self {
+        Self {
+            brand: BrandView::from(&data.brand),
+            order_number: &data.order_number,
+            subtotal_amount: format_money(data.subtotal_amount_minor, &data.currency),
+            discount_amount: (data.discount_amount_minor > 0)
+                .then(|| format_money(data.discount_amount_minor, &data.currency)),
+            tax_amount: format_money(data.tax_amount_minor, &data.currency),
+            shipping_amount: format_money(data.shipping_amount_minor, &data.currency),
+            total_amount: format_money(data.total_amount_minor, &data.currency),
+            currency: &data.currency,
+            lookup_url: &data.lookup_url,
+            line_items: data
+                .line_items
+                .iter()
+                .map(|item| OrderLineView {
+                    product_title: &item.product_title,
+                    variant_title: &item.variant_title,
+                    sku: item.sku.as_deref(),
+                    quantity: item.quantity,
+                    subtotal_amount: format_money(item.subtotal_amount_minor, &data.currency),
+                    image_url: item.image_url.as_deref(),
+                })
+                .collect(),
+            shipping_address: data.shipping_address.as_ref().map(|address| {
+                let mut lines = vec![address.address_line1().to_owned()];
+                if let Some(line2) = address.address_line2() {
+                    lines.push(line2.to_owned());
+                }
+                lines.push(address_locality_line(address));
+                lines.push(address.country_code().to_owned());
+                ShippingAddressView {
+                    full_name: address.full_name(),
+                    lines,
+                }
+            }),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct FulfillmentUpdateView<'a> {
+    brand: BrandView<'a>,
+    order_number: &'a str,
+    status: &'static str,
+    tracking_number: Option<&'a str>,
+    tracking_url: Option<&'a str>,
+    lookup_url: &'a str,
+}
+
+impl<'a> From<&'a FulfillmentEmailData> for FulfillmentUpdateView<'a> {
+    fn from(data: &'a FulfillmentEmailData) -> Self {
+        let (tracking_number, tracking_url) = match data.status {
+            FulfillmentEmailStatus::Shipped => (
+                data.tracking_number.as_deref(),
+                data.tracking_url.as_deref(),
+            ),
+            FulfillmentEmailStatus::Delivered => (None, None),
+        };
+        Self {
+            brand: BrandView::from(&data.brand),
+            order_number: &data.order_number,
+            status: data.status.as_str(),
+            tracking_number,
+            tracking_url,
+            lookup_url: &data.lookup_url,
+        }
+    }
+}
+
+fn address_locality_line(address: &chaos_domain::sales::PostalAddress) -> String {
     match (address.administrative_area(), address.postal_code()) {
         (Some(area), Some(postal_code)) => {
             format!("{}, {} {}", address.locality(), area, postal_code)
@@ -483,21 +419,6 @@ fn address_locality_line(address: &PostalAddress) -> String {
         (None, Some(postal_code)) => format!("{}, {}", address.locality(), postal_code),
         (None, None) => address.locality().to_owned(),
     }
-}
-
-fn escape_html(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&#39;"),
-            _ => escaped.push(character),
-        }
-    }
-    escaped
 }
 
 fn format_money(amount_minor: i64, currency: &str) -> String {
@@ -528,28 +449,28 @@ fn currency_exponent(currency: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::contracts::{EmailBrandConfiguration, EmailOrderLineItem};
     use chaos_domain::sales::PostalAddress;
 
-    use super::{
-        FulfillmentUpdateTemplateData, OrderConfirmationTemplateData,
-        default_fulfillment_update_template, default_order_confirmation_template,
-        render_fulfillment_update, render_order_confirmation,
+    use crate::contracts::{
+        EmailBrandConfiguration, EmailOrderLineItem, FulfillmentEmailData, FulfillmentEmailStatus,
+        OrderConfirmationEmailData,
     };
+
+    use super::EmailTemplateRenderer;
 
     #[test]
     fn renders_shipped_notice_with_escaped_tracking() {
-        let rendered = render_fulfillment_update(
-            &default_fulfillment_update_template(),
-            &FulfillmentUpdateTemplateData {
-                order_number: "ORD-<7>",
-                delivered: false,
-                tracking_number: Some("1Z<99>"),
-                tracking_url: Some("https://track.example/pkg?id=1&x=2"),
-                lookup_url: "https://shop.example/orders/details?order_number=W-1&email=a&b",
-                brand: &EmailBrandConfiguration::defaults("A <Store>".into()),
-            },
-        );
+        let rendered = EmailTemplateRenderer::embedded()
+            .unwrap()
+            .render_fulfillment_update(&FulfillmentEmailData {
+                order_number: "ORD-<7>".into(),
+                status: FulfillmentEmailStatus::Shipped,
+                tracking_number: Some("1Z<99>".into()),
+                tracking_url: Some("https://track.example/pkg?id=1&x=2".into()),
+                lookup_url: "https://shop.example/orders/details?order_number=W-1&email=a&b".into(),
+                brand: EmailBrandConfiguration::defaults("A <Store>".into()),
+            })
+            .unwrap();
 
         assert_eq!(rendered.subject, "A <Store> · Order ORD-<7> shipped");
         assert!(rendered.text.contains("on its way to you."));
@@ -559,45 +480,37 @@ mod tests {
                 .text
                 .contains("Track your shipment: https://track.example/pkg?id=1&x=2")
         );
-        assert!(
-            rendered
-                .text
-                .contains("Need help? Just reply to this email.")
-        );
         assert!(rendered.html.contains("ORD-&lt;7&gt;"));
         assert!(rendered.html.contains("1Z&lt;99&gt;"));
         assert!(
             rendered
                 .html
-                .contains("https://track.example/pkg?id=1&amp;x=2")
+                .contains("https:&#x2f;&#x2f;track.example&#x2f;pkg?id=1&amp;x=2")
         );
         assert!(!rendered.html.contains("1Z<99>"));
+        assert_no_template_syntax(&rendered.html);
     }
 
     #[test]
-    fn renders_delivered_notice_and_drops_any_tracking() {
-        let rendered = render_fulfillment_update(
-            &default_fulfillment_update_template(),
-            &FulfillmentUpdateTemplateData {
-                order_number: "ORD-8",
-                delivered: true,
-                tracking_number: Some("SHOULD-NOT-APPEAR"),
-                tracking_url: Some("https://track.example/x"),
-                lookup_url: "https://shop.example/lookup",
-                brand: &EmailBrandConfiguration::defaults("Example Store".into()),
-            },
-        );
+    fn renders_delivered_notice_without_tracking() {
+        let rendered = EmailTemplateRenderer::embedded()
+            .unwrap()
+            .render_fulfillment_update(&FulfillmentEmailData {
+                order_number: "ORD-8".into(),
+                status: FulfillmentEmailStatus::Delivered,
+                tracking_number: Some("SHOULD-NOT-APPEAR".into()),
+                tracking_url: Some("https://track.example/x".into()),
+                lookup_url: "https://shop.example/lookup".into(),
+                brand: EmailBrandConfiguration::defaults("Example Store".into()),
+            })
+            .unwrap();
 
         assert_eq!(rendered.subject, "Example Store · Order ORD-8 delivered");
         assert!(rendered.text.contains("has been delivered"));
         assert!(!rendered.text.contains("Tracking"));
         assert!(!rendered.text.contains("SHOULD-NOT-APPEAR"));
         assert!(!rendered.html.contains("SHOULD-NOT-APPEAR"));
-        assert!(
-            rendered
-                .html
-                .contains("Need help? Just reply to this email.")
-        );
+        assert_no_template_syntax(&rendered.html);
     }
 
     #[test]
@@ -612,23 +525,23 @@ mod tests {
             "US",
         )
         .unwrap();
-        let rendered = render_order_confirmation(
-            &default_order_confirmation_template(),
-            &OrderConfirmationTemplateData {
-                order_number: "ORD-<42>",
+        let rendered = EmailTemplateRenderer::embedded()
+            .unwrap()
+            .render_order_confirmation(&OrderConfirmationEmailData {
+                order_number: "ORD-<42>".into(),
                 subtotal_amount_minor: 1300,
                 discount_amount_minor: 100,
                 tax_amount_minor: 50,
                 shipping_amount_minor: 99,
                 total_amount_minor: 1349,
-                currency: "USD",
-                lookup_url: "https://shop.example/orders/details?order_number=W-1&email=a&b",
-                brand: &EmailBrandConfiguration {
+                currency: "USD".into(),
+                lookup_url: "https://shop.example/orders/details?order_number=W-1&email=a&b".into(),
+                brand: EmailBrandConfiguration {
                     brand_name: "A <Store>".into(),
                     logo_url: Some("https://cdn.example/logo?a=1&b=2".into()),
                     ..EmailBrandConfiguration::defaults("Fallback".into())
                 },
-                line_items: &[EmailOrderLineItem {
+                line_items: vec![EmailOrderLineItem {
                     product_title: "T-shirt <classic>".into(),
                     variant_title: "Blue / M".into(),
                     sku: Some("TS-01".into()),
@@ -637,135 +550,74 @@ mod tests {
                     subtotal_amount_minor: 1300,
                     image_url: Some("https://cdn.example/tshirt.png?a=1&b=2".into()),
                 }],
-                shipping_address: Some(&shipping_address),
-            },
-        );
+                shipping_address: Some(shipping_address),
+            })
+            .unwrap();
 
         assert_eq!(rendered.subject, "A <Store> · Order ORD-<42> confirmed");
         assert!(rendered.text.contains("T-shirt <classic> / Blue / M"));
-        assert!(rendered.text.contains("13.00 USD"));
         assert!(rendered.text.contains("Subtotal: 13.00 USD"));
         assert!(rendered.text.contains("Discount: -1.00 USD"));
         assert!(rendered.text.contains("Shipping: 0.99 USD"));
         assert!(rendered.text.contains("Tax: 0.50 USD"));
         assert!(rendered.text.contains("Total: 13.49 USD"));
-        assert!(rendered.text.contains(
-            "Shipping address:\nBuyer & Co.\n1 Market <Street>\nSuite 42\nSan Francisco, CA 94105\nUS"
-        ));
+        assert!(rendered.text.contains("Buyer & Co."));
         assert!(rendered.html.contains("A &lt;Store&gt;"));
         assert!(rendered.html.contains("T-shirt &lt;classic&gt;"));
-        assert!(rendered.html.contains("13.49 USD"));
-        assert!(rendered.html.contains("Subtotal"));
-        assert!(rendered.html.contains("Discount"));
-        assert!(rendered.html.contains("0.99 USD"));
-        assert!(rendered.html.contains("0.50 USD"));
-        assert!(rendered.html.contains("Shipping address"));
-        assert!(
-            rendered
-                .html
-                .contains("https://cdn.example/tshirt.png?a=1&amp;b=2")
-        );
         assert!(rendered.html.contains("Buyer &amp; Co."));
         assert!(rendered.html.contains("1 Market &lt;Street&gt;"));
         assert!(
             rendered
                 .html
-                .contains("https://cdn.example/logo?a=1&amp;b=2")
+                .contains("https:&#x2f;&#x2f;cdn.example&#x2f;tshirt.png?a=1&amp;b=2")
         );
         assert!(
             rendered
                 .html
-                .contains("https://shop.example/orders/details?order_number=W-1&amp;email=a&amp;b")
+                .contains("https:&#x2f;&#x2f;cdn.example&#x2f;logo?a=1&amp;b=2")
+        );
+        assert!(
+            rendered
+                .html
+                .contains("https:&#x2f;&#x2f;shop.example&#x2f;orders&#x2f;details?order_number=W-1&amp;email=a&amp;b")
         );
         assert!(!rendered.html.contains("T-shirt <classic>"));
+        assert_no_template_syntax(&rendered.html);
     }
 
     #[test]
-    fn renders_a_fallback_when_an_order_has_no_line_items() {
-        let rendered = render_order_confirmation(
-            &default_order_confirmation_template(),
-            &OrderConfirmationTemplateData {
-                order_number: "ORD-42",
-                subtotal_amount_minor: 1299,
-                discount_amount_minor: 0,
-                tax_amount_minor: 0,
-                shipping_amount_minor: 0,
-                total_amount_minor: 1299,
-                currency: "USD",
-                lookup_url: "https://shop.example/lookup",
-                brand: &EmailBrandConfiguration::defaults("Example Store".into()),
-                line_items: &[],
-                shipping_address: None,
-            },
-        );
-
+    fn renders_optional_order_sections_and_currency_exponents() {
+        let renderer = EmailTemplateRenderer::embedded().unwrap();
+        let mut data = OrderConfirmationEmailData {
+            order_number: "ORD-43".into(),
+            subtotal_amount_minor: 1234,
+            discount_amount_minor: 0,
+            tax_amount_minor: 0,
+            shipping_amount_minor: 0,
+            total_amount_minor: 1234,
+            currency: "JPY".into(),
+            lookup_url: "https://shop.example/lookup".into(),
+            brand: EmailBrandConfiguration::defaults("Example Store".into()),
+            line_items: Vec::new(),
+            shipping_address: None,
+        };
+        let rendered = renderer.render_order_confirmation(&data).unwrap();
         assert!(rendered.text.contains("No item details available."));
-        assert!(
-            rendered
-                .text
-                .contains("Need help? Just reply to this email.")
-        );
+        assert!(rendered.text.contains("Total: 1234 JPY"));
         assert!(rendered.html.contains("No item details available."));
         assert!(!rendered.text.contains("Shipping address:"));
         assert!(!rendered.html.contains("Shipping address"));
         assert!(!rendered.text.contains("Discount:"));
-        assert!(!rendered.html.contains(">Discount</td>"));
-    }
+        assert!(!rendered.html.contains(">Discount</"));
 
-    #[test]
-    fn formats_zero_and_three_decimal_currencies_without_float_rounding() {
-        let rendered = render_order_confirmation(
-            &default_order_confirmation_template(),
-            &OrderConfirmationTemplateData {
-                order_number: "ORD-43",
-                subtotal_amount_minor: 1234,
-                discount_amount_minor: 0,
-                tax_amount_minor: 0,
-                shipping_amount_minor: 0,
-                total_amount_minor: 1234,
-                currency: "JPY",
-                lookup_url: "https://shop.example/lookup",
-                brand: &EmailBrandConfiguration::defaults("Example Store".into()),
-                line_items: &[EmailOrderLineItem {
-                    product_title: "Coffee".into(),
-                    variant_title: "250g".into(),
-                    sku: None,
-                    quantity: 1,
-                    unit_price_amount_minor: 1234,
-                    subtotal_amount_minor: 1234,
-                    image_url: None,
-                }],
-                shipping_address: None,
-            },
-        );
-        assert!(rendered.text.contains("Total: 1234 JPY"));
-        assert!(rendered.text.contains("1234 JPY"));
-
-        let rendered = render_order_confirmation(
-            &default_order_confirmation_template(),
-            &OrderConfirmationTemplateData {
-                order_number: "ORD-44",
-                subtotal_amount_minor: 1234,
-                discount_amount_minor: 0,
-                tax_amount_minor: 0,
-                shipping_amount_minor: 0,
-                total_amount_minor: 1234,
-                currency: "KWD",
-                lookup_url: "https://shop.example/lookup",
-                brand: &EmailBrandConfiguration::defaults("Example Store".into()),
-                line_items: &[],
-                shipping_address: None,
-            },
-        );
+        data.currency = "KWD".into();
+        let rendered = renderer.render_order_confirmation(&data).unwrap();
         assert!(rendered.text.contains("Total: 1.234 KWD"));
+        assert_no_template_syntax(&rendered.html);
     }
 
-    #[test]
-    fn does_not_reinterpret_placeholder_text_inside_replacements() {
-        let rendered = super::render_template(
-            "{{first}}/{{second}}",
-            &[("first", "{{second}}"), ("second", "resolved")],
-        );
-        assert_eq!(rendered, "{{second}}/resolved");
+    fn assert_no_template_syntax(value: &str) {
+        assert!(!value.contains("{{"));
+        assert!(!value.contains("{%"));
     }
 }

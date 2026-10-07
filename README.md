@@ -70,6 +70,17 @@ npm test --prefix packages/js
 ./scripts/check-language.sh
 ```
 
+To design and inspect transactional emails, start the local preview gallery:
+
+```bash
+cargo run -p chaos-core --example email_preview
+```
+
+Open `http://127.0.0.1:3100`. The gallery renders the production MiniJinja and
+MJML templates with representative order and fulfillment fixtures. Template
+files are reloaded for every preview request, so a browser refresh shows edits
+without restarting the server.
+
 The PostgreSQL RLS integration test is ignored by default and can be run explicitly:
 
 ```bash

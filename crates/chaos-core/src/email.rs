@@ -4,11 +4,13 @@ use crate::{
     ApplicationError, Page,
     adapters::postgres::{EmailBrandWrite, EmailProviderAccountWrite, PostgresEmailRepository},
     contracts::{
-        EmailAccountConfiguration, EmailBrandDetail, EmailProvider, EmailProviderAccountDetail,
-        EmailWebhookVerifier, IntegrationQueue, NOTIFICATION_EMAIL_QUEUE,
-        ORDER_FULFILLMENT_DELIVERED_TOPIC, ORDER_FULFILLMENT_SHIPPED_TOPIC,
-        ORDER_PAYMENT_COMPLETED_TOPIC, ProviderAccountReader, VerifiedWebhookEvent,
+        EmailAccountConfiguration, EmailBrandDetail, EmailMessage, EmailProvider,
+        EmailProviderAccountDetail, EmailWebhookVerifier, FulfillmentEmailStatus, IntegrationQueue,
+        NOTIFICATION_EMAIL_QUEUE, ORDER_FULFILLMENT_DELIVERED_TOPIC,
+        ORDER_FULFILLMENT_SHIPPED_TOPIC, ORDER_PAYMENT_COMPLETED_TOPIC, PreparedEmail,
+        ProviderAccountReader, VerifiedWebhookEvent,
     },
+    email_templates::{EmailTemplateError, EmailTemplateRenderer},
     store::StoreActor,
 };
 use chaos_domain::{
@@ -504,6 +506,7 @@ fn validation(field: &'static str, reason: &'static str) -> ApplicationError {
 pub struct EmailWorkers {
     queue: Arc<dyn IntegrationQueue>,
     repository: Arc<PostgresEmailRepository>,
+    renderer: Arc<EmailTemplateRenderer>,
     providers: HashMap<String, Arc<dyn EmailProvider>>,
 }
 
@@ -511,11 +514,13 @@ impl EmailWorkers {
     pub fn new(
         queue: Arc<dyn IntegrationQueue>,
         repository: Arc<PostgresEmailRepository>,
+        renderer: Arc<EmailTemplateRenderer>,
         providers: impl IntoIterator<Item = Arc<dyn EmailProvider>>,
     ) -> Self {
         Self {
             queue,
             repository,
+            renderer,
             providers: providers
                 .into_iter()
                 .map(|provider| (provider.name().to_owned(), provider))
@@ -547,8 +552,14 @@ impl EmailWorkers {
     ) -> Result<(), ApplicationError> {
         match routing_key {
             ORDER_PAYMENT_COMPLETED_TOPIC => self.send_order_confirmation(payload).await,
-            ORDER_FULFILLMENT_SHIPPED_TOPIC => self.send_fulfillment_update(payload, false).await,
-            ORDER_FULFILLMENT_DELIVERED_TOPIC => self.send_fulfillment_update(payload, true).await,
+            ORDER_FULFILLMENT_SHIPPED_TOPIC => {
+                self.send_fulfillment_update(payload, FulfillmentEmailStatus::Shipped)
+                    .await
+            }
+            ORDER_FULFILLMENT_DELIVERED_TOPIC => {
+                self.send_fulfillment_update(payload, FulfillmentEmailStatus::Delivered)
+                    .await
+            }
             other => {
                 // Any routing key bound to `notification_email_queue` in
                 // migrations/0004_integration.sql without a handler above is
@@ -568,29 +579,56 @@ impl EmailWorkers {
     ) -> Result<(), ApplicationError> {
         let store_id = topic_uuid(payload, "store_id")?;
         let order_id = topic_uuid(payload, "order_id")?;
-        let Some((provider, reference, message)) = self
+        let Some(prepared) = self
             .repository
-            .prepare_order_confirmation(store_id, order_id)
+            .load_order_confirmation_email(store_id, order_id)
             .await?
         else {
             // No contact email to send to (yet). This is a terminal outcome,
             // not a transient failure: nothing will change on retry.
             return Ok(());
         };
-        let provider = self
+        let rendered = self
+            .renderer
+            .render_order_confirmation(&prepared.data)
+            .map_err(template_error)?;
+        let PreparedEmail {
+            provider,
+            credential_secret_reference,
+            from,
+            to,
+            reply_to,
+            idempotency_key,
+            ..
+        } = prepared;
+        let sender = self
             .providers
             .get(&provider)
             .ok_or_else(|| ApplicationError::Conflict {
                 code: "email_provider_not_supported",
                 message: "the configured Email provider has no adapter",
             })?;
-        provider.send(&reference, message).await.map(|_| ())
+        sender
+            .send(
+                &credential_secret_reference,
+                EmailMessage {
+                    from,
+                    to,
+                    reply_to,
+                    subject: rendered.subject,
+                    text: rendered.text,
+                    html: Some(rendered.html),
+                    idempotency_key,
+                },
+            )
+            .await
+            .map(|_| ())
     }
 
     async fn send_fulfillment_update(
         &self,
         payload: &serde_json::Value,
-        delivered: bool,
+        status: FulfillmentEmailStatus,
     ) -> Result<(), ApplicationError> {
         let store_id = topic_uuid(payload, "store_id")?;
         let order_id = topic_uuid(payload, "order_id")?;
@@ -601,13 +639,13 @@ impl EmailWorkers {
         let tracking_url = payload
             .get("tracking_url")
             .and_then(serde_json::Value::as_str);
-        let Some((provider, reference, message)) = self
+        let Some(prepared) = self
             .repository
-            .prepare_fulfillment_update(
+            .load_fulfillment_update_email(
                 store_id,
                 order_id,
                 fulfillment_id,
-                delivered,
+                status,
                 tracking_number,
                 tracking_url,
             )
@@ -616,15 +654,46 @@ impl EmailWorkers {
             // No contact email to send to — terminal, same as order confirmation.
             return Ok(());
         };
-        let provider = self
+        let rendered = self
+            .renderer
+            .render_fulfillment_update(&prepared.data)
+            .map_err(template_error)?;
+        let PreparedEmail {
+            provider,
+            credential_secret_reference,
+            from,
+            to,
+            reply_to,
+            idempotency_key,
+            ..
+        } = prepared;
+        let sender = self
             .providers
             .get(&provider)
             .ok_or_else(|| ApplicationError::Conflict {
                 code: "email_provider_not_supported",
                 message: "the configured Email provider has no adapter",
             })?;
-        provider.send(&reference, message).await.map(|_| ())
+        sender
+            .send(
+                &credential_secret_reference,
+                EmailMessage {
+                    from,
+                    to,
+                    reply_to,
+                    subject: rendered.subject,
+                    text: rendered.text,
+                    html: Some(rendered.html),
+                    idempotency_key,
+                },
+            )
+            .await
+            .map(|_| ())
     }
+}
+
+fn template_error(error: EmailTemplateError) -> ApplicationError {
+    ApplicationError::Unexpected(error.into())
 }
 
 fn topic_uuid(payload: &serde_json::Value, field: &'static str) -> Result<Uuid, ApplicationError> {

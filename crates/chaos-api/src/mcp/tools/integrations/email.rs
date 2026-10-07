@@ -453,7 +453,7 @@ fn email_brand_json(brand: EmailBrandDetail) -> serde_json::Value {
             "scope": "global",
             "owner": "chaos",
             "brand_storage": "chaos_integration.provider_accounts.configuration.brand",
-            "template_keys": ["order_confirmation"],
+            "template_keys": ["order_confirmation", "fulfillment_update"],
             "server_rendered_data": [
                 "order_number",
                 "line_items",

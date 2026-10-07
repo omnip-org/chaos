@@ -1,10 +1,16 @@
-{{brand_name}}
+{{ brand.name }}
 
-{{headline}}
+{% if status == "delivered" %}Your order has arrived
 
-{{body_text}}
+Order {{ order_number }} has been delivered. We hope you enjoy it.
+{% else %}Your order is on its way
 
-{{tracking_text}}View your order: {{lookup_url}}
+Order {{ order_number }} has shipped and is on its way to you.
+{% if tracking_number %}
+Tracking number: {{ tracking_number }}
+{% if tracking_url %}Track your shipment: {{ tracking_url }}
+{% endif %}{% endif %}{% endif %}
+View your order: {{ lookup_url }}
 
 Need help? Just reply to this email.
 
